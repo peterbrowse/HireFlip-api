@@ -1,41 +1,62 @@
+import notificationServiceEmailProvider from '../src/providers/notification-service-email';
+
 export default ({ env }) => {
   const uploadProvider = env('UPLOAD_PROVIDER', 'local');
   const s3Acl = env('AWS_ACL', undefined);
+  const emailProvider = env('STRAPI_EMAIL_PROVIDER', undefined);
 
-  if (uploadProvider !== 'aws-s3') {
-    return {
-      upload: {
-        config: {
-          provider: 'local',
-        },
-      },
-    };
-  }
-
-  return {
-    upload: {
-      config: {
-        provider: 'aws-s3',
-        providerOptions: {
-          s3Options: {
-            credentials: {
-              accessKeyId: env('AWS_ACCESS_KEY_ID'),
-              secretAccessKey: env('AWS_ACCESS_SECRET'),
+  const upload =
+    uploadProvider === 'aws-s3'
+      ? {
+          config: {
+            provider: 'aws-s3',
+            providerOptions: {
+              s3Options: {
+                credentials: {
+                  accessKeyId: env('AWS_ACCESS_KEY_ID'),
+                  secretAccessKey: env('AWS_ACCESS_SECRET'),
+                },
+                region: env('AWS_REGION', 'eu-west-2'),
+                params: {
+                  signedUrlExpires: env.int('AWS_SIGNED_URL_EXPIRES', 15 * 60),
+                  Bucket: env('AWS_BUCKET'),
+                  ...(s3Acl ? { ACL: s3Acl } : {}),
+                },
+              },
             },
-            region: env('AWS_REGION', 'eu-west-2'),
-            params: {
-              signedUrlExpires: env.int('AWS_SIGNED_URL_EXPIRES', 15 * 60),
-              Bucket: env('AWS_BUCKET'),
-              ...(s3Acl ? { ACL: s3Acl } : {}),
+            actionOptions: {
+              upload: {},
+              uploadStream: {},
+              delete: {},
             },
           },
-        },
-        actionOptions: {
-          upload: {},
-          uploadStream: {},
-          delete: {},
-        },
-      },
-    },
+        }
+      : {
+          config: {
+            provider: 'local',
+          },
+        };
+
+  const email =
+    emailProvider === 'notification-service'
+      ? {
+          config: {
+            provider: notificationServiceEmailProvider,
+            providerOptions: {
+              baseUrl: env('NOTIFICATION_SERVICE_URL'),
+              serviceToken: env('NOTIFICATION_SERVICE_TOKEN'),
+              timeoutMs: env.int('NOTIFICATION_SERVICE_TIMEOUT_MS', 5000),
+            },
+            settings: {
+              defaultFrom: env('STRAPI_EMAIL_DEFAULT_FROM', 'no-reply@hireflip.work'),
+              defaultReplyTo: env('STRAPI_EMAIL_DEFAULT_REPLY_TO', 'support@hireflip.work'),
+            },
+          },
+        }
+      : undefined;
+
+  return {
+    upload,
+    ...(email ? { email } : {}),
   };
 };

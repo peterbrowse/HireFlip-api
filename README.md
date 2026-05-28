@@ -60,6 +60,26 @@ Ownership set to bucket-owner-enforced and ACLs disabled. Leave `AWS_ACL` blank
 for that setup so the API does not send ACL headers. Only set `AWS_ACL` if the
 bucket is deliberately configured to accept ACLs later.
 
+## Strapi System Email
+
+Strapi system emails should eventually route through `HireFlip-notification-service`,
+not directly through SendGrid from the API.
+
+The API includes an env-gated custom Strapi email provider for that handoff.
+Leave it disabled until the notification service exposes the matching internal
+email endpoint.
+
+```bash
+STRAPI_EMAIL_PROVIDER=notification-service
+NOTIFICATION_SERVICE_URL=https://your-notification-service.example.com
+NOTIFICATION_SERVICE_TOKEN=...
+STRAPI_EMAIL_DEFAULT_FROM=no-reply@hireflip.work
+STRAPI_EMAIL_DEFAULT_REPLY_TO=support@hireflip.work
+```
+
+The provider posts rendered Strapi system emails to
+`/api/internal/notifications/email` with the `core-api` service identity.
+
 ## Public Interest Protection
 
 The public interest capture endpoint is intended to be called by the homepage
