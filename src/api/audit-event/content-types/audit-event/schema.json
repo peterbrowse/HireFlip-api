@@ -1,0 +1,127 @@
+{
+  "kind": "collectionType",
+  "collectionName": "audit_events",
+  "info": {
+    "singularName": "audit-event",
+    "pluralName": "audit-events",
+    "displayName": "Audit Event",
+    "description": "Immutable business, security, workflow, and dispute-support events."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "eventType": {
+      "type": "string",
+      "required": true
+    },
+    "eventCategory": {
+      "type": "enumeration",
+      "enum": [
+        "admin",
+        "assessment",
+        "candidate",
+        "course",
+        "employer",
+        "file",
+        "interview",
+        "notification",
+        "offer",
+        "payment",
+        "privacy",
+        "recruitment",
+        "refund",
+        "security",
+        "system"
+      ],
+      "required": true
+    },
+    "severity": {
+      "type": "enumeration",
+      "enum": [
+        "info",
+        "warning",
+        "error",
+        "critical"
+      ],
+      "default": "info",
+      "required": true
+    },
+    "source": {
+      "type": "enumeration",
+      "enum": [
+        "core_api",
+        "strapi_admin",
+        "candidate_dashboard",
+        "employer_dashboard",
+        "admin_dashboard",
+        "payment_service",
+        "notification_service",
+        "ai_service",
+        "recruitment_platform",
+        "system"
+      ],
+      "default": "core_api",
+      "required": true
+    },
+    "actorType": {
+      "type": "enumeration",
+      "enum": [
+        "candidate",
+        "employer_contact",
+        "recruiter",
+        "admin",
+        "service",
+        "system",
+        "anonymous"
+      ],
+      "required": true
+    },
+    "actorId": {
+      "type": "string"
+    },
+    "actorEmail": {
+      "type": "email"
+    },
+    "actorDisplayName": {
+      "type": "string"
+    },
+    "subjectType": {
+      "type": "string"
+    },
+    "subjectId": {
+      "type": "string"
+    },
+    "subjectDisplayName": {
+      "type": "string"
+    },
+    "occurredAt": {
+      "type": "datetime",
+      "required": true
+    },
+    "requestId": {
+      "type": "string"
+    },
+    "correlationId": {
+      "type": "string"
+    },
+    "serviceName": {
+      "type": "string"
+    },
+    "ipAddress": {
+      "type": "string"
+    },
+    "userAgent": {
+      "type": "text"
+    },
+    "previousState": {
+      "type": "json"
+    },
+    "newState": {
+      "type": "json"
+    },
+    "metadata": {
+      "type": "json"
+    }
+  }
+}

@@ -1,0 +1,141 @@
+{
+  "kind": "collectionType",
+  "collectionName": "stored_files",
+  "info": {
+    "singularName": "stored-file",
+    "pluralName": "stored-files",
+    "displayName": "Stored File",
+    "description": "Metadata for files stored outside the database."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "purpose": {
+      "type": "enumeration",
+      "enum": [
+        "course_material",
+        "generated_cv_pdf",
+        "candidate_activity_report",
+        "privacy_export",
+        "assessment_appeal_attachment",
+        "dispute_attachment",
+        "admin_attachment",
+        "other"
+      ],
+      "required": true
+    },
+    "provider": {
+      "type": "enumeration",
+      "enum": [
+        "s3",
+        "local",
+        "cloudinary"
+      ],
+      "default": "s3",
+      "required": true
+    },
+    "bucket": {
+      "type": "string"
+    },
+    "objectKey": {
+      "type": "string",
+      "required": true
+    },
+    "versionId": {
+      "type": "string"
+    },
+    "originalFilename": {
+      "type": "string"
+    },
+    "mimeType": {
+      "type": "string"
+    },
+    "sizeBytes": {
+      "type": "biginteger"
+    },
+    "checksum": {
+      "type": "string"
+    },
+    "visibility": {
+      "type": "enumeration",
+      "enum": [
+        "private",
+        "internal",
+        "public"
+      ],
+      "default": "private",
+      "required": true
+    },
+    "status": {
+      "type": "enumeration",
+      "enum": [
+        "pending",
+        "uploaded",
+        "generated",
+        "deleted",
+        "quarantined"
+      ],
+      "default": "pending",
+      "required": true
+    },
+    "ownerType": {
+      "type": "enumeration",
+      "enum": [
+        "candidate",
+        "employer_contact",
+        "recruiter",
+        "admin",
+        "service",
+        "system"
+      ]
+    },
+    "ownerId": {
+      "type": "string"
+    },
+    "relatedType": {
+      "type": "string"
+    },
+    "relatedId": {
+      "type": "string"
+    },
+    "uploadedByType": {
+      "type": "enumeration",
+      "enum": [
+        "candidate",
+        "employer_contact",
+        "recruiter",
+        "admin",
+        "service",
+        "system"
+      ]
+    },
+    "uploadedById": {
+      "type": "string"
+    },
+    "generatedByService": {
+      "type": "string"
+    },
+    "retentionState": {
+      "type": "enumeration",
+      "enum": [
+        "active",
+        "retention_hold",
+        "delete_requested",
+        "deleted",
+        "anonymised"
+      ],
+      "default": "active",
+      "required": true
+    },
+    "uploadedAt": {
+      "type": "datetime"
+    },
+    "deletedAt": {
+      "type": "datetime"
+    },
+    "metadata": {
+      "type": "json"
+    }
+  }
+}
