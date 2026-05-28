@@ -1,0 +1,129 @@
+{
+  "kind": "collectionType",
+  "collectionName": "public_interest_leads",
+  "info": {
+    "singularName": "public-interest-lead",
+    "pluralName": "public-interest-leads",
+    "displayName": "Public Interest Lead",
+    "description": "Public-site register-interest or enquiry submission before full account creation."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "email": {
+      "type": "email",
+      "required": true
+    },
+    "leadType": {
+      "type": "enumeration",
+      "enum": [
+        "candidate_interest",
+        "employer_enquiry",
+        "unsupported_region_sector",
+        "other"
+      ],
+      "required": true
+    },
+    "name": {
+      "type": "string"
+    },
+    "company": {
+      "type": "string"
+    },
+    "candidateStatus": {
+      "type": "string"
+    },
+    "employerInterviewCapacity": {
+      "type": "integer"
+    },
+    "region": {
+      "type": "string"
+    },
+    "sector": {
+      "type": "string"
+    },
+    "sourceForm": {
+      "type": "string"
+    },
+    "consentState": {
+      "type": "enumeration",
+      "enum": [
+        "not_requested",
+        "operational_only",
+        "marketing_opted_in",
+        "marketing_withdrawn"
+      ],
+      "default": "not_requested",
+      "required": true
+    },
+    "marketingChannels": {
+      "type": "json"
+    },
+    "consentCapturedAt": {
+      "type": "datetime"
+    },
+    "consentWordingVersion": {
+      "type": "string"
+    },
+    "privacyNoticeVersion": {
+      "type": "string"
+    },
+    "enquiryLawfulBasis": {
+      "type": "string"
+    },
+    "marketingLawfulBasis": {
+      "type": "string"
+    },
+    "unsubscribedAt": {
+      "type": "datetime"
+    },
+    "suppressionStatus": {
+      "type": "enumeration",
+      "enum": [
+        "not_suppressed",
+        "suppressed",
+        "deleted",
+        "anonymised"
+      ],
+      "default": "not_suppressed",
+      "required": true
+    },
+    "mailingPlatformProvider": {
+      "type": "string"
+    },
+    "mailingPlatformContactId": {
+      "type": "string"
+    },
+    "mailingPlatformListId": {
+      "type": "string"
+    },
+    "syncStatus": {
+      "type": "enumeration",
+      "enum": [
+        "not_required",
+        "pending",
+        "synced",
+        "failed"
+      ],
+      "default": "not_required",
+      "required": true
+    },
+    "syncError": {
+      "type": "text"
+    },
+    "linkedCandidate": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::candidate.candidate"
+    },
+    "linkedEmployer": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::employer.employer"
+    },
+    "metadata": {
+      "type": "json"
+    }
+  }
+}

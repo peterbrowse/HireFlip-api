@@ -1,0 +1,138 @@
+{
+  "kind": "collectionType",
+  "collectionName": "notification_events",
+  "info": {
+    "singularName": "notification-event",
+    "pluralName": "notification-events",
+    "displayName": "Notification Event",
+    "description": "Notification request and delivery state coordinated with the notification service."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "eventType": {
+      "type": "string",
+      "required": true
+    },
+    "recipientType": {
+      "type": "enumeration",
+      "enum": [
+        "candidate",
+        "employer_contact",
+        "recruiter",
+        "admin",
+        "public_lead",
+        "other"
+      ],
+      "required": true
+    },
+    "recipientId": {
+      "type": "string"
+    },
+    "recipientEmail": {
+      "type": "email"
+    },
+    "recipientPhone": {
+      "type": "string"
+    },
+    "channel": {
+      "type": "enumeration",
+      "enum": [
+        "email",
+        "sms",
+        "in_app"
+      ],
+      "required": true
+    },
+    "templateKey": {
+      "type": "string"
+    },
+    "status": {
+      "type": "enumeration",
+      "enum": [
+        "queued",
+        "scheduled",
+        "sending",
+        "sent",
+        "delivered",
+        "failed",
+        "cancelled",
+        "suppressed"
+      ],
+      "default": "queued",
+      "required": true
+    },
+    "priority": {
+      "type": "enumeration",
+      "enum": [
+        "low",
+        "normal",
+        "high",
+        "urgent"
+      ],
+      "default": "normal",
+      "required": true
+    },
+    "scheduledAt": {
+      "type": "datetime"
+    },
+    "sentAt": {
+      "type": "datetime"
+    },
+    "deliveredAt": {
+      "type": "datetime"
+    },
+    "failedAt": {
+      "type": "datetime"
+    },
+    "provider": {
+      "type": "string"
+    },
+    "providerMessageId": {
+      "type": "string"
+    },
+    "relatedType": {
+      "type": "string"
+    },
+    "relatedId": {
+      "type": "string"
+    },
+    "candidate": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::candidate.candidate"
+    },
+    "employer": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::employer.employer"
+    },
+    "class": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::class.class"
+    },
+    "payment": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::payment.payment"
+    },
+    "interview": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::interview.interview"
+    },
+    "refund": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::refund.refund"
+    },
+    "errorMessage": {
+      "type": "text"
+    },
+    "metadata": {
+      "type": "json"
+    }
+  }
+}

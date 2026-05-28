@@ -1,0 +1,153 @@
+{
+  "kind": "collectionType",
+  "collectionName": "privacy_rights_requests",
+  "info": {
+    "singularName": "privacy-rights-request",
+    "pluralName": "privacy-rights-requests",
+    "displayName": "Privacy Rights Request",
+    "description": "Data access, correction, deletion, erasure, portability, objection, or restriction request."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "requestType": {
+      "type": "enumeration",
+      "enum": [
+        "access",
+        "correction",
+        "deletion",
+        "erasure",
+        "portability",
+        "objection",
+        "restriction",
+        "other"
+      ],
+      "required": true
+    },
+    "status": {
+      "type": "enumeration",
+      "enum": [
+        "received",
+        "identity_verification_required",
+        "in_review",
+        "clarification_requested",
+        "processing",
+        "completed",
+        "partially_fulfilled",
+        "rejected",
+        "cancelled"
+      ],
+      "default": "received",
+      "required": true
+    },
+    "requestingUserType": {
+      "type": "enumeration",
+      "enum": [
+        "candidate",
+        "employer_contact",
+        "recruiter",
+        "public_lead",
+        "admin",
+        "unknown"
+      ],
+      "required": true
+    },
+    "requestingUserId": {
+      "type": "string"
+    },
+    "subjectUserType": {
+      "type": "enumeration",
+      "enum": [
+        "candidate",
+        "employer_contact",
+        "recruiter",
+        "public_lead",
+        "unknown"
+      ]
+    },
+    "subjectUserId": {
+      "type": "string"
+    },
+    "candidate": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::candidate.candidate"
+    },
+    "employerContact": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::employer-contact.employer-contact"
+    },
+    "publicInterestLead": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::public-interest-lead.public-interest-lead"
+    },
+    "identityVerificationStatus": {
+      "type": "enumeration",
+      "enum": [
+        "not_started",
+        "pending",
+        "verified",
+        "failed",
+        "not_required"
+      ],
+      "default": "not_started",
+      "required": true
+    },
+    "receivedAt": {
+      "type": "datetime"
+    },
+    "dueAt": {
+      "type": "datetime"
+    },
+    "clarificationRequestedAt": {
+      "type": "datetime"
+    },
+    "completedAt": {
+      "type": "datetime"
+    },
+    "rejectionReason": {
+      "type": "text"
+    },
+    "exportFile": {
+      "type": "relation",
+      "relation": "oneToOne",
+      "target": "api::stored-file.stored-file"
+    },
+    "deletionJobStatus": {
+      "type": "enumeration",
+      "enum": [
+        "not_required",
+        "pending",
+        "in_progress",
+        "completed",
+        "failed"
+      ],
+      "default": "not_required",
+      "required": true
+    },
+    "downstreamProviderSyncStatus": {
+      "type": "enumeration",
+      "enum": [
+        "not_required",
+        "pending",
+        "in_progress",
+        "completed",
+        "failed"
+      ],
+      "default": "not_required",
+      "required": true
+    },
+    "retentionReasons": {
+      "type": "json"
+    },
+    "adminOwnerId": {
+      "type": "string"
+    },
+    "metadata": {
+      "type": "json"
+    }
+  }
+}

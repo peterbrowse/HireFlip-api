@@ -1,0 +1,76 @@
+{
+  "kind": "collectionType",
+  "collectionName": "candidate_profiles",
+  "info": {
+    "singularName": "candidate-profile",
+    "pluralName": "candidate-profiles",
+    "displayName": "Candidate Profile",
+    "description": "Structured candidate CV/profile data used for generated documents and recruitment search."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "candidate": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::candidate.candidate"
+    },
+    "status": {
+      "type": "enumeration",
+      "enum": [
+        "draft",
+        "in_review",
+        "completed",
+        "archived"
+      ],
+      "default": "draft",
+      "required": true
+    },
+    "summary": {
+      "type": "text"
+    },
+    "education": {
+      "type": "json"
+    },
+    "experience": {
+      "type": "json"
+    },
+    "skills": {
+      "type": "json"
+    },
+    "workPreferences": {
+      "type": "json"
+    },
+    "location": {
+      "type": "string"
+    },
+    "availability": {
+      "type": "string"
+    },
+    "recruitmentPlatformVisibility": {
+      "type": "enumeration",
+      "enum": [
+        "not_set",
+        "visible",
+        "hidden"
+      ],
+      "default": "not_set",
+      "required": true
+    },
+    "generatedCvFile": {
+      "type": "relation",
+      "relation": "oneToOne",
+      "target": "api::stored-file.stored-file"
+    },
+    "completedAt": {
+      "type": "datetime"
+    },
+    "visibilityUpdatedAt": {
+      "type": "datetime"
+    },
+    "metadata": {
+      "type": "json"
+    }
+  }
+}

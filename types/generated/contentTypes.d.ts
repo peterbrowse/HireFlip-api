@@ -704,6 +704,63 @@ export interface ApiCandidateInterviewStrikeCandidateInterviewStrike
   };
 }
 
+export interface ApiCandidateProfileCandidateProfile
+  extends Struct.CollectionTypeSchema {
+  collectionName: 'candidate_profiles';
+  info: {
+    description: 'Structured candidate CV/profile data used for generated documents and recruitment search.';
+    displayName: 'Candidate Profile';
+    pluralName: 'candidate-profiles';
+    singularName: 'candidate-profile';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    availability: Schema.Attribute.String;
+    candidate: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::candidate.candidate'
+    >;
+    completedAt: Schema.Attribute.DateTime;
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    education: Schema.Attribute.JSON;
+    experience: Schema.Attribute.JSON;
+    generatedCvFile: Schema.Attribute.Relation<
+      'oneToOne',
+      'api::stored-file.stored-file'
+    >;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::candidate-profile.candidate-profile'
+    > &
+      Schema.Attribute.Private;
+    location: Schema.Attribute.String;
+    metadata: Schema.Attribute.JSON;
+    publishedAt: Schema.Attribute.DateTime;
+    recruitmentPlatformVisibility: Schema.Attribute.Enumeration<
+      ['not_set', 'visible', 'hidden']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'not_set'>;
+    skills: Schema.Attribute.JSON;
+    status: Schema.Attribute.Enumeration<
+      ['draft', 'in_review', 'completed', 'archived']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'draft'>;
+    summary: Schema.Attribute.Text;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    visibilityUpdatedAt: Schema.Attribute.DateTime;
+    workPreferences: Schema.Attribute.JSON;
+  };
+}
+
 export interface ApiCandidateCandidate extends Struct.CollectionTypeSchema {
   collectionName: 'candidates';
   info: {
@@ -1432,6 +1489,94 @@ export interface ApiInterviewInterview extends Struct.CollectionTypeSchema {
   };
 }
 
+export interface ApiNotificationEventNotificationEvent
+  extends Struct.CollectionTypeSchema {
+  collectionName: 'notification_events';
+  info: {
+    description: 'Notification request and delivery state coordinated with the notification service.';
+    displayName: 'Notification Event';
+    pluralName: 'notification-events';
+    singularName: 'notification-event';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    candidate: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::candidate.candidate'
+    >;
+    channel: Schema.Attribute.Enumeration<['email', 'sms', 'in_app']> &
+      Schema.Attribute.Required;
+    class: Schema.Attribute.Relation<'manyToOne', 'api::class.class'>;
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    deliveredAt: Schema.Attribute.DateTime;
+    employer: Schema.Attribute.Relation<'manyToOne', 'api::employer.employer'>;
+    errorMessage: Schema.Attribute.Text;
+    eventType: Schema.Attribute.String & Schema.Attribute.Required;
+    failedAt: Schema.Attribute.DateTime;
+    interview: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::interview.interview'
+    >;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::notification-event.notification-event'
+    > &
+      Schema.Attribute.Private;
+    metadata: Schema.Attribute.JSON;
+    payment: Schema.Attribute.Relation<'manyToOne', 'api::payment.payment'>;
+    priority: Schema.Attribute.Enumeration<
+      ['low', 'normal', 'high', 'urgent']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'normal'>;
+    provider: Schema.Attribute.String;
+    providerMessageId: Schema.Attribute.String;
+    publishedAt: Schema.Attribute.DateTime;
+    recipientEmail: Schema.Attribute.Email;
+    recipientId: Schema.Attribute.String;
+    recipientPhone: Schema.Attribute.String;
+    recipientType: Schema.Attribute.Enumeration<
+      [
+        'candidate',
+        'employer_contact',
+        'recruiter',
+        'admin',
+        'public_lead',
+        'other',
+      ]
+    > &
+      Schema.Attribute.Required;
+    refund: Schema.Attribute.Relation<'manyToOne', 'api::refund.refund'>;
+    relatedId: Schema.Attribute.String;
+    relatedType: Schema.Attribute.String;
+    scheduledAt: Schema.Attribute.DateTime;
+    sentAt: Schema.Attribute.DateTime;
+    status: Schema.Attribute.Enumeration<
+      [
+        'queued',
+        'scheduled',
+        'sending',
+        'sent',
+        'delivered',
+        'failed',
+        'cancelled',
+        'suppressed',
+      ]
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'queued'>;
+    templateKey: Schema.Attribute.String;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+  };
+}
+
 export interface ApiOfferOffer extends Struct.CollectionTypeSchema {
   collectionName: 'offers';
   info: {
@@ -1597,6 +1742,204 @@ export interface ApiPaymentPayment extends Struct.CollectionTypeSchema {
     > &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'draft'>;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+  };
+}
+
+export interface ApiPrivacyRightsRequestPrivacyRightsRequest
+  extends Struct.CollectionTypeSchema {
+  collectionName: 'privacy_rights_requests';
+  info: {
+    description: 'Data access, correction, deletion, erasure, portability, objection, or restriction request.';
+    displayName: 'Privacy Rights Request';
+    pluralName: 'privacy-rights-requests';
+    singularName: 'privacy-rights-request';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    adminOwnerId: Schema.Attribute.String;
+    candidate: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::candidate.candidate'
+    >;
+    clarificationRequestedAt: Schema.Attribute.DateTime;
+    completedAt: Schema.Attribute.DateTime;
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    deletionJobStatus: Schema.Attribute.Enumeration<
+      ['not_required', 'pending', 'in_progress', 'completed', 'failed']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'not_required'>;
+    downstreamProviderSyncStatus: Schema.Attribute.Enumeration<
+      ['not_required', 'pending', 'in_progress', 'completed', 'failed']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'not_required'>;
+    dueAt: Schema.Attribute.DateTime;
+    employerContact: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::employer-contact.employer-contact'
+    >;
+    exportFile: Schema.Attribute.Relation<
+      'oneToOne',
+      'api::stored-file.stored-file'
+    >;
+    identityVerificationStatus: Schema.Attribute.Enumeration<
+      ['not_started', 'pending', 'verified', 'failed', 'not_required']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'not_started'>;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::privacy-rights-request.privacy-rights-request'
+    > &
+      Schema.Attribute.Private;
+    metadata: Schema.Attribute.JSON;
+    publicInterestLead: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::public-interest-lead.public-interest-lead'
+    >;
+    publishedAt: Schema.Attribute.DateTime;
+    receivedAt: Schema.Attribute.DateTime;
+    rejectionReason: Schema.Attribute.Text;
+    requestingUserId: Schema.Attribute.String;
+    requestingUserType: Schema.Attribute.Enumeration<
+      [
+        'candidate',
+        'employer_contact',
+        'recruiter',
+        'public_lead',
+        'admin',
+        'unknown',
+      ]
+    > &
+      Schema.Attribute.Required;
+    requestType: Schema.Attribute.Enumeration<
+      [
+        'access',
+        'correction',
+        'deletion',
+        'erasure',
+        'portability',
+        'objection',
+        'restriction',
+        'other',
+      ]
+    > &
+      Schema.Attribute.Required;
+    retentionReasons: Schema.Attribute.JSON;
+    status: Schema.Attribute.Enumeration<
+      [
+        'received',
+        'identity_verification_required',
+        'in_review',
+        'clarification_requested',
+        'processing',
+        'completed',
+        'partially_fulfilled',
+        'rejected',
+        'cancelled',
+      ]
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'received'>;
+    subjectUserId: Schema.Attribute.String;
+    subjectUserType: Schema.Attribute.Enumeration<
+      ['candidate', 'employer_contact', 'recruiter', 'public_lead', 'unknown']
+    >;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+  };
+}
+
+export interface ApiPublicInterestLeadPublicInterestLead
+  extends Struct.CollectionTypeSchema {
+  collectionName: 'public_interest_leads';
+  info: {
+    description: 'Public-site register-interest or enquiry submission before full account creation.';
+    displayName: 'Public Interest Lead';
+    pluralName: 'public-interest-leads';
+    singularName: 'public-interest-lead';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    candidateStatus: Schema.Attribute.String;
+    company: Schema.Attribute.String;
+    consentCapturedAt: Schema.Attribute.DateTime;
+    consentState: Schema.Attribute.Enumeration<
+      [
+        'not_requested',
+        'operational_only',
+        'marketing_opted_in',
+        'marketing_withdrawn',
+      ]
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'not_requested'>;
+    consentWordingVersion: Schema.Attribute.String;
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    email: Schema.Attribute.Email & Schema.Attribute.Required;
+    employerInterviewCapacity: Schema.Attribute.Integer;
+    enquiryLawfulBasis: Schema.Attribute.String;
+    leadType: Schema.Attribute.Enumeration<
+      [
+        'candidate_interest',
+        'employer_enquiry',
+        'unsupported_region_sector',
+        'other',
+      ]
+    > &
+      Schema.Attribute.Required;
+    linkedCandidate: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::candidate.candidate'
+    >;
+    linkedEmployer: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::employer.employer'
+    >;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::public-interest-lead.public-interest-lead'
+    > &
+      Schema.Attribute.Private;
+    mailingPlatformContactId: Schema.Attribute.String;
+    mailingPlatformListId: Schema.Attribute.String;
+    mailingPlatformProvider: Schema.Attribute.String;
+    marketingChannels: Schema.Attribute.JSON;
+    marketingLawfulBasis: Schema.Attribute.String;
+    metadata: Schema.Attribute.JSON;
+    name: Schema.Attribute.String;
+    privacyNoticeVersion: Schema.Attribute.String;
+    publishedAt: Schema.Attribute.DateTime;
+    region: Schema.Attribute.String;
+    sector: Schema.Attribute.String;
+    sourceForm: Schema.Attribute.String;
+    suppressionStatus: Schema.Attribute.Enumeration<
+      ['not_suppressed', 'suppressed', 'deleted', 'anonymised']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'not_suppressed'>;
+    syncError: Schema.Attribute.Text;
+    syncStatus: Schema.Attribute.Enumeration<
+      ['not_required', 'pending', 'synced', 'failed']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'not_required'>;
+    unsubscribedAt: Schema.Attribute.DateTime;
     updatedAt: Schema.Attribute.DateTime;
     updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
@@ -2461,6 +2804,7 @@ declare module '@strapi/strapi' {
       'api::assessment-appeal.assessment-appeal': ApiAssessmentAppealAssessmentAppeal;
       'api::audit-event.audit-event': ApiAuditEventAuditEvent;
       'api::candidate-interview-strike.candidate-interview-strike': ApiCandidateInterviewStrikeCandidateInterviewStrike;
+      'api::candidate-profile.candidate-profile': ApiCandidateProfileCandidateProfile;
       'api::candidate.candidate': ApiCandidateCandidate;
       'api::class.class': ApiClassClass;
       'api::course-material.course-material': ApiCourseMaterialCourseMaterial;
@@ -2473,9 +2817,12 @@ declare module '@strapi/strapi' {
       'api::interview-feedback.interview-feedback': ApiInterviewFeedbackInterviewFeedback;
       'api::interview-slot.interview-slot': ApiInterviewSlotInterviewSlot;
       'api::interview.interview': ApiInterviewInterview;
+      'api::notification-event.notification-event': ApiNotificationEventNotificationEvent;
       'api::offer.offer': ApiOfferOffer;
       'api::payment-webhook-event.payment-webhook-event': ApiPaymentWebhookEventPaymentWebhookEvent;
       'api::payment.payment': ApiPaymentPayment;
+      'api::privacy-rights-request.privacy-rights-request': ApiPrivacyRightsRequestPrivacyRightsRequest;
+      'api::public-interest-lead.public-interest-lead': ApiPublicInterestLeadPublicInterestLead;
       'api::question.question': ApiQuestionQuestion;
       'api::refund.refund': ApiRefundRefund;
       'api::stored-file.stored-file': ApiStoredFileStoredFile;
