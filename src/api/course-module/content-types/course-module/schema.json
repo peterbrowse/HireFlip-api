@@ -1,0 +1,37 @@
+{
+  "kind": "collectionType",
+  "collectionName": "course_modules",
+  "info": {
+    "singularName": "course-module",
+    "pluralName": "course-modules",
+    "displayName": "Course Module",
+    "description": "Modules within a cohort"
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "title": {
+      "type": "string",
+      "required": true
+    },
+    "slug": {
+      "type": "uid",
+      "targetField": "title"
+    },
+    "order": {
+      "type": "integer",
+      "default": 1
+    },
+    "content": {
+      "type": "richtext"
+    },
+    "cohort": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::cohort.cohort",
+      "inversedBy": "modules"
+    }
+  }
+}
+

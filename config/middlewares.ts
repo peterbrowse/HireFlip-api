@@ -1,12 +1,31 @@
-export default [
-  'strapi::logger',
-  'strapi::errors',
-  'strapi::security',
-  'strapi::cors',
-  'strapi::poweredBy',
-  'strapi::query',
-  'strapi::body',
-  'strapi::session',
-  'strapi::favicon',
-  'strapi::public',
+export default ({ env }) => [
+  "strapi::logger",
+  "strapi::errors",
+  {
+    name: "strapi::security",
+    config: {
+      contentSecurityPolicy: {
+        useDefaults: true,
+        directives: {
+          "connect-src": ["'self'", "https:"],
+          "img-src": ["'self'", "data:", "blob:", "res.cloudinary.com"],
+          "media-src": ["'self'", "data:", "blob:", "res.cloudinary.com"],
+          upgradeInsecureRequests: null,
+        },
+      },
+    },
+  },
+  {
+    name: "strapi::cors",
+    config: {
+      origin: env.array("CORS_ORIGINS", ["*"]),
+    },
+  },
+  "global::auth0",
+  "strapi::poweredBy",
+  "strapi::query",
+  "strapi::body",
+  "strapi::session",
+  "strapi::favicon",
+  "strapi::public",
 ];

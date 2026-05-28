@@ -1,0 +1,49 @@
+{
+  "kind": "collectionType",
+  "collectionName": "employers",
+  "info": {
+    "singularName": "employer",
+    "pluralName": "employers",
+    "displayName": "Employer",
+    "description": "Employer partners"
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "auth0Id": {
+      "type": "string",
+      "required": true,
+      "unique": true
+    },
+    "name": {
+      "type": "string",
+      "required": true
+    },
+    "contactName": {
+      "type": "string"
+    },
+    "contactEmail": {
+      "type": "email",
+      "required": true
+    },
+    "status": {
+      "type": "enumeration",
+      "enum": ["active", "inactive"],
+      "default": "active"
+    },
+    "cohorts": {
+      "type": "relation",
+      "relation": "manyToMany",
+      "target": "api::cohort.cohort",
+      "mappedBy": "employers"
+    },
+    "interviews": {
+      "type": "relation",
+      "relation": "oneToMany",
+      "target": "api::interview.interview",
+      "mappedBy": "employer"
+    }
+  }
+}
+

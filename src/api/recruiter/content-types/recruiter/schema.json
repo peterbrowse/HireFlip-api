@@ -1,0 +1,34 @@
+{
+  "kind": "collectionType",
+  "collectionName": "recruiters",
+  "info": {
+    "singularName": "recruiter",
+    "pluralName": "recruiters",
+    "displayName": "Recruiter",
+    "description": "External recruiters"
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "auth0Id": {
+      "type": "string",
+      "required": true,
+      "unique": true
+    },
+    "name": {
+      "type": "string",
+      "required": true
+    },
+    "contactEmail": {
+      "type": "email",
+      "required": true
+    },
+    "status": {
+      "type": "enumeration",
+      "enum": ["active", "inactive"],
+      "default": "active"
+    }
+  }
+}
+

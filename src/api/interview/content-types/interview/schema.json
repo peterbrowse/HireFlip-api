@@ -1,0 +1,51 @@
+{
+  "kind": "collectionType",
+  "collectionName": "interviews",
+  "info": {
+    "singularName": "interview",
+    "pluralName": "interviews",
+    "displayName": "Interview",
+    "description": "Interview slots and statuses"
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "candidate": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::candidate.candidate",
+      "inversedBy": "interviews"
+    },
+    "employer": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::employer.employer",
+      "inversedBy": "interviews"
+    },
+    "cohort": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::cohort.cohort"
+    },
+    "status": {
+      "type": "enumeration",
+      "enum": [
+        "pending",
+        "invited",
+        "scheduled",
+        "completed",
+        "no_show",
+        "rejected"
+      ],
+      "default": "pending"
+    },
+    "scheduledAt": {
+      "type": "datetime"
+    },
+    "feedback": {
+      "type": "text"
+    }
+  }
+}
+

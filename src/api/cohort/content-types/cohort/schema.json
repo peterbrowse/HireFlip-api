@@ -1,0 +1,55 @@
+{
+  "kind": "collectionType",
+  "collectionName": "cohorts",
+  "info": {
+    "singularName": "cohort",
+    "pluralName": "cohorts",
+    "displayName": "Cohort",
+    "description": "Course cohorts / classes"
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "title": {
+      "type": "string",
+      "required": true
+    },
+    "slug": {
+      "type": "uid",
+      "targetField": "title"
+    },
+    "startDate": {
+      "type": "date"
+    },
+    "endDate": {
+      "type": "date"
+    },
+    "capacity": {
+      "type": "integer"
+    },
+    "price": {
+      "type": "decimal",
+      "default": "0"
+    },
+    "employers": {
+      "type": "relation",
+      "relation": "manyToMany",
+      "target": "api::employer.employer",
+      "inversedBy": "cohorts"
+    },
+    "modules": {
+      "type": "relation",
+      "relation": "oneToMany",
+      "target": "api::course-module.course-module",
+      "mappedBy": "cohort"
+    },
+    "enrollments": {
+      "type": "relation",
+      "relation": "oneToMany",
+      "target": "api::enrollment.enrollment",
+      "mappedBy": "cohort"
+    }
+  }
+}
+

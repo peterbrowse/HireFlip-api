@@ -1,0 +1,51 @@
+{
+  "kind": "collectionType",
+  "collectionName": "enrollments",
+  "info": {
+    "singularName": "enrollment",
+    "pluralName": "enrollments",
+    "displayName": "Enrollment",
+    "description": "Candidate enrollment into a cohort"
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "candidate": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::candidate.candidate",
+      "inversedBy": "enrollments"
+    },
+    "cohort": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::cohort.cohort",
+      "inversedBy": "enrollments"
+    },
+    "status": {
+      "type": "enumeration",
+      "enum": [
+        "applied",
+        "paid",
+        "in_progress",
+        "completed",
+        "failed",
+        "refunded"
+      ],
+      "default": "applied"
+    },
+    "paymentStatus": {
+      "type": "enumeration",
+      "enum": ["unpaid", "paid", "refunded"],
+      "default": "unpaid"
+    },
+    "paymentReference": {
+      "type": "string"
+    },
+    "paymentProvider": {
+      "type": "string"
+    }
+  }
+}
+
