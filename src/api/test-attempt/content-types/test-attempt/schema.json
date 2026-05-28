@@ -1,0 +1,95 @@
+{
+  "kind": "collectionType",
+  "collectionName": "test_attempts",
+  "info": {
+    "singularName": "test-attempt",
+    "pluralName": "test-attempts",
+    "displayName": "Test Attempt",
+    "description": "One candidate attempt at a test."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "candidate": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::candidate.candidate"
+    },
+    "enrollment": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::enrollment.enrollment"
+    },
+    "test": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::test.test"
+    },
+    "attemptNumber": {
+      "type": "integer",
+      "required": true
+    },
+    "status": {
+      "type": "enumeration",
+      "enum": [
+        "in_progress",
+        "submitted",
+        "scored",
+        "passed",
+        "failed",
+        "appealed",
+        "void"
+      ],
+      "default": "in_progress",
+      "required": true
+    },
+    "startedAt": {
+      "type": "datetime"
+    },
+    "submittedAt": {
+      "type": "datetime"
+    },
+    "score": {
+      "type": "decimal"
+    },
+    "maxScore": {
+      "type": "decimal"
+    },
+    "passMarkSnapshot": {
+      "type": "decimal"
+    },
+    "passed": {
+      "type": "boolean"
+    },
+    "retryType": {
+      "type": "enumeration",
+      "enum": [
+        "first_attempt",
+        "open_retry",
+        "conditional_retry",
+        "admin_override"
+      ],
+      "default": "first_attempt",
+      "required": true
+    },
+    "retryEligibilityState": {
+      "type": "enumeration",
+      "enum": [
+        "not_assessed",
+        "eligible_open_retry",
+        "eligible_conditional_retry",
+        "not_eligible",
+        "exhausted"
+      ],
+      "default": "not_assessed",
+      "required": true
+    },
+    "timeTakenSeconds": {
+      "type": "integer"
+    },
+    "metadata": {
+      "type": "json"
+    }
+  }
+}

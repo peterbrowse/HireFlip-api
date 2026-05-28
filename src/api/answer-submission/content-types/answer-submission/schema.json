@@ -1,0 +1,56 @@
+{
+  "kind": "collectionType",
+  "collectionName": "answer_submissions",
+  "info": {
+    "singularName": "answer-submission",
+    "pluralName": "answer-submissions",
+    "displayName": "Answer Submission",
+    "description": "Candidate answer submitted during a test attempt."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "candidate": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::candidate.candidate"
+    },
+    "testAttempt": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::test-attempt.test-attempt"
+    },
+    "question": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::question.question"
+    },
+    "answerPayload": {
+      "type": "json"
+    },
+    "submittedAt": {
+      "type": "datetime"
+    },
+    "score": {
+      "type": "decimal"
+    },
+    "feedback": {
+      "type": "text"
+    },
+    "flagState": {
+      "type": "enumeration",
+      "enum": [
+        "none",
+        "flagged",
+        "cleared",
+        "confirmed"
+      ],
+      "default": "none",
+      "required": true
+    },
+    "metadata": {
+      "type": "json"
+    }
+  }
+}

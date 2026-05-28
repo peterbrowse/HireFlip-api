@@ -1,0 +1,69 @@
+{
+  "kind": "collectionType",
+  "collectionName": "assessment_appeals",
+  "info": {
+    "singularName": "assessment-appeal",
+    "pluralName": "assessment-appeals",
+    "displayName": "Assessment Appeal",
+    "description": "Candidate appeal against an answer, test attempt, flag, or assessment outcome."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "candidate": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::candidate.candidate"
+    },
+    "enrollment": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::enrollment.enrollment"
+    },
+    "testAttempt": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::test-attempt.test-attempt"
+    },
+    "answerSubmission": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::answer-submission.answer-submission"
+    },
+    "reason": {
+      "type": "text",
+      "required": true
+    },
+    "status": {
+      "type": "enumeration",
+      "enum": [
+        "submitted",
+        "under_review",
+        "approved",
+        "rejected",
+        "withdrawn"
+      ],
+      "default": "submitted",
+      "required": true
+    },
+    "submittedAt": {
+      "type": "datetime"
+    },
+    "reviewedByAdminId": {
+      "type": "string"
+    },
+    "reviewedAt": {
+      "type": "datetime"
+    },
+    "decision": {
+      "type": "text"
+    },
+    "outcomeAdjustment": {
+      "type": "json"
+    },
+    "metadata": {
+      "type": "json"
+    }
+  }
+}

@@ -1,0 +1,117 @@
+{
+  "kind": "collectionType",
+  "collectionName": "enrollments",
+  "info": {
+    "singularName": "enrollment",
+    "pluralName": "enrollments",
+    "displayName": "Enrollment",
+    "description": "Connects a candidate to a HireFlip class and tracks class-level eligibility state."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "candidate": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::candidate.candidate"
+    },
+    "class": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::class.class"
+    },
+    "status": {
+      "type": "enumeration",
+      "enum": [
+        "waitlisted",
+        "slot_reserved",
+        "enrolled",
+        "active",
+        "completed",
+        "withdrawn",
+        "expired",
+        "refunded",
+        "archived"
+      ],
+      "default": "waitlisted",
+      "required": true
+    },
+    "paymentStatus": {
+      "type": "enumeration",
+      "enum": [
+        "not_required",
+        "pending",
+        "paid",
+        "failed",
+        "partially_refunded",
+        "refunded"
+      ],
+      "default": "pending",
+      "required": true
+    },
+    "completionStatus": {
+      "type": "enumeration",
+      "enum": [
+        "not_started",
+        "in_progress",
+        "completed",
+        "missed_deadline"
+      ],
+      "default": "not_started",
+      "required": true
+    },
+    "passStatus": {
+      "type": "enumeration",
+      "enum": [
+        "not_assessed",
+        "passed",
+        "failed",
+        "appealed"
+      ],
+      "default": "not_assessed",
+      "required": true
+    },
+    "beganClassAt": {
+      "type": "datetime"
+    },
+    "enrolledAt": {
+      "type": "datetime"
+    },
+    "completedAt": {
+      "type": "datetime"
+    },
+    "passedAt": {
+      "type": "datetime"
+    },
+    "interviewGuaranteeWindowStartsAt": {
+      "type": "datetime"
+    },
+    "interviewGuaranteeDeadline": {
+      "type": "datetime"
+    },
+    "qualifyingInterviewsDeliveredCount": {
+      "type": "integer",
+      "default": 0,
+      "required": true
+    },
+    "refundEligibilityState": {
+      "type": "enumeration",
+      "enum": [
+        "not_assessed",
+        "not_eligible",
+        "potentially_eligible",
+        "eligible_25",
+        "eligible_50",
+        "refund_requested",
+        "refund_processed",
+        "forfeited"
+      ],
+      "default": "not_assessed",
+      "required": true
+    },
+    "metadata": {
+      "type": "json"
+    }
+  }
+}

@@ -1,0 +1,70 @@
+{
+  "kind": "collectionType",
+  "collectionName": "tests",
+  "info": {
+    "singularName": "test",
+    "pluralName": "tests",
+    "displayName": "Test",
+    "description": "Assessment attached to a course or module."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "course": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::course.course"
+    },
+    "courseModule": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::course-module.course-module"
+    },
+    "title": {
+      "type": "string",
+      "required": true
+    },
+    "description": {
+      "type": "text"
+    },
+    "timeLimitMinutes": {
+      "type": "integer"
+    },
+    "passMark": {
+      "type": "decimal"
+    },
+    "maxScore": {
+      "type": "decimal"
+    },
+    "attemptLimit": {
+      "type": "integer"
+    },
+    "questionRandomizationEnabled": {
+      "type": "boolean",
+      "default": true,
+      "required": true
+    },
+    "copyPasteRestrictionEnabled": {
+      "type": "boolean",
+      "default": true,
+      "required": true
+    },
+    "status": {
+      "type": "enumeration",
+      "enum": [
+        "draft",
+        "active",
+        "archived"
+      ],
+      "default": "draft",
+      "required": true
+    },
+    "questions": {
+      "type": "relation",
+      "relation": "oneToMany",
+      "target": "api::question.question",
+      "mappedBy": "test"
+    }
+  }
+}

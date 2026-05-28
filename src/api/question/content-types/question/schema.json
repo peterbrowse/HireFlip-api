@@ -1,0 +1,65 @@
+{
+  "kind": "collectionType",
+  "collectionName": "questions",
+  "info": {
+    "singularName": "question",
+    "pluralName": "questions",
+    "displayName": "Question",
+    "description": "Assessment question and scoring definition."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "test": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::test.test",
+      "inversedBy": "questions"
+    },
+    "prompt": {
+      "type": "richtext",
+      "required": true
+    },
+    "questionType": {
+      "type": "enumeration",
+      "enum": [
+        "short_text",
+        "long_text",
+        "single_choice",
+        "multiple_choice",
+        "file_upload",
+        "ai_reviewed",
+        "external"
+      ],
+      "required": true
+    },
+    "options": {
+      "type": "json"
+    },
+    "correctAnswerPayload": {
+      "type": "json"
+    },
+    "scoringRubric": {
+      "type": "json"
+    },
+    "sortOrder": {
+      "type": "integer",
+      "default": 0,
+      "required": true
+    },
+    "randomizationGroup": {
+      "type": "string"
+    },
+    "status": {
+      "type": "enumeration",
+      "enum": [
+        "draft",
+        "active",
+        "archived"
+      ],
+      "default": "draft",
+      "required": true
+    }
+  }
+}

@@ -1,0 +1,83 @@
+{
+  "kind": "collectionType",
+  "collectionName": "course_progress_records",
+  "info": {
+    "singularName": "course-progress",
+    "pluralName": "course-progress-records",
+    "displayName": "Course Progress",
+    "description": "Candidate progress through class, module, material, test, and question milestones."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "candidate": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::candidate.candidate"
+    },
+    "enrollment": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::enrollment.enrollment"
+    },
+    "progressType": {
+      "type": "enumeration",
+      "enum": [
+        "class",
+        "module",
+        "material",
+        "test",
+        "question"
+      ],
+      "required": true
+    },
+    "status": {
+      "type": "enumeration",
+      "enum": [
+        "not_started",
+        "in_progress",
+        "completed",
+        "failed",
+        "skipped"
+      ],
+      "default": "not_started",
+      "required": true
+    },
+    "courseModule": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::course-module.course-module"
+    },
+    "courseMaterial": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::course-material.course-material"
+    },
+    "test": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::test.test"
+    },
+    "question": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::question.question"
+    },
+    "startedAt": {
+      "type": "datetime"
+    },
+    "completedAt": {
+      "type": "datetime"
+    },
+    "score": {
+      "type": "decimal"
+    },
+    "attemptNumber": {
+      "type": "integer"
+    },
+    "metadata": {
+      "type": "json"
+    }
+  }
+}
