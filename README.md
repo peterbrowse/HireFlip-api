@@ -55,6 +55,31 @@ Local development can use Strapi's local upload provider by setting `UPLOAD_PROV
 
 Deployed environments should set `UPLOAD_PROVIDER=aws-s3` and provide the AWS S3 environment variables from `.env.example`.
 
+## Public Interest Protection
+
+The public interest capture endpoint is intended to be called by the homepage
+server, not directly by browsers.
+
+Required deployed config:
+
+```bash
+TURNSTILE_SECRET_KEY=...
+TURNSTILE_ALLOWED_HOSTNAMES=hireflip.work,hireflip-homepage-f9cc7a546756.herokuapp.com
+SERVICE_TOKEN_SHA256_HASHES=...
+```
+
+`TURNSTILE_SECRET_KEY` is the private Cloudflare Turnstile key used for
+server-side token validation. `SERVICE_TOKEN_SHA256_HASHES` should contain
+SHA-256 hashes of service tokens, not raw token values. The homepage sends the
+raw token server-side using `x-hireflip-service-token`.
+
+For local automated testing, Cloudflare's official always-pass dummy secret can
+be used:
+
+```bash
+TURNSTILE_SECRET_KEY=1x0000000000000000000000000000000AA
+```
+
 ## Next API Work
 
 The next step is to rebuild the MVP content model against the roadmap, starting with audit logs and the core candidate/class/course entities.

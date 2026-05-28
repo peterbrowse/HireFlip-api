@@ -1,5 +1,7 @@
 import { factories } from '@strapi/strapi';
-import { validateZodSchema, z } from '@strapi/utils';
+import { errors, validateZodSchema, z } from '@strapi/utils';
+
+const { ApplicationError, ValidationError } = errors;
 
 const optionalString = (maxLength: number) =>
   z.preprocess(
@@ -52,17 +54,100 @@ const registerInterestSchema = z
     }),
     consentWordingVersion: optionalString(80),
     privacyNoticeVersion: optionalString(80),
+    turnstileToken: z.string().trim().min(1).max(2048),
     website: optionalString(240),
   })
   .strict();
 
 const validateRegisterInterest = validateZodSchema(registerInterestSchema);
 
+type TurnstileValidationResponse = {
+  success: boolean;
+  challenge_ts?: string;
+  hostname?: string;
+  action?: string;
+  cdata?: string;
+  'error-codes'?: string[];
+};
+
 type RegisterInterestRequestContext = {
   ipAddress?: string;
   userAgent?: string;
   requestId?: string;
 };
+
+const turnstileActionByLeadType = {
+  candidate_interest: 'candidate_interest',
+  employer_enquiry: 'employer_enquiry',
+  other: 'other_interest',
+  unsupported_region_sector: 'unsupported_region_sector',
+};
+
+const getAllowedTurnstileHostnames = () =>
+  (process.env.TURNSTILE_ALLOWED_HOSTNAMES || '')
+    .split(',')
+    .map((hostname) => hostname.trim().toLowerCase())
+    .filter(Boolean);
+
+const turnstileTestSecrets = new Set([
+  '1x0000000000000000000000000000000AA',
+  '2x0000000000000000000000000000000AA',
+  '3x0000000000000000000000000000000AA',
+]);
+
+async function validateTurnstileToken(token: string, expectedAction: string, remoteIp?: string) {
+  const secret = process.env.TURNSTILE_SECRET_KEY;
+
+  if (!secret) {
+    throw new ApplicationError('Turnstile verification is not configured.');
+  }
+
+  const isTestSecret = turnstileTestSecrets.has(secret);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+
+  try {
+    const response = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
+      body: JSON.stringify({
+        remoteip: remoteIp,
+        response: token,
+        secret,
+      }),
+      headers: {
+        'content-type': 'application/json',
+      },
+      method: 'POST',
+      signal: controller.signal,
+    });
+
+    const result = (await response.json()) as TurnstileValidationResponse;
+
+    if (!response.ok || !result.success) {
+      throw new ValidationError('Verification failed.');
+    }
+
+    if (!isTestSecret && result.action && result.action !== expectedAction) {
+      throw new ValidationError('Verification failed.');
+    }
+
+    const allowedHostnames = getAllowedTurnstileHostnames();
+    const hostname = result.hostname?.toLowerCase();
+
+    if (!isTestSecret && allowedHostnames.length > 0 && (!hostname || !allowedHostnames.includes(hostname))) {
+      throw new ValidationError('Verification failed.');
+    }
+
+    return result;
+  } catch (error) {
+    if (error instanceof ValidationError) {
+      throw error;
+    }
+
+    throw new ApplicationError('Turnstile verification could not be completed.');
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 export default factories.createCoreService('api::public-interest-lead.public-interest-lead', ({ strapi }) => ({
   async registerInterest(input: unknown, requestContext: RegisterInterestRequestContext = {}) {
@@ -71,6 +156,12 @@ export default factories.createCoreService('api::public-interest-lead.public-int
     if (payload.website) {
       return { created: false, documentId: undefined };
     }
+
+    const turnstileValidation = await validateTurnstileToken(
+      payload.turnstileToken,
+      turnstileActionByLeadType[payload.leadType],
+      requestContext.ipAddress
+    );
 
     const now = new Date().toISOString();
     const consentWordingVersion =
@@ -103,6 +194,11 @@ export default factories.createCoreService('api::public-interest-lead.public-int
         request: {
           ipAddress: requestContext.ipAddress,
           userAgent: requestContext.userAgent,
+        },
+        turnstile: {
+          action: turnstileValidation.action,
+          challengeTs: turnstileValidation.challenge_ts,
+          hostname: turnstileValidation.hostname,
         },
       },
     };

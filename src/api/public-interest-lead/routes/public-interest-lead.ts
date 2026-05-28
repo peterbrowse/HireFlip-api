@@ -6,6 +6,14 @@ export default {
       handler: 'public-interest-lead.registerInterest',
       config: {
         auth: false,
+        policies: [
+          {
+            name: 'global::service-token',
+            config: {
+              allowedServices: ['homepage'],
+            },
+          },
+        ],
       },
     },
   ],
