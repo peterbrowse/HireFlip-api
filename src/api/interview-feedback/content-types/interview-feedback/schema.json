@@ -1,0 +1,68 @@
+{
+  "kind": "collectionType",
+  "collectionName": "interview_feedback",
+  "info": {
+    "singularName": "interview-feedback",
+    "pluralName": "interview-feedback-records",
+    "displayName": "Interview Feedback",
+    "description": "Candidate or employer feedback after an interview."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "interview": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::interview.interview"
+    },
+    "submittedByType": {
+      "type": "enumeration",
+      "enum": [
+        "candidate",
+        "employer_contact",
+        "admin",
+        "system"
+      ],
+      "required": true
+    },
+    "submittedById": {
+      "type": "string"
+    },
+    "outcome": {
+      "type": "enumeration",
+      "enum": [
+        "positive",
+        "neutral",
+        "negative",
+        "progressing",
+        "not_progressing",
+        "offer_expected",
+        "unknown"
+      ],
+      "default": "unknown",
+      "required": true
+    },
+    "rating": {
+      "type": "integer"
+    },
+    "notes": {
+      "type": "text"
+    },
+    "strengths": {
+      "type": "text"
+    },
+    "concerns": {
+      "type": "text"
+    },
+    "nextStep": {
+      "type": "text"
+    },
+    "submittedAt": {
+      "type": "datetime"
+    },
+    "metadata": {
+      "type": "json"
+    }
+  }
+}

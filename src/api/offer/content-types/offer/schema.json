@@ -1,0 +1,75 @@
+{
+  "kind": "collectionType",
+  "collectionName": "offers",
+  "info": {
+    "singularName": "offer",
+    "pluralName": "offers",
+    "displayName": "Offer",
+    "description": "Job offer recorded through HireFlip."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "candidate": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::candidate.candidate"
+    },
+    "employer": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::employer.employer"
+    },
+    "interview": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::interview.interview"
+    },
+    "status": {
+      "type": "enumeration",
+      "enum": [
+        "draft",
+        "sent",
+        "accepted",
+        "declined",
+        "withdrawn",
+        "expired"
+      ],
+      "default": "draft",
+      "required": true
+    },
+    "offeredRole": {
+      "type": "string"
+    },
+    "salaryAmountPence": {
+      "type": "integer"
+    },
+    "salaryCurrency": {
+      "type": "string",
+      "default": "GBP"
+    },
+    "salaryPeriod": {
+      "type": "enumeration",
+      "enum": [
+        "annual",
+        "monthly",
+        "hourly",
+        "unknown"
+      ],
+      "default": "annual"
+    },
+    "sentAt": {
+      "type": "datetime"
+    },
+    "acceptedAt": {
+      "type": "datetime"
+    },
+    "declinedAt": {
+      "type": "datetime"
+    },
+    "metadata": {
+      "type": "json"
+    }
+  }
+}

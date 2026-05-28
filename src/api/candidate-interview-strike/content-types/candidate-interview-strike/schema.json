@@ -1,0 +1,73 @@
+{
+  "kind": "collectionType",
+  "collectionName": "candidate_interview_strikes",
+  "info": {
+    "singularName": "candidate-interview-strike",
+    "pluralName": "candidate-interview-strikes",
+    "displayName": "Candidate Interview Strike",
+    "description": "Strike record for candidate no-show or declined confirmed interview."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "candidate": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::candidate.candidate"
+    },
+    "enrollment": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::enrollment.enrollment"
+    },
+    "interview": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::interview.interview"
+    },
+    "reason": {
+      "type": "enumeration",
+      "enum": [
+        "candidate_no_show",
+        "candidate_declined_confirmed_interview",
+        "admin_applied",
+        "other"
+      ],
+      "required": true
+    },
+    "status": {
+      "type": "enumeration",
+      "enum": [
+        "active",
+        "appealed",
+        "upheld",
+        "removed",
+        "expired"
+      ],
+      "default": "active",
+      "required": true
+    },
+    "strikeNumber": {
+      "type": "integer"
+    },
+    "appliedAt": {
+      "type": "datetime"
+    },
+    "appealedAt": {
+      "type": "datetime"
+    },
+    "reviewedByAdminId": {
+      "type": "string"
+    },
+    "reviewedAt": {
+      "type": "datetime"
+    },
+    "reviewDecision": {
+      "type": "text"
+    },
+    "metadata": {
+      "type": "json"
+    }
+  }
+}

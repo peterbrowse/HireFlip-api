@@ -642,6 +642,68 @@ export interface ApiAuditEventAuditEvent extends Struct.CollectionTypeSchema {
   };
 }
 
+export interface ApiCandidateInterviewStrikeCandidateInterviewStrike
+  extends Struct.CollectionTypeSchema {
+  collectionName: 'candidate_interview_strikes';
+  info: {
+    description: 'Strike record for candidate no-show or declined confirmed interview.';
+    displayName: 'Candidate Interview Strike';
+    pluralName: 'candidate-interview-strikes';
+    singularName: 'candidate-interview-strike';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    appealedAt: Schema.Attribute.DateTime;
+    appliedAt: Schema.Attribute.DateTime;
+    candidate: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::candidate.candidate'
+    >;
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    enrollment: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::enrollment.enrollment'
+    >;
+    interview: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::interview.interview'
+    >;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::candidate-interview-strike.candidate-interview-strike'
+    > &
+      Schema.Attribute.Private;
+    metadata: Schema.Attribute.JSON;
+    publishedAt: Schema.Attribute.DateTime;
+    reason: Schema.Attribute.Enumeration<
+      [
+        'candidate_no_show',
+        'candidate_declined_confirmed_interview',
+        'admin_applied',
+        'other',
+      ]
+    > &
+      Schema.Attribute.Required;
+    reviewDecision: Schema.Attribute.Text;
+    reviewedAt: Schema.Attribute.DateTime;
+    reviewedByAdminId: Schema.Attribute.String;
+    status: Schema.Attribute.Enumeration<
+      ['active', 'appealed', 'upheld', 'removed', 'expired']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'active'>;
+    strikeNumber: Schema.Attribute.Integer;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+  };
+}
+
 export interface ApiCandidateCandidate extends Struct.CollectionTypeSchema {
   collectionName: 'candidates';
   info: {
@@ -1171,6 +1233,249 @@ export interface ApiEnrollmentEnrollment extends Struct.CollectionTypeSchema {
     > &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'waitlisted'>;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+  };
+}
+
+export interface ApiInterviewFeedbackInterviewFeedback
+  extends Struct.CollectionTypeSchema {
+  collectionName: 'interview_feedback';
+  info: {
+    description: 'Candidate or employer feedback after an interview.';
+    displayName: 'Interview Feedback';
+    pluralName: 'interview-feedback-records';
+    singularName: 'interview-feedback';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    concerns: Schema.Attribute.Text;
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    interview: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::interview.interview'
+    >;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::interview-feedback.interview-feedback'
+    > &
+      Schema.Attribute.Private;
+    metadata: Schema.Attribute.JSON;
+    nextStep: Schema.Attribute.Text;
+    notes: Schema.Attribute.Text;
+    outcome: Schema.Attribute.Enumeration<
+      [
+        'positive',
+        'neutral',
+        'negative',
+        'progressing',
+        'not_progressing',
+        'offer_expected',
+        'unknown',
+      ]
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'unknown'>;
+    publishedAt: Schema.Attribute.DateTime;
+    rating: Schema.Attribute.Integer;
+    strengths: Schema.Attribute.Text;
+    submittedAt: Schema.Attribute.DateTime;
+    submittedById: Schema.Attribute.String;
+    submittedByType: Schema.Attribute.Enumeration<
+      ['candidate', 'employer_contact', 'admin', 'system']
+    > &
+      Schema.Attribute.Required;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+  };
+}
+
+export interface ApiInterviewSlotInterviewSlot
+  extends Struct.CollectionTypeSchema {
+  collectionName: 'interview_slots';
+  info: {
+    description: 'Employer availability that can be offered or assigned to candidates.';
+    displayName: 'Interview Slot';
+    pluralName: 'interview-slots';
+    singularName: 'interview-slot';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    capacity: Schema.Attribute.Integer &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<1>;
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    employer: Schema.Attribute.Relation<'manyToOne', 'api::employer.employer'>;
+    employerContact: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::employer-contact.employer-contact'
+    >;
+    endTime: Schema.Attribute.DateTime & Schema.Attribute.Required;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::interview-slot.interview-slot'
+    > &
+      Schema.Attribute.Private;
+    locationDetails: Schema.Attribute.Text;
+    locationType: Schema.Attribute.Enumeration<
+      ['online', 'phone', 'in_person', 'to_be_confirmed']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'online'>;
+    meetingUrl: Schema.Attribute.String;
+    metadata: Schema.Attribute.JSON;
+    publishedAt: Schema.Attribute.DateTime;
+    startTime: Schema.Attribute.DateTime & Schema.Attribute.Required;
+    status: Schema.Attribute.Enumeration<
+      [
+        'draft',
+        'available',
+        'offered',
+        'held',
+        'booked',
+        'completed',
+        'cancelled',
+        'expired',
+      ]
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'available'>;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+  };
+}
+
+export interface ApiInterviewInterview extends Struct.CollectionTypeSchema {
+  collectionName: 'interviews';
+  info: {
+    description: 'Scheduled candidate interview with an employer.';
+    displayName: 'Interview';
+    pluralName: 'interviews';
+    singularName: 'interview';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    candidate: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::candidate.candidate'
+    >;
+    candidateStrikeApplied: Schema.Attribute.Boolean &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<false>;
+    completedAt: Schema.Attribute.DateTime;
+    confirmedAt: Schema.Attribute.DateTime;
+    countsTowardGuarantee: Schema.Attribute.Boolean &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<false>;
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    employer: Schema.Attribute.Relation<'manyToOne', 'api::employer.employer'>;
+    employerCancellation: Schema.Attribute.Boolean &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<false>;
+    employerContact: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::employer-contact.employer-contact'
+    >;
+    enrollment: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::enrollment.enrollment'
+    >;
+    interviewSlot: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::interview-slot.interview-slot'
+    >;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::interview.interview'
+    > &
+      Schema.Attribute.Private;
+    metadata: Schema.Attribute.JSON;
+    publishedAt: Schema.Attribute.DateTime;
+    scheduledEndTime: Schema.Attribute.DateTime;
+    scheduledStartTime: Schema.Attribute.DateTime;
+    status: Schema.Attribute.Enumeration<
+      [
+        'offered',
+        'candidate_selected',
+        'confirmed',
+        'completed',
+        'candidate_no_show',
+        'candidate_declined',
+        'employer_cancelled',
+        'rescheduled',
+        'cancelled',
+      ]
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'offered'>;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+  };
+}
+
+export interface ApiOfferOffer extends Struct.CollectionTypeSchema {
+  collectionName: 'offers';
+  info: {
+    description: 'Job offer recorded through HireFlip.';
+    displayName: 'Offer';
+    pluralName: 'offers';
+    singularName: 'offer';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    acceptedAt: Schema.Attribute.DateTime;
+    candidate: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::candidate.candidate'
+    >;
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    declinedAt: Schema.Attribute.DateTime;
+    employer: Schema.Attribute.Relation<'manyToOne', 'api::employer.employer'>;
+    interview: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::interview.interview'
+    >;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<'oneToMany', 'api::offer.offer'> &
+      Schema.Attribute.Private;
+    metadata: Schema.Attribute.JSON;
+    offeredRole: Schema.Attribute.String;
+    publishedAt: Schema.Attribute.DateTime;
+    salaryAmountPence: Schema.Attribute.Integer;
+    salaryCurrency: Schema.Attribute.String & Schema.Attribute.DefaultTo<'GBP'>;
+    salaryPeriod: Schema.Attribute.Enumeration<
+      ['annual', 'monthly', 'hourly', 'unknown']
+    > &
+      Schema.Attribute.DefaultTo<'annual'>;
+    sentAt: Schema.Attribute.DateTime;
+    status: Schema.Attribute.Enumeration<
+      ['draft', 'sent', 'accepted', 'declined', 'withdrawn', 'expired']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'draft'>;
     updatedAt: Schema.Attribute.DateTime;
     updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
@@ -2155,6 +2460,7 @@ declare module '@strapi/strapi' {
       'api::answer-submission.answer-submission': ApiAnswerSubmissionAnswerSubmission;
       'api::assessment-appeal.assessment-appeal': ApiAssessmentAppealAssessmentAppeal;
       'api::audit-event.audit-event': ApiAuditEventAuditEvent;
+      'api::candidate-interview-strike.candidate-interview-strike': ApiCandidateInterviewStrikeCandidateInterviewStrike;
       'api::candidate.candidate': ApiCandidateCandidate;
       'api::class.class': ApiClassClass;
       'api::course-material.course-material': ApiCourseMaterialCourseMaterial;
@@ -2164,6 +2470,10 @@ declare module '@strapi/strapi' {
       'api::employer-contact.employer-contact': ApiEmployerContactEmployerContact;
       'api::employer.employer': ApiEmployerEmployer;
       'api::enrollment.enrollment': ApiEnrollmentEnrollment;
+      'api::interview-feedback.interview-feedback': ApiInterviewFeedbackInterviewFeedback;
+      'api::interview-slot.interview-slot': ApiInterviewSlotInterviewSlot;
+      'api::interview.interview': ApiInterviewInterview;
+      'api::offer.offer': ApiOfferOffer;
       'api::payment-webhook-event.payment-webhook-event': ApiPaymentWebhookEventPaymentWebhookEvent;
       'api::payment.payment': ApiPaymentPayment;
       'api::question.question': ApiQuestionQuestion;

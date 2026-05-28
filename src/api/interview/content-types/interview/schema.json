@@ -1,0 +1,86 @@
+{
+  "kind": "collectionType",
+  "collectionName": "interviews",
+  "info": {
+    "singularName": "interview",
+    "pluralName": "interviews",
+    "displayName": "Interview",
+    "description": "Scheduled candidate interview with an employer."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "candidate": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::candidate.candidate"
+    },
+    "employer": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::employer.employer"
+    },
+    "employerContact": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::employer-contact.employer-contact"
+    },
+    "enrollment": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::enrollment.enrollment"
+    },
+    "interviewSlot": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::interview-slot.interview-slot"
+    },
+    "status": {
+      "type": "enumeration",
+      "enum": [
+        "offered",
+        "candidate_selected",
+        "confirmed",
+        "completed",
+        "candidate_no_show",
+        "candidate_declined",
+        "employer_cancelled",
+        "rescheduled",
+        "cancelled"
+      ],
+      "default": "offered",
+      "required": true
+    },
+    "scheduledStartTime": {
+      "type": "datetime"
+    },
+    "scheduledEndTime": {
+      "type": "datetime"
+    },
+    "confirmedAt": {
+      "type": "datetime"
+    },
+    "completedAt": {
+      "type": "datetime"
+    },
+    "countsTowardGuarantee": {
+      "type": "boolean",
+      "default": false,
+      "required": true
+    },
+    "candidateStrikeApplied": {
+      "type": "boolean",
+      "default": false,
+      "required": true
+    },
+    "employerCancellation": {
+      "type": "boolean",
+      "default": false,
+      "required": true
+    },
+    "metadata": {
+      "type": "json"
+    }
+  }
+}

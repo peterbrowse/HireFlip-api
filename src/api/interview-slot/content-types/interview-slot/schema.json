@@ -1,0 +1,73 @@
+{
+  "kind": "collectionType",
+  "collectionName": "interview_slots",
+  "info": {
+    "singularName": "interview-slot",
+    "pluralName": "interview-slots",
+    "displayName": "Interview Slot",
+    "description": "Employer availability that can be offered or assigned to candidates."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "employer": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::employer.employer"
+    },
+    "employerContact": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::employer-contact.employer-contact"
+    },
+    "startTime": {
+      "type": "datetime",
+      "required": true
+    },
+    "endTime": {
+      "type": "datetime",
+      "required": true
+    },
+    "locationType": {
+      "type": "enumeration",
+      "enum": [
+        "online",
+        "phone",
+        "in_person",
+        "to_be_confirmed"
+      ],
+      "default": "online",
+      "required": true
+    },
+    "locationDetails": {
+      "type": "text"
+    },
+    "meetingUrl": {
+      "type": "string"
+    },
+    "status": {
+      "type": "enumeration",
+      "enum": [
+        "draft",
+        "available",
+        "offered",
+        "held",
+        "booked",
+        "completed",
+        "cancelled",
+        "expired"
+      ],
+      "default": "available",
+      "required": true
+    },
+    "capacity": {
+      "type": "integer",
+      "default": 1,
+      "required": true
+    },
+    "metadata": {
+      "type": "json"
+    }
+  }
+}
