@@ -64,7 +64,7 @@ Required deployed config:
 
 ```bash
 TURNSTILE_SECRET_KEY=...
-TURNSTILE_ALLOWED_HOSTNAMES=hireflip.work,hireflip-homepage-f9cc7a546756.herokuapp.com
+TURNSTILE_ALLOWED_HOSTNAMES=hireflip.work
 SERVICE_TOKEN_SHA256_HASHES=...
 ```
 
@@ -72,6 +72,12 @@ SERVICE_TOKEN_SHA256_HASHES=...
 server-side token validation. `SERVICE_TOKEN_SHA256_HASHES` should contain
 SHA-256 hashes of service tokens, not raw token values. The homepage sends the
 raw token server-side using `x-hireflip-service-token`.
+
+The Turnstile widget should be configured for Cloudflare-owned hostnames only.
+The launch hostname is `hireflip.work`. If a preview environment needs
+Turnstile later, create a Cloudflare-owned preview hostname such as
+`preview.hireflip.work` and add it to both the Turnstile widget and
+`TURNSTILE_ALLOWED_HOSTNAMES`.
 
 For local automated testing, Cloudflare's official always-pass dummy secret can
 be used:
