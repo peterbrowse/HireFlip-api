@@ -1,8 +1,8 @@
 {
-  "name": "hire-flip-api",
+  "name": "hireflip-api",
   "version": "0.1.0",
   "private": true,
-  "description": "A Strapi application",
+  "description": "HireFlip core Strapi API",
   "scripts": {
     "build": "strapi build",
     "console": "strapi console",
@@ -17,6 +17,7 @@
   "dependencies": {
     "@strapi/plugin-cloud": "5.19.0",
     "@strapi/plugin-users-permissions": "5.19.0",
+    "@strapi/provider-upload-aws-s3": "5.19.0",
     "@strapi/strapi": "5.19.0",
     "pg": "8.8.0",
     "react": "^18.0.0",

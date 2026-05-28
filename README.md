@@ -1,61 +1,58 @@
-# 🚀 Getting started with Strapi
+# HireFlip API
 
-Strapi comes with a full featured [Command Line Interface](https://docs.strapi.io/dev-docs/cli) (CLI) which lets you scaffold and manage your project in seconds.
+Core Strapi API for HireFlip.
 
-### `develop`
+This repo has been reset to a clean Strapi 5 baseline. The previous broken API attempt is preserved on the backup branch:
 
-Start your Strapi application with autoReload enabled. [Learn more](https://docs.strapi.io/dev-docs/cli#strapi-develop)
+`backup/pre-api-reset-2026-05-28`
 
-```
+## Stack
+
+- Strapi 5
+- TypeScript
+- PostgreSQL for deployed environments
+- SQLite for local development if `DATABASE_CLIENT` is left as `sqlite`
+- AWS S3 for private product file storage
+- Cloudinary later for public image/video optimisation and transformations
+
+## Local Setup
+
+```bash
+npm install
+cp .env.example .env
 npm run develop
-# or
-yarn develop
 ```
 
-### `start`
+Generate local secrets with:
 
-Start your Strapi application with autoReload disabled. [Learn more](https://docs.strapi.io/dev-docs/cli#strapi-start)
-
-```
-npm run start
-# or
-yarn start
+```bash
+openssl rand -base64 32
 ```
 
-### `build`
+Never commit `.env` files.
 
-Build your admin panel. [Learn more](https://docs.strapi.io/dev-docs/cli#strapi-build)
+## Useful Commands
 
-```
+```bash
+npm run develop
 npm run build
-# or
-yarn build
+npm run start
 ```
 
-## ⚙️ Deployment
+## Storage Direction
 
-Strapi gives you many possible deployment options for your project including [Strapi Cloud](https://cloud.strapi.io). Browse the [deployment section of the documentation](https://docs.strapi.io/dev-docs/deployment) to find the best solution for your use case.
+Private product files should use S3:
 
-```
-yarn strapi deploy
-```
+- generated CV PDFs
+- course materials and downloads
+- candidate activity reports
+- privacy/data-export bundles
+- assessment appeal and dispute attachments
 
-## 📚 Learn more
+Local development can use Strapi's local upload provider by setting `UPLOAD_PROVIDER=local`.
 
-- [Resource center](https://strapi.io/resource-center) - Strapi resource center.
-- [Strapi documentation](https://docs.strapi.io) - Official Strapi documentation.
-- [Strapi tutorials](https://strapi.io/tutorials) - List of tutorials made by the core team and the community.
-- [Strapi blog](https://strapi.io/blog) - Official Strapi blog containing articles made by the Strapi team and the community.
-- [Changelog](https://strapi.io/changelog) - Find out about the Strapi product updates, new features and general improvements.
+Deployed environments should set `UPLOAD_PROVIDER=aws-s3` and provide the AWS S3 environment variables from `.env.example`.
 
-Feel free to check out the [Strapi GitHub repository](https://github.com/strapi/strapi). Your feedback and contributions are welcome!
+## Next API Work
 
-## ✨ Community
-
-- [Discord](https://discord.strapi.io) - Come chat with the Strapi community including the core team.
-- [Forum](https://forum.strapi.io/) - Place to discuss, ask questions and find answers, show your Strapi project and get feedback or just talk with other Community members.
-- [Awesome Strapi](https://github.com/strapi/awesome-strapi) - A curated list of awesome things related to Strapi.
-
----
-
-<sub>🤫 Psst! [Strapi is hiring](https://strapi.io/careers).</sub>
+The next step is to rebuild the MVP content model against the roadmap, starting with audit logs and the core candidate/class/course entities.

@@ -5,6 +5,7 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 lerna-debug.log*
+.DS_Store
 
 # Diagnostic reports (https://nodejs.org/api/report.html)
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
@@ -69,6 +70,13 @@ web_modules/
 .env
 .env.*
 !.env.example
+
+# Strapi local/generated state
+.tmp/
+.strapi/
+.strapi-updater.json
+public/uploads/*
+!public/uploads/.gitkeep
 
 # parcel-bundler cache (https://parceljs.org/)
 .cache

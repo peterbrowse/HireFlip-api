@@ -1,7 +1,9 @@
 import path from 'path';
 
 export default ({ env }) => {
-  const client = env('DATABASE_CLIENT', 'sqlite');
+  const hasDatabaseUrl = Boolean(env('DATABASE_URL'));
+  const client = env('DATABASE_CLIENT', hasDatabaseUrl ? 'postgres' : 'sqlite');
+  const useSsl = env.bool('DATABASE_SSL', env('NODE_ENV') === 'production' && hasDatabaseUrl);
 
   const connections = {
     mysql: {
@@ -11,7 +13,7 @@ export default ({ env }) => {
         database: env('DATABASE_NAME', 'strapi'),
         user: env('DATABASE_USERNAME', 'strapi'),
         password: env('DATABASE_PASSWORD', 'strapi'),
-        ssl: env.bool('DATABASE_SSL', false) && {
+        ssl: useSsl && {
           key: env('DATABASE_SSL_KEY', undefined),
           cert: env('DATABASE_SSL_CERT', undefined),
           ca: env('DATABASE_SSL_CA', undefined),
@@ -30,7 +32,7 @@ export default ({ env }) => {
         database: env('DATABASE_NAME', 'strapi'),
         user: env('DATABASE_USERNAME', 'strapi'),
         password: env('DATABASE_PASSWORD', 'strapi'),
-        ssl: env.bool('DATABASE_SSL', false) && {
+        ssl: useSsl && {
           key: env('DATABASE_SSL_KEY', undefined),
           cert: env('DATABASE_SSL_CERT', undefined),
           ca: env('DATABASE_SSL_CA', undefined),
