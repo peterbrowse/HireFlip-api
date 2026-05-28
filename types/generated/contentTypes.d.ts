@@ -1177,6 +1177,127 @@ export interface ApiEnrollmentEnrollment extends Struct.CollectionTypeSchema {
   };
 }
 
+export interface ApiPaymentWebhookEventPaymentWebhookEvent
+  extends Struct.CollectionTypeSchema {
+  collectionName: 'payment_webhook_events';
+  info: {
+    description: 'Recorded payment-provider webhook/event state received through the payment service.';
+    displayName: 'Payment Webhook Event';
+    pluralName: 'payment-webhook-events';
+    singularName: 'payment-webhook-event';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    eventType: Schema.Attribute.String & Schema.Attribute.Required;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::payment-webhook-event.payment-webhook-event'
+    > &
+      Schema.Attribute.Private;
+    metadata: Schema.Attribute.JSON;
+    payload: Schema.Attribute.JSON;
+    payment: Schema.Attribute.Relation<'manyToOne', 'api::payment.payment'>;
+    paymentProvider: Schema.Attribute.Enumeration<['stripe']> &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'stripe'>;
+    processedAt: Schema.Attribute.DateTime;
+    processingError: Schema.Attribute.Text;
+    providerEventId: Schema.Attribute.String &
+      Schema.Attribute.Required &
+      Schema.Attribute.Unique;
+    publishedAt: Schema.Attribute.DateTime;
+    receivedAt: Schema.Attribute.DateTime;
+    refund: Schema.Attribute.Relation<'manyToOne', 'api::refund.refund'>;
+    status: Schema.Attribute.Enumeration<
+      ['received', 'processed', 'ignored', 'failed']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'received'>;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+  };
+}
+
+export interface ApiPaymentPayment extends Struct.CollectionTypeSchema {
+  collectionName: 'payments';
+  info: {
+    description: 'Internal product payment state, without raw card data.';
+    displayName: 'Payment';
+    pluralName: 'payments';
+    singularName: 'payment';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    amountPence: Schema.Attribute.Integer & Schema.Attribute.Required;
+    cancelledAt: Schema.Attribute.DateTime;
+    candidate: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::candidate.candidate'
+    >;
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    createdByService: Schema.Attribute.String;
+    currency: Schema.Attribute.String &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'GBP'>;
+    enrollment: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::enrollment.enrollment'
+    >;
+    failedAt: Schema.Attribute.DateTime;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::payment.payment'
+    > &
+      Schema.Attribute.Private;
+    metadata: Schema.Attribute.JSON;
+    paidAt: Schema.Attribute.DateTime;
+    paymentProvider: Schema.Attribute.Enumeration<['stripe']> &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'stripe'>;
+    paymentType: Schema.Attribute.Enumeration<
+      ['course_payment', 'subscription', 'other']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'course_payment'>;
+    providerCheckoutSessionId: Schema.Attribute.String &
+      Schema.Attribute.Unique;
+    providerCustomerId: Schema.Attribute.String;
+    providerPaymentIntentId: Schema.Attribute.String & Schema.Attribute.Unique;
+    publishedAt: Schema.Attribute.DateTime;
+    slotReservationExpiresAt: Schema.Attribute.DateTime;
+    status: Schema.Attribute.Enumeration<
+      [
+        'draft',
+        'checkout_created',
+        'pending',
+        'paid',
+        'failed',
+        'cancelled',
+        'expired',
+        'partially_refunded',
+        'refunded',
+      ]
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'draft'>;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+  };
+}
+
 export interface ApiQuestionQuestion extends Struct.CollectionTypeSchema {
   collectionName: 'questions';
   info: {
@@ -1223,6 +1344,82 @@ export interface ApiQuestionQuestion extends Struct.CollectionTypeSchema {
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'draft'>;
     test: Schema.Attribute.Relation<'manyToOne', 'api::test.test'>;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+  };
+}
+
+export interface ApiRefundRefund extends Struct.CollectionTypeSchema {
+  collectionName: 'refunds';
+  info: {
+    description: 'Internal refund state linked to guarantee and payment workflows.';
+    displayName: 'Refund';
+    pluralName: 'refunds';
+    singularName: 'refund';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    amountPence: Schema.Attribute.Integer & Schema.Attribute.Required;
+    approvedAt: Schema.Attribute.DateTime;
+    candidate: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::candidate.candidate'
+    >;
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    currency: Schema.Attribute.String &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'GBP'>;
+    eligibilitySource: Schema.Attribute.Enumeration<
+      [
+        'interview_guarantee',
+        'admin_override',
+        'candidate_request',
+        'payment_error',
+        'other',
+      ]
+    >;
+    enrollment: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::enrollment.enrollment'
+    >;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::refund.refund'
+    > &
+      Schema.Attribute.Private;
+    metadata: Schema.Attribute.JSON;
+    payment: Schema.Attribute.Relation<'manyToOne', 'api::payment.payment'>;
+    paymentProvider: Schema.Attribute.Enumeration<['stripe']> &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'stripe'>;
+    processedAt: Schema.Attribute.DateTime;
+    providerRefundId: Schema.Attribute.String & Schema.Attribute.Unique;
+    publishedAt: Schema.Attribute.DateTime;
+    qualifyingInterviewsDeliveredCount: Schema.Attribute.Integer;
+    reason: Schema.Attribute.Text;
+    refundPercentage: Schema.Attribute.Decimal;
+    requestedAt: Schema.Attribute.DateTime;
+    status: Schema.Attribute.Enumeration<
+      [
+        'draft',
+        'requested',
+        'approved',
+        'rejected',
+        'submitted_to_provider',
+        'processing',
+        'completed',
+        'failed',
+        'cancelled',
+      ]
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'draft'>;
     updatedAt: Schema.Attribute.DateTime;
     updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
@@ -1967,7 +2164,10 @@ declare module '@strapi/strapi' {
       'api::employer-contact.employer-contact': ApiEmployerContactEmployerContact;
       'api::employer.employer': ApiEmployerEmployer;
       'api::enrollment.enrollment': ApiEnrollmentEnrollment;
+      'api::payment-webhook-event.payment-webhook-event': ApiPaymentWebhookEventPaymentWebhookEvent;
+      'api::payment.payment': ApiPaymentPayment;
       'api::question.question': ApiQuestionQuestion;
+      'api::refund.refund': ApiRefundRefund;
       'api::stored-file.stored-file': ApiStoredFileStoredFile;
       'api::test-attempt.test-attempt': ApiTestAttemptTestAttempt;
       'api::test.test': ApiTestTest;

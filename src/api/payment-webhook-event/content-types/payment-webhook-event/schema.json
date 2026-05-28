@@ -1,0 +1,68 @@
+{
+  "kind": "collectionType",
+  "collectionName": "payment_webhook_events",
+  "info": {
+    "singularName": "payment-webhook-event",
+    "pluralName": "payment-webhook-events",
+    "displayName": "Payment Webhook Event",
+    "description": "Recorded payment-provider webhook/event state received through the payment service."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "paymentProvider": {
+      "type": "enumeration",
+      "enum": [
+        "stripe"
+      ],
+      "default": "stripe",
+      "required": true
+    },
+    "providerEventId": {
+      "type": "string",
+      "required": true,
+      "unique": true
+    },
+    "eventType": {
+      "type": "string",
+      "required": true
+    },
+    "status": {
+      "type": "enumeration",
+      "enum": [
+        "received",
+        "processed",
+        "ignored",
+        "failed"
+      ],
+      "default": "received",
+      "required": true
+    },
+    "payment": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::payment.payment"
+    },
+    "refund": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::refund.refund"
+    },
+    "receivedAt": {
+      "type": "datetime"
+    },
+    "processedAt": {
+      "type": "datetime"
+    },
+    "payload": {
+      "type": "json"
+    },
+    "processingError": {
+      "type": "text"
+    },
+    "metadata": {
+      "type": "json"
+    }
+  }
+}

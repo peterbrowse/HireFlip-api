@@ -1,0 +1,98 @@
+{
+  "kind": "collectionType",
+  "collectionName": "refunds",
+  "info": {
+    "singularName": "refund",
+    "pluralName": "refunds",
+    "displayName": "Refund",
+    "description": "Internal refund state linked to guarantee and payment workflows."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "payment": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::payment.payment"
+    },
+    "candidate": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::candidate.candidate"
+    },
+    "enrollment": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::enrollment.enrollment"
+    },
+    "paymentProvider": {
+      "type": "enumeration",
+      "enum": [
+        "stripe"
+      ],
+      "default": "stripe",
+      "required": true
+    },
+    "status": {
+      "type": "enumeration",
+      "enum": [
+        "draft",
+        "requested",
+        "approved",
+        "rejected",
+        "submitted_to_provider",
+        "processing",
+        "completed",
+        "failed",
+        "cancelled"
+      ],
+      "default": "draft",
+      "required": true
+    },
+    "amountPence": {
+      "type": "integer",
+      "required": true
+    },
+    "currency": {
+      "type": "string",
+      "default": "GBP",
+      "required": true
+    },
+    "refundPercentage": {
+      "type": "decimal"
+    },
+    "reason": {
+      "type": "text"
+    },
+    "eligibilitySource": {
+      "type": "enumeration",
+      "enum": [
+        "interview_guarantee",
+        "admin_override",
+        "candidate_request",
+        "payment_error",
+        "other"
+      ]
+    },
+    "qualifyingInterviewsDeliveredCount": {
+      "type": "integer"
+    },
+    "providerRefundId": {
+      "type": "string",
+      "unique": true
+    },
+    "requestedAt": {
+      "type": "datetime"
+    },
+    "approvedAt": {
+      "type": "datetime"
+    },
+    "processedAt": {
+      "type": "datetime"
+    },
+    "metadata": {
+      "type": "json"
+    }
+  }
+}

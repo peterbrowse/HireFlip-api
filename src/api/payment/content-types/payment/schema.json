@@ -1,0 +1,97 @@
+{
+  "kind": "collectionType",
+  "collectionName": "payments",
+  "info": {
+    "singularName": "payment",
+    "pluralName": "payments",
+    "displayName": "Payment",
+    "description": "Internal product payment state, without raw card data."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "candidate": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::candidate.candidate"
+    },
+    "enrollment": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::enrollment.enrollment"
+    },
+    "paymentProvider": {
+      "type": "enumeration",
+      "enum": [
+        "stripe"
+      ],
+      "default": "stripe",
+      "required": true
+    },
+    "paymentType": {
+      "type": "enumeration",
+      "enum": [
+        "course_payment",
+        "subscription",
+        "other"
+      ],
+      "default": "course_payment",
+      "required": true
+    },
+    "status": {
+      "type": "enumeration",
+      "enum": [
+        "draft",
+        "checkout_created",
+        "pending",
+        "paid",
+        "failed",
+        "cancelled",
+        "expired",
+        "partially_refunded",
+        "refunded"
+      ],
+      "default": "draft",
+      "required": true
+    },
+    "amountPence": {
+      "type": "integer",
+      "required": true
+    },
+    "currency": {
+      "type": "string",
+      "default": "GBP",
+      "required": true
+    },
+    "providerCheckoutSessionId": {
+      "type": "string",
+      "unique": true
+    },
+    "providerPaymentIntentId": {
+      "type": "string",
+      "unique": true
+    },
+    "providerCustomerId": {
+      "type": "string"
+    },
+    "slotReservationExpiresAt": {
+      "type": "datetime"
+    },
+    "createdByService": {
+      "type": "string"
+    },
+    "paidAt": {
+      "type": "datetime"
+    },
+    "failedAt": {
+      "type": "datetime"
+    },
+    "cancelledAt": {
+      "type": "datetime"
+    },
+    "metadata": {
+      "type": "json"
+    }
+  }
+}
