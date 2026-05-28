@@ -1,0 +1,64 @@
+{
+  "kind": "collectionType",
+  "collectionName": "courses",
+  "info": {
+    "singularName": "course",
+    "pluralName": "courses",
+    "displayName": "Course",
+    "description": "A versioned HireFlip course definition."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "name": {
+      "type": "string",
+      "required": true
+    },
+    "description": {
+      "type": "text"
+    },
+    "sector": {
+      "type": "string"
+    },
+    "version": {
+      "type": "string",
+      "required": true
+    },
+    "sourceType": {
+      "type": "enumeration",
+      "enum": [
+        "internal",
+        "white_label",
+        "external"
+      ],
+      "default": "internal",
+      "required": true
+    },
+    "sourceReference": {
+      "type": "string"
+    },
+    "status": {
+      "type": "enumeration",
+      "enum": [
+        "draft",
+        "active",
+        "archived"
+      ],
+      "default": "draft",
+      "required": true
+    },
+    "modules": {
+      "type": "relation",
+      "relation": "oneToMany",
+      "target": "api::course-module.course-module",
+      "mappedBy": "course"
+    },
+    "classes": {
+      "type": "relation",
+      "relation": "oneToMany",
+      "target": "api::class.class",
+      "mappedBy": "course"
+    }
+  }
+}

@@ -1,0 +1,73 @@
+{
+  "kind": "collectionType",
+  "collectionName": "employers",
+  "info": {
+    "singularName": "employer",
+    "pluralName": "employers",
+    "displayName": "Employer",
+    "description": "Companies participating in HireFlip hiring workflows."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "companyName": {
+      "type": "string",
+      "required": true
+    },
+    "status": {
+      "type": "enumeration",
+      "enum": [
+        "prospect",
+        "invited",
+        "active",
+        "paused",
+        "archived"
+      ],
+      "default": "prospect",
+      "required": true
+    },
+    "region": {
+      "type": "string"
+    },
+    "sectorInterests": {
+      "type": "json"
+    },
+    "roleInterests": {
+      "type": "json"
+    },
+    "candidateSelectionPreference": {
+      "type": "enumeration",
+      "enum": [
+        "not_set",
+        "manual_masked_cv_review",
+        "automated_matching"
+      ],
+      "default": "not_set",
+      "required": true
+    },
+    "interviewCommitmentVolume": {
+      "type": "integer"
+    },
+    "interviewCommitmentCadence": {
+      "type": "enumeration",
+      "enum": [
+        "not_set",
+        "quarterly",
+        "biannually",
+        "annually"
+      ],
+      "default": "not_set",
+      "required": true
+    },
+    "notes": {
+      "type": "text"
+    },
+    "contacts": {
+      "type": "relation",
+      "relation": "oneToMany",
+      "target": "api::employer-contact.employer-contact",
+      "mappedBy": "employer"
+    }
+  }
+}

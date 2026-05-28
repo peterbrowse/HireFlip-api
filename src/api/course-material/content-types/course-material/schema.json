@@ -1,0 +1,74 @@
+{
+  "kind": "collectionType",
+  "collectionName": "course_materials",
+  "info": {
+    "singularName": "course-material",
+    "pluralName": "course-materials",
+    "displayName": "Course Material",
+    "description": "Learning material inside a course module."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "module": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::course-module.course-module",
+      "inversedBy": "materials"
+    },
+    "title": {
+      "type": "string",
+      "required": true
+    },
+    "materialType": {
+      "type": "enumeration",
+      "enum": [
+        "text",
+        "video",
+        "file_download",
+        "link",
+        "embedded_content",
+        "external_white_label"
+      ],
+      "required": true
+    },
+    "body": {
+      "type": "richtext"
+    },
+    "url": {
+      "type": "string"
+    },
+    "storedFile": {
+      "type": "relation",
+      "relation": "oneToOne",
+      "target": "api::stored-file.stored-file"
+    },
+    "sortOrder": {
+      "type": "integer",
+      "default": 0,
+      "required": true
+    },
+    "required": {
+      "type": "boolean",
+      "default": true,
+      "required": true
+    },
+    "estimatedDurationMinutes": {
+      "type": "integer"
+    },
+    "sourceReference": {
+      "type": "string"
+    },
+    "status": {
+      "type": "enumeration",
+      "enum": [
+        "draft",
+        "active",
+        "archived"
+      ],
+      "default": "draft",
+      "required": true
+    }
+  }
+}

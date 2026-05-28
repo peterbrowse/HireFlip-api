@@ -1,0 +1,91 @@
+{
+  "kind": "collectionType",
+  "collectionName": "candidates",
+  "info": {
+    "singularName": "candidate",
+    "pluralName": "candidates",
+    "displayName": "Candidate",
+    "description": "People interested in, enrolled in, or progressed through HireFlip classes."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "authProvider": {
+      "type": "enumeration",
+      "enum": [
+        "auth0",
+        "manual",
+        "unknown"
+      ],
+      "default": "unknown",
+      "required": true
+    },
+    "authIdentityId": {
+      "type": "string",
+      "unique": true
+    },
+    "email": {
+      "type": "email",
+      "required": true,
+      "unique": true
+    },
+    "firstName": {
+      "type": "string"
+    },
+    "lastName": {
+      "type": "string"
+    },
+    "phone": {
+      "type": "string"
+    },
+    "status": {
+      "type": "enumeration",
+      "enum": [
+        "interest_registered",
+        "account_created",
+        "waitlisted",
+        "slot_reserved",
+        "paid",
+        "in_class",
+        "course_completed",
+        "passed",
+        "failed",
+        "interview_phase",
+        "hired",
+        "refunded",
+        "archived"
+      ],
+      "default": "interest_registered",
+      "required": true
+    },
+    "region": {
+      "type": "string"
+    },
+    "sector": {
+      "type": "string"
+    },
+    "recruitmentPlatformVisibility": {
+      "type": "enumeration",
+      "enum": [
+        "not_set",
+        "visible",
+        "hidden"
+      ],
+      "default": "not_set",
+      "required": true
+    },
+    "profileSettings": {
+      "type": "json"
+    },
+    "notificationPreferences": {
+      "type": "json"
+    },
+    "registeredInterestAt": {
+      "type": "datetime"
+    },
+    "accountCreatedAt": {
+      "type": "datetime"
+    }
+  }
+}

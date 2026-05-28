@@ -1,0 +1,71 @@
+{
+  "kind": "collectionType",
+  "collectionName": "employer_contacts",
+  "info": {
+    "singularName": "employer-contact",
+    "pluralName": "employer-contacts",
+    "displayName": "Employer Contact",
+    "description": "Nominated contacts who manage employer participation and interview workflows."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "employer": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::employer.employer",
+      "inversedBy": "contacts"
+    },
+    "authProvider": {
+      "type": "enumeration",
+      "enum": [
+        "auth0",
+        "manual",
+        "unknown"
+      ],
+      "default": "unknown",
+      "required": true
+    },
+    "authIdentityId": {
+      "type": "string",
+      "unique": true
+    },
+    "email": {
+      "type": "email",
+      "required": true
+    },
+    "firstName": {
+      "type": "string"
+    },
+    "lastName": {
+      "type": "string"
+    },
+    "phone": {
+      "type": "string"
+    },
+    "roleTitle": {
+      "type": "string"
+    },
+    "status": {
+      "type": "enumeration",
+      "enum": [
+        "invited",
+        "active",
+        "disabled",
+        "archived"
+      ],
+      "default": "invited",
+      "required": true
+    },
+    "notificationPreferences": {
+      "type": "json"
+    },
+    "invitedAt": {
+      "type": "datetime"
+    },
+    "accountCreatedAt": {
+      "type": "datetime"
+    }
+  }
+}

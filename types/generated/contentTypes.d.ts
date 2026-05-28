@@ -537,6 +537,386 @@ export interface ApiAuditEventAuditEvent extends Struct.CollectionTypeSchema {
   };
 }
 
+export interface ApiCandidateCandidate extends Struct.CollectionTypeSchema {
+  collectionName: 'candidates';
+  info: {
+    description: 'People interested in, enrolled in, or progressed through HireFlip classes.';
+    displayName: 'Candidate';
+    pluralName: 'candidates';
+    singularName: 'candidate';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    accountCreatedAt: Schema.Attribute.DateTime;
+    authIdentityId: Schema.Attribute.String & Schema.Attribute.Unique;
+    authProvider: Schema.Attribute.Enumeration<['auth0', 'manual', 'unknown']> &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'unknown'>;
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    email: Schema.Attribute.Email &
+      Schema.Attribute.Required &
+      Schema.Attribute.Unique;
+    firstName: Schema.Attribute.String;
+    lastName: Schema.Attribute.String;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::candidate.candidate'
+    > &
+      Schema.Attribute.Private;
+    notificationPreferences: Schema.Attribute.JSON;
+    phone: Schema.Attribute.String;
+    profileSettings: Schema.Attribute.JSON;
+    publishedAt: Schema.Attribute.DateTime;
+    recruitmentPlatformVisibility: Schema.Attribute.Enumeration<
+      ['not_set', 'visible', 'hidden']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'not_set'>;
+    region: Schema.Attribute.String;
+    registeredInterestAt: Schema.Attribute.DateTime;
+    sector: Schema.Attribute.String;
+    status: Schema.Attribute.Enumeration<
+      [
+        'interest_registered',
+        'account_created',
+        'waitlisted',
+        'slot_reserved',
+        'paid',
+        'in_class',
+        'course_completed',
+        'passed',
+        'failed',
+        'interview_phase',
+        'hired',
+        'refunded',
+        'archived',
+      ]
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'interest_registered'>;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+  };
+}
+
+export interface ApiClassClass extends Struct.CollectionTypeSchema {
+  collectionName: 'classes';
+  info: {
+    description: 'A scheduled HireFlip class for a region, sector, and course version.';
+    displayName: 'Class';
+    pluralName: 'classes';
+    singularName: 'class';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    capacity: Schema.Attribute.Integer & Schema.Attribute.DefaultTo<30>;
+    closedAt: Schema.Attribute.DateTime;
+    completionDeadline: Schema.Attribute.DateTime;
+    course: Schema.Attribute.Relation<'manyToOne', 'api::course.course'>;
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    currency: Schema.Attribute.String & Schema.Attribute.DefaultTo<'GBP'>;
+    discountedPricePence: Schema.Attribute.Integer;
+    endDate: Schema.Attribute.Date;
+    interviewGuaranteeDeadline: Schema.Attribute.DateTime;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<'oneToMany', 'api::class.class'> &
+      Schema.Attribute.Private;
+    name: Schema.Attribute.String &
+      Schema.Attribute.Required &
+      Schema.Attribute.Unique;
+    openedAt: Schema.Attribute.DateTime;
+    pricePence: Schema.Attribute.Integer;
+    publishedAt: Schema.Attribute.DateTime;
+    quarter: Schema.Attribute.Enumeration<['q1', 'q2', 'q3', 'q4']>;
+    region: Schema.Attribute.String;
+    sector: Schema.Attribute.String;
+    startDate: Schema.Attribute.Date;
+    status: Schema.Attribute.Enumeration<
+      [
+        'draft',
+        'waitlist_open',
+        'open',
+        'full',
+        'in_progress',
+        'completion_window',
+        'interview_window',
+        'completed',
+        'cancelled',
+        'archived',
+      ]
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'draft'>;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    year: Schema.Attribute.Integer;
+  };
+}
+
+export interface ApiCourseMaterialCourseMaterial
+  extends Struct.CollectionTypeSchema {
+  collectionName: 'course_materials';
+  info: {
+    description: 'Learning material inside a course module.';
+    displayName: 'Course Material';
+    pluralName: 'course-materials';
+    singularName: 'course-material';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    body: Schema.Attribute.RichText;
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    estimatedDurationMinutes: Schema.Attribute.Integer;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::course-material.course-material'
+    > &
+      Schema.Attribute.Private;
+    materialType: Schema.Attribute.Enumeration<
+      [
+        'text',
+        'video',
+        'file_download',
+        'link',
+        'embedded_content',
+        'external_white_label',
+      ]
+    > &
+      Schema.Attribute.Required;
+    module: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::course-module.course-module'
+    >;
+    publishedAt: Schema.Attribute.DateTime;
+    required: Schema.Attribute.Boolean &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<true>;
+    sortOrder: Schema.Attribute.Integer &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<0>;
+    sourceReference: Schema.Attribute.String;
+    status: Schema.Attribute.Enumeration<['draft', 'active', 'archived']> &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'draft'>;
+    storedFile: Schema.Attribute.Relation<
+      'oneToOne',
+      'api::stored-file.stored-file'
+    >;
+    title: Schema.Attribute.String & Schema.Attribute.Required;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    url: Schema.Attribute.String;
+  };
+}
+
+export interface ApiCourseModuleCourseModule
+  extends Struct.CollectionTypeSchema {
+  collectionName: 'course_modules';
+  info: {
+    description: 'A module within a HireFlip course.';
+    displayName: 'Course Module';
+    pluralName: 'course-modules';
+    singularName: 'course-module';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    course: Schema.Attribute.Relation<'manyToOne', 'api::course.course'>;
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    description: Schema.Attribute.Text;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::course-module.course-module'
+    > &
+      Schema.Attribute.Private;
+    materials: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::course-material.course-material'
+    >;
+    publishedAt: Schema.Attribute.DateTime;
+    required: Schema.Attribute.Boolean &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<true>;
+    sortOrder: Schema.Attribute.Integer &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<0>;
+    status: Schema.Attribute.Enumeration<['draft', 'active', 'archived']> &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'draft'>;
+    title: Schema.Attribute.String & Schema.Attribute.Required;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+  };
+}
+
+export interface ApiCourseCourse extends Struct.CollectionTypeSchema {
+  collectionName: 'courses';
+  info: {
+    description: 'A versioned HireFlip course definition.';
+    displayName: 'Course';
+    pluralName: 'courses';
+    singularName: 'course';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    classes: Schema.Attribute.Relation<'oneToMany', 'api::class.class'>;
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    description: Schema.Attribute.Text;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::course.course'
+    > &
+      Schema.Attribute.Private;
+    modules: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::course-module.course-module'
+    >;
+    name: Schema.Attribute.String & Schema.Attribute.Required;
+    publishedAt: Schema.Attribute.DateTime;
+    sector: Schema.Attribute.String;
+    sourceReference: Schema.Attribute.String;
+    sourceType: Schema.Attribute.Enumeration<
+      ['internal', 'white_label', 'external']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'internal'>;
+    status: Schema.Attribute.Enumeration<['draft', 'active', 'archived']> &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'draft'>;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    version: Schema.Attribute.String & Schema.Attribute.Required;
+  };
+}
+
+export interface ApiEmployerContactEmployerContact
+  extends Struct.CollectionTypeSchema {
+  collectionName: 'employer_contacts';
+  info: {
+    description: 'Nominated contacts who manage employer participation and interview workflows.';
+    displayName: 'Employer Contact';
+    pluralName: 'employer-contacts';
+    singularName: 'employer-contact';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    accountCreatedAt: Schema.Attribute.DateTime;
+    authIdentityId: Schema.Attribute.String & Schema.Attribute.Unique;
+    authProvider: Schema.Attribute.Enumeration<['auth0', 'manual', 'unknown']> &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'unknown'>;
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    email: Schema.Attribute.Email & Schema.Attribute.Required;
+    employer: Schema.Attribute.Relation<'manyToOne', 'api::employer.employer'>;
+    firstName: Schema.Attribute.String;
+    invitedAt: Schema.Attribute.DateTime;
+    lastName: Schema.Attribute.String;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::employer-contact.employer-contact'
+    > &
+      Schema.Attribute.Private;
+    notificationPreferences: Schema.Attribute.JSON;
+    phone: Schema.Attribute.String;
+    publishedAt: Schema.Attribute.DateTime;
+    roleTitle: Schema.Attribute.String;
+    status: Schema.Attribute.Enumeration<
+      ['invited', 'active', 'disabled', 'archived']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'invited'>;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+  };
+}
+
+export interface ApiEmployerEmployer extends Struct.CollectionTypeSchema {
+  collectionName: 'employers';
+  info: {
+    description: 'Companies participating in HireFlip hiring workflows.';
+    displayName: 'Employer';
+    pluralName: 'employers';
+    singularName: 'employer';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    candidateSelectionPreference: Schema.Attribute.Enumeration<
+      ['not_set', 'manual_masked_cv_review', 'automated_matching']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'not_set'>;
+    companyName: Schema.Attribute.String & Schema.Attribute.Required;
+    contacts: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::employer-contact.employer-contact'
+    >;
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    interviewCommitmentCadence: Schema.Attribute.Enumeration<
+      ['not_set', 'quarterly', 'biannually', 'annually']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'not_set'>;
+    interviewCommitmentVolume: Schema.Attribute.Integer;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::employer.employer'
+    > &
+      Schema.Attribute.Private;
+    notes: Schema.Attribute.Text;
+    publishedAt: Schema.Attribute.DateTime;
+    region: Schema.Attribute.String;
+    roleInterests: Schema.Attribute.JSON;
+    sectorInterests: Schema.Attribute.JSON;
+    status: Schema.Attribute.Enumeration<
+      ['prospect', 'invited', 'active', 'paused', 'archived']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'prospect'>;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+  };
+}
+
 export interface ApiStoredFileStoredFile extends Struct.CollectionTypeSchema {
   collectionName: 'stored_files';
   info: {
@@ -1143,6 +1523,13 @@ declare module '@strapi/strapi' {
       'admin::transfer-token-permission': AdminTransferTokenPermission;
       'admin::user': AdminUser;
       'api::audit-event.audit-event': ApiAuditEventAuditEvent;
+      'api::candidate.candidate': ApiCandidateCandidate;
+      'api::class.class': ApiClassClass;
+      'api::course-material.course-material': ApiCourseMaterialCourseMaterial;
+      'api::course-module.course-module': ApiCourseModuleCourseModule;
+      'api::course.course': ApiCourseCourse;
+      'api::employer-contact.employer-contact': ApiEmployerContactEmployerContact;
+      'api::employer.employer': ApiEmployerEmployer;
       'api::stored-file.stored-file': ApiStoredFileStoredFile;
       'plugin::content-releases.release': PluginContentReleasesRelease;
       'plugin::content-releases.release-action': PluginContentReleasesReleaseAction;

@@ -1,0 +1,93 @@
+{
+  "kind": "collectionType",
+  "collectionName": "classes",
+  "info": {
+    "singularName": "class",
+    "pluralName": "classes",
+    "displayName": "Class",
+    "description": "A scheduled HireFlip class for a region, sector, and course version."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "name": {
+      "type": "string",
+      "required": true,
+      "unique": true
+    },
+    "year": {
+      "type": "integer"
+    },
+    "quarter": {
+      "type": "enumeration",
+      "enum": [
+        "q1",
+        "q2",
+        "q3",
+        "q4"
+      ]
+    },
+    "status": {
+      "type": "enumeration",
+      "enum": [
+        "draft",
+        "waitlist_open",
+        "open",
+        "full",
+        "in_progress",
+        "completion_window",
+        "interview_window",
+        "completed",
+        "cancelled",
+        "archived"
+      ],
+      "default": "draft",
+      "required": true
+    },
+    "course": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::course.course",
+      "inversedBy": "classes"
+    },
+    "startDate": {
+      "type": "date"
+    },
+    "endDate": {
+      "type": "date"
+    },
+    "completionDeadline": {
+      "type": "datetime"
+    },
+    "interviewGuaranteeDeadline": {
+      "type": "datetime"
+    },
+    "capacity": {
+      "type": "integer",
+      "default": 30
+    },
+    "pricePence": {
+      "type": "integer"
+    },
+    "discountedPricePence": {
+      "type": "integer"
+    },
+    "currency": {
+      "type": "string",
+      "default": "GBP"
+    },
+    "region": {
+      "type": "string"
+    },
+    "sector": {
+      "type": "string"
+    },
+    "openedAt": {
+      "type": "datetime"
+    },
+    "closedAt": {
+      "type": "datetime"
+    }
+  }
+}
