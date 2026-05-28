@@ -57,29 +57,36 @@
     },
     "amountPence": {
       "type": "integer",
+      "min": 0,
       "required": true
     },
     "currency": {
       "type": "string",
+      "minLength": 3,
+      "maxLength": 3,
       "default": "GBP",
       "required": true
     },
     "providerCheckoutSessionId": {
       "type": "string",
+      "maxLength": 255,
       "unique": true
     },
     "providerPaymentIntentId": {
       "type": "string",
+      "maxLength": 255,
       "unique": true
     },
     "providerCustomerId": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 255
     },
     "slotReservationExpiresAt": {
       "type": "datetime"
     },
     "createdByService": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 120
     },
     "paidAt": {
       "type": "datetime"

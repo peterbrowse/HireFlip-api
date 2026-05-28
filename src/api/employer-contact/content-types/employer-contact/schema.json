@@ -29,23 +29,29 @@
     },
     "authIdentityId": {
       "type": "string",
+      "maxLength": 160,
       "unique": true
     },
     "email": {
       "type": "email",
+      "maxLength": 254,
       "required": true
     },
     "firstName": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 120
     },
     "lastName": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 120
     },
     "phone": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 40
     },
     "roleTitle": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 160
     },
     "status": {
       "type": "enumeration",

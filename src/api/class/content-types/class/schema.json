@@ -13,11 +13,15 @@
   "attributes": {
     "name": {
       "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
       "required": true,
       "unique": true
     },
     "year": {
-      "type": "integer"
+      "type": "integer",
+      "min": 2026,
+      "max": 2100
     },
     "quarter": {
       "type": "enumeration",
@@ -65,23 +69,31 @@
     },
     "capacity": {
       "type": "integer",
+      "min": 1,
+      "max": 1000,
       "default": 30
     },
     "pricePence": {
-      "type": "integer"
+      "type": "integer",
+      "min": 0
     },
     "discountedPricePence": {
-      "type": "integer"
+      "type": "integer",
+      "min": 0
     },
     "currency": {
       "type": "string",
+      "minLength": 3,
+      "maxLength": 3,
       "default": "GBP"
     },
     "region": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 120
     },
     "sector": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 120
     },
     "openedAt": {
       "type": "datetime"

@@ -19,6 +19,8 @@
     },
     "title": {
       "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
       "required": true
     },
     "description": {
@@ -26,6 +28,7 @@
     },
     "sortOrder": {
       "type": "integer",
+      "min": 0,
       "default": 0,
       "required": true
     },

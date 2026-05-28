@@ -52,15 +52,20 @@
     },
     "amountPence": {
       "type": "integer",
+      "min": 0,
       "required": true
     },
     "currency": {
       "type": "string",
+      "minLength": 3,
+      "maxLength": 3,
       "default": "GBP",
       "required": true
     },
     "refundPercentage": {
-      "type": "decimal"
+      "type": "decimal",
+      "min": 0,
+      "max": 100
     },
     "reason": {
       "type": "text"
@@ -76,10 +81,13 @@
       ]
     },
     "qualifyingInterviewsDeliveredCount": {
-      "type": "integer"
+      "type": "integer",
+      "min": 0,
+      "max": 1000
     },
     "providerRefundId": {
       "type": "string",
+      "maxLength": 255,
       "unique": true
     },
     "requestedAt": {

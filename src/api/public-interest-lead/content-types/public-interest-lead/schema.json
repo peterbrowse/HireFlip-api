@@ -13,6 +13,7 @@
   "attributes": {
     "email": {
       "type": "email",
+      "maxLength": 254,
       "required": true
     },
     "leadType": {
@@ -26,25 +27,33 @@
       "required": true
     },
     "name": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 120
     },
     "company": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 160
     },
     "candidateStatus": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 120
     },
     "employerInterviewCapacity": {
-      "type": "integer"
+      "type": "integer",
+      "min": 0,
+      "max": 1000
     },
     "region": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 120
     },
     "sector": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 120
     },
     "sourceForm": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 80
     },
     "consentState": {
       "type": "enumeration",
@@ -64,16 +73,20 @@
       "type": "datetime"
     },
     "consentWordingVersion": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 80
     },
     "privacyNoticeVersion": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 80
     },
     "enquiryLawfulBasis": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 120
     },
     "marketingLawfulBasis": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 120
     },
     "unsubscribedAt": {
       "type": "datetime"
@@ -90,13 +103,16 @@
       "required": true
     },
     "mailingPlatformProvider": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 80
     },
     "mailingPlatformContactId": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 160
     },
     "mailingPlatformListId": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 160
     },
     "syncStatus": {
       "type": "enumeration",

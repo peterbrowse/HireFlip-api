@@ -23,21 +23,26 @@
     },
     "authIdentityId": {
       "type": "string",
+      "maxLength": 160,
       "unique": true
     },
     "email": {
       "type": "email",
+      "maxLength": 254,
       "required": true,
       "unique": true
     },
     "firstName": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 120
     },
     "lastName": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 120
     },
     "phone": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 40
     },
     "status": {
       "type": "enumeration",
@@ -60,10 +65,12 @@
       "required": true
     },
     "region": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 120
     },
     "sector": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 120
     },
     "recruitmentPlatformVisibility": {
       "type": "enumeration",

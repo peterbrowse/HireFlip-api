@@ -13,6 +13,8 @@
   "attributes": {
     "companyName": {
       "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
       "required": true
     },
     "status": {
@@ -28,7 +30,8 @@
       "required": true
     },
     "region": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 120
     },
     "sectorInterests": {
       "type": "json"
@@ -47,7 +50,9 @@
       "required": true
     },
     "interviewCommitmentVolume": {
-      "type": "integer"
+      "type": "integer",
+      "min": 0,
+      "max": 1000
     },
     "interviewCommitmentCadence": {
       "type": "enumeration",

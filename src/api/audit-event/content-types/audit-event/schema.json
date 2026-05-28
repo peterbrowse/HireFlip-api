@@ -13,6 +13,8 @@
   "attributes": {
     "eventType": {
       "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
       "required": true
     },
     "eventCategory": {
@@ -78,38 +80,48 @@
       "required": true
     },
     "actorId": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 160
     },
     "actorEmail": {
-      "type": "email"
+      "type": "email",
+      "maxLength": 254
     },
     "actorDisplayName": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 240
     },
     "subjectType": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 120
     },
     "subjectId": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 160
     },
     "subjectDisplayName": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 240
     },
     "occurredAt": {
       "type": "datetime",
       "required": true
     },
     "requestId": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 160
     },
     "correlationId": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 160
     },
     "serviceName": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 120
     },
     "ipAddress": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 120
     },
     "userAgent": {
       "type": "text"

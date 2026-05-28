@@ -557,9 +557,18 @@ export interface ApiAuditEventAuditEvent extends Struct.CollectionTypeSchema {
     draftAndPublish: false;
   };
   attributes: {
-    actorDisplayName: Schema.Attribute.String;
-    actorEmail: Schema.Attribute.Email;
-    actorId: Schema.Attribute.String;
+    actorDisplayName: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 240;
+      }>;
+    actorEmail: Schema.Attribute.Email &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 254;
+      }>;
+    actorId: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 160;
+      }>;
     actorType: Schema.Attribute.Enumeration<
       [
         'candidate',
@@ -572,7 +581,10 @@ export interface ApiAuditEventAuditEvent extends Struct.CollectionTypeSchema {
       ]
     > &
       Schema.Attribute.Required;
-    correlationId: Schema.Attribute.String;
+    correlationId: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 160;
+      }>;
     createdAt: Schema.Attribute.DateTime;
     createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
@@ -596,8 +608,16 @@ export interface ApiAuditEventAuditEvent extends Struct.CollectionTypeSchema {
       ]
     > &
       Schema.Attribute.Required;
-    eventType: Schema.Attribute.String & Schema.Attribute.Required;
-    ipAddress: Schema.Attribute.String;
+    eventType: Schema.Attribute.String &
+      Schema.Attribute.Required &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 160;
+        minLength: 1;
+      }>;
+    ipAddress: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 120;
+      }>;
     locale: Schema.Attribute.String & Schema.Attribute.Private;
     localizations: Schema.Attribute.Relation<
       'oneToMany',
@@ -609,8 +629,14 @@ export interface ApiAuditEventAuditEvent extends Struct.CollectionTypeSchema {
     occurredAt: Schema.Attribute.DateTime & Schema.Attribute.Required;
     previousState: Schema.Attribute.JSON;
     publishedAt: Schema.Attribute.DateTime;
-    requestId: Schema.Attribute.String;
-    serviceName: Schema.Attribute.String;
+    requestId: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 160;
+      }>;
+    serviceName: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 120;
+      }>;
     severity: Schema.Attribute.Enumeration<
       ['info', 'warning', 'error', 'critical']
     > &
@@ -632,9 +658,18 @@ export interface ApiAuditEventAuditEvent extends Struct.CollectionTypeSchema {
     > &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'core_api'>;
-    subjectDisplayName: Schema.Attribute.String;
-    subjectId: Schema.Attribute.String;
-    subjectType: Schema.Attribute.String;
+    subjectDisplayName: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 240;
+      }>;
+    subjectId: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 160;
+      }>;
+    subjectType: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 120;
+      }>;
     updatedAt: Schema.Attribute.DateTime;
     updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
@@ -774,7 +809,11 @@ export interface ApiCandidateCandidate extends Struct.CollectionTypeSchema {
   };
   attributes: {
     accountCreatedAt: Schema.Attribute.DateTime;
-    authIdentityId: Schema.Attribute.String & Schema.Attribute.Unique;
+    authIdentityId: Schema.Attribute.String &
+      Schema.Attribute.Unique &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 160;
+      }>;
     authProvider: Schema.Attribute.Enumeration<['auth0', 'manual', 'unknown']> &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'unknown'>;
@@ -783,9 +822,18 @@ export interface ApiCandidateCandidate extends Struct.CollectionTypeSchema {
       Schema.Attribute.Private;
     email: Schema.Attribute.Email &
       Schema.Attribute.Required &
-      Schema.Attribute.Unique;
-    firstName: Schema.Attribute.String;
-    lastName: Schema.Attribute.String;
+      Schema.Attribute.Unique &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 254;
+      }>;
+    firstName: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 120;
+      }>;
+    lastName: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 120;
+      }>;
     locale: Schema.Attribute.String & Schema.Attribute.Private;
     localizations: Schema.Attribute.Relation<
       'oneToMany',
@@ -793,7 +841,10 @@ export interface ApiCandidateCandidate extends Struct.CollectionTypeSchema {
     > &
       Schema.Attribute.Private;
     notificationPreferences: Schema.Attribute.JSON;
-    phone: Schema.Attribute.String;
+    phone: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 40;
+      }>;
     profileSettings: Schema.Attribute.JSON;
     publishedAt: Schema.Attribute.DateTime;
     recruitmentPlatformVisibility: Schema.Attribute.Enumeration<
@@ -801,9 +852,15 @@ export interface ApiCandidateCandidate extends Struct.CollectionTypeSchema {
     > &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'not_set'>;
-    region: Schema.Attribute.String;
+    region: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 120;
+      }>;
     registeredInterestAt: Schema.Attribute.DateTime;
-    sector: Schema.Attribute.String;
+    sector: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 120;
+      }>;
     status: Schema.Attribute.Enumeration<
       [
         'interest_registered',
@@ -841,15 +898,34 @@ export interface ApiClassClass extends Struct.CollectionTypeSchema {
     draftAndPublish: false;
   };
   attributes: {
-    capacity: Schema.Attribute.Integer & Schema.Attribute.DefaultTo<30>;
+    capacity: Schema.Attribute.Integer &
+      Schema.Attribute.SetMinMax<
+        {
+          max: 1000;
+          min: 1;
+        },
+        number
+      > &
+      Schema.Attribute.DefaultTo<30>;
     closedAt: Schema.Attribute.DateTime;
     completionDeadline: Schema.Attribute.DateTime;
     course: Schema.Attribute.Relation<'manyToOne', 'api::course.course'>;
     createdAt: Schema.Attribute.DateTime;
     createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
-    currency: Schema.Attribute.String & Schema.Attribute.DefaultTo<'GBP'>;
-    discountedPricePence: Schema.Attribute.Integer;
+    currency: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 3;
+        minLength: 3;
+      }> &
+      Schema.Attribute.DefaultTo<'GBP'>;
+    discountedPricePence: Schema.Attribute.Integer &
+      Schema.Attribute.SetMinMax<
+        {
+          min: 0;
+        },
+        number
+      >;
     endDate: Schema.Attribute.Date;
     interviewGuaranteeDeadline: Schema.Attribute.DateTime;
     locale: Schema.Attribute.String & Schema.Attribute.Private;
@@ -857,13 +933,29 @@ export interface ApiClassClass extends Struct.CollectionTypeSchema {
       Schema.Attribute.Private;
     name: Schema.Attribute.String &
       Schema.Attribute.Required &
-      Schema.Attribute.Unique;
+      Schema.Attribute.Unique &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 160;
+        minLength: 1;
+      }>;
     openedAt: Schema.Attribute.DateTime;
-    pricePence: Schema.Attribute.Integer;
+    pricePence: Schema.Attribute.Integer &
+      Schema.Attribute.SetMinMax<
+        {
+          min: 0;
+        },
+        number
+      >;
     publishedAt: Schema.Attribute.DateTime;
     quarter: Schema.Attribute.Enumeration<['q1', 'q2', 'q3', 'q4']>;
-    region: Schema.Attribute.String;
-    sector: Schema.Attribute.String;
+    region: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 120;
+      }>;
+    sector: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 120;
+      }>;
     startDate: Schema.Attribute.Date;
     status: Schema.Attribute.Enumeration<
       [
@@ -884,7 +976,14 @@ export interface ApiClassClass extends Struct.CollectionTypeSchema {
     updatedAt: Schema.Attribute.DateTime;
     updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
-    year: Schema.Attribute.Integer;
+    year: Schema.Attribute.Integer &
+      Schema.Attribute.SetMinMax<
+        {
+          max: 2100;
+          min: 2026;
+        },
+        number
+      >;
   };
 }
 
@@ -984,11 +1083,22 @@ export interface ApiCourseModuleCourseModule
       Schema.Attribute.DefaultTo<true>;
     sortOrder: Schema.Attribute.Integer &
       Schema.Attribute.Required &
+      Schema.Attribute.SetMinMax<
+        {
+          min: 0;
+        },
+        number
+      > &
       Schema.Attribute.DefaultTo<0>;
     status: Schema.Attribute.Enumeration<['draft', 'active', 'archived']> &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'draft'>;
-    title: Schema.Attribute.String & Schema.Attribute.Required;
+    title: Schema.Attribute.String &
+      Schema.Attribute.Required &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 160;
+        minLength: 1;
+      }>;
     updatedAt: Schema.Attribute.DateTime;
     updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
@@ -1083,10 +1193,21 @@ export interface ApiCourseCourse extends Struct.CollectionTypeSchema {
       'oneToMany',
       'api::course-module.course-module'
     >;
-    name: Schema.Attribute.String & Schema.Attribute.Required;
+    name: Schema.Attribute.String &
+      Schema.Attribute.Required &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 160;
+        minLength: 1;
+      }>;
     publishedAt: Schema.Attribute.DateTime;
-    sector: Schema.Attribute.String;
-    sourceReference: Schema.Attribute.String;
+    sector: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 120;
+      }>;
+    sourceReference: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 240;
+      }>;
     sourceType: Schema.Attribute.Enumeration<
       ['internal', 'white_label', 'external']
     > &
@@ -1098,7 +1219,12 @@ export interface ApiCourseCourse extends Struct.CollectionTypeSchema {
     updatedAt: Schema.Attribute.DateTime;
     updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
-    version: Schema.Attribute.String & Schema.Attribute.Required;
+    version: Schema.Attribute.String &
+      Schema.Attribute.Required &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 80;
+        minLength: 1;
+      }>;
   };
 }
 
@@ -1116,18 +1242,32 @@ export interface ApiEmployerContactEmployerContact
   };
   attributes: {
     accountCreatedAt: Schema.Attribute.DateTime;
-    authIdentityId: Schema.Attribute.String & Schema.Attribute.Unique;
+    authIdentityId: Schema.Attribute.String &
+      Schema.Attribute.Unique &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 160;
+      }>;
     authProvider: Schema.Attribute.Enumeration<['auth0', 'manual', 'unknown']> &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'unknown'>;
     createdAt: Schema.Attribute.DateTime;
     createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
-    email: Schema.Attribute.Email & Schema.Attribute.Required;
+    email: Schema.Attribute.Email &
+      Schema.Attribute.Required &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 254;
+      }>;
     employer: Schema.Attribute.Relation<'manyToOne', 'api::employer.employer'>;
-    firstName: Schema.Attribute.String;
+    firstName: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 120;
+      }>;
     invitedAt: Schema.Attribute.DateTime;
-    lastName: Schema.Attribute.String;
+    lastName: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 120;
+      }>;
     locale: Schema.Attribute.String & Schema.Attribute.Private;
     localizations: Schema.Attribute.Relation<
       'oneToMany',
@@ -1135,9 +1275,15 @@ export interface ApiEmployerContactEmployerContact
     > &
       Schema.Attribute.Private;
     notificationPreferences: Schema.Attribute.JSON;
-    phone: Schema.Attribute.String;
+    phone: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 40;
+      }>;
     publishedAt: Schema.Attribute.DateTime;
-    roleTitle: Schema.Attribute.String;
+    roleTitle: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 160;
+      }>;
     status: Schema.Attribute.Enumeration<
       ['invited', 'active', 'disabled', 'archived']
     > &
@@ -1166,7 +1312,12 @@ export interface ApiEmployerEmployer extends Struct.CollectionTypeSchema {
     > &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'not_set'>;
-    companyName: Schema.Attribute.String & Schema.Attribute.Required;
+    companyName: Schema.Attribute.String &
+      Schema.Attribute.Required &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 200;
+        minLength: 1;
+      }>;
     contacts: Schema.Attribute.Relation<
       'oneToMany',
       'api::employer-contact.employer-contact'
@@ -1179,7 +1330,14 @@ export interface ApiEmployerEmployer extends Struct.CollectionTypeSchema {
     > &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'not_set'>;
-    interviewCommitmentVolume: Schema.Attribute.Integer;
+    interviewCommitmentVolume: Schema.Attribute.Integer &
+      Schema.Attribute.SetMinMax<
+        {
+          max: 1000;
+          min: 0;
+        },
+        number
+      >;
     locale: Schema.Attribute.String & Schema.Attribute.Private;
     localizations: Schema.Attribute.Relation<
       'oneToMany',
@@ -1188,7 +1346,10 @@ export interface ApiEmployerEmployer extends Struct.CollectionTypeSchema {
       Schema.Attribute.Private;
     notes: Schema.Attribute.Text;
     publishedAt: Schema.Attribute.DateTime;
-    region: Schema.Attribute.String;
+    region: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 120;
+      }>;
     roleInterests: Schema.Attribute.JSON;
     sectorInterests: Schema.Attribute.JSON;
     status: Schema.Attribute.Enumeration<
@@ -1687,7 +1848,14 @@ export interface ApiPaymentPayment extends Struct.CollectionTypeSchema {
     draftAndPublish: false;
   };
   attributes: {
-    amountPence: Schema.Attribute.Integer & Schema.Attribute.Required;
+    amountPence: Schema.Attribute.Integer &
+      Schema.Attribute.Required &
+      Schema.Attribute.SetMinMax<
+        {
+          min: 0;
+        },
+        number
+      >;
     cancelledAt: Schema.Attribute.DateTime;
     candidate: Schema.Attribute.Relation<
       'manyToOne',
@@ -1696,9 +1864,16 @@ export interface ApiPaymentPayment extends Struct.CollectionTypeSchema {
     createdAt: Schema.Attribute.DateTime;
     createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
-    createdByService: Schema.Attribute.String;
+    createdByService: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 120;
+      }>;
     currency: Schema.Attribute.String &
       Schema.Attribute.Required &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 3;
+        minLength: 3;
+      }> &
       Schema.Attribute.DefaultTo<'GBP'>;
     enrollment: Schema.Attribute.Relation<
       'manyToOne',
@@ -1722,9 +1897,19 @@ export interface ApiPaymentPayment extends Struct.CollectionTypeSchema {
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'course_payment'>;
     providerCheckoutSessionId: Schema.Attribute.String &
-      Schema.Attribute.Unique;
-    providerCustomerId: Schema.Attribute.String;
-    providerPaymentIntentId: Schema.Attribute.String & Schema.Attribute.Unique;
+      Schema.Attribute.Unique &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 255;
+      }>;
+    providerCustomerId: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 255;
+      }>;
+    providerPaymentIntentId: Schema.Attribute.String &
+      Schema.Attribute.Unique &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 255;
+      }>;
     publishedAt: Schema.Attribute.DateTime;
     slotReservationExpiresAt: Schema.Attribute.DateTime;
     status: Schema.Attribute.Enumeration<
@@ -1873,8 +2058,14 @@ export interface ApiPublicInterestLeadPublicInterestLead
     draftAndPublish: false;
   };
   attributes: {
-    candidateStatus: Schema.Attribute.String;
-    company: Schema.Attribute.String;
+    candidateStatus: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 120;
+      }>;
+    company: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 160;
+      }>;
     consentCapturedAt: Schema.Attribute.DateTime;
     consentState: Schema.Attribute.Enumeration<
       [
@@ -1886,13 +2077,30 @@ export interface ApiPublicInterestLeadPublicInterestLead
     > &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'not_requested'>;
-    consentWordingVersion: Schema.Attribute.String;
+    consentWordingVersion: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 80;
+      }>;
     createdAt: Schema.Attribute.DateTime;
     createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
-    email: Schema.Attribute.Email & Schema.Attribute.Required;
-    employerInterviewCapacity: Schema.Attribute.Integer;
-    enquiryLawfulBasis: Schema.Attribute.String;
+    email: Schema.Attribute.Email &
+      Schema.Attribute.Required &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 254;
+      }>;
+    employerInterviewCapacity: Schema.Attribute.Integer &
+      Schema.Attribute.SetMinMax<
+        {
+          max: 1000;
+          min: 0;
+        },
+        number
+      >;
+    enquiryLawfulBasis: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 120;
+      }>;
     leadType: Schema.Attribute.Enumeration<
       [
         'candidate_interest',
@@ -1916,18 +2124,45 @@ export interface ApiPublicInterestLeadPublicInterestLead
       'api::public-interest-lead.public-interest-lead'
     > &
       Schema.Attribute.Private;
-    mailingPlatformContactId: Schema.Attribute.String;
-    mailingPlatformListId: Schema.Attribute.String;
-    mailingPlatformProvider: Schema.Attribute.String;
+    mailingPlatformContactId: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 160;
+      }>;
+    mailingPlatformListId: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 160;
+      }>;
+    mailingPlatformProvider: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 80;
+      }>;
     marketingChannels: Schema.Attribute.JSON;
-    marketingLawfulBasis: Schema.Attribute.String;
+    marketingLawfulBasis: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 120;
+      }>;
     metadata: Schema.Attribute.JSON;
-    name: Schema.Attribute.String;
-    privacyNoticeVersion: Schema.Attribute.String;
+    name: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 120;
+      }>;
+    privacyNoticeVersion: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 80;
+      }>;
     publishedAt: Schema.Attribute.DateTime;
-    region: Schema.Attribute.String;
-    sector: Schema.Attribute.String;
-    sourceForm: Schema.Attribute.String;
+    region: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 120;
+      }>;
+    sector: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 120;
+      }>;
+    sourceForm: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 80;
+      }>;
     suppressionStatus: Schema.Attribute.Enumeration<
       ['not_suppressed', 'suppressed', 'deleted', 'anonymised']
     > &
@@ -2010,7 +2245,14 @@ export interface ApiRefundRefund extends Struct.CollectionTypeSchema {
     draftAndPublish: false;
   };
   attributes: {
-    amountPence: Schema.Attribute.Integer & Schema.Attribute.Required;
+    amountPence: Schema.Attribute.Integer &
+      Schema.Attribute.Required &
+      Schema.Attribute.SetMinMax<
+        {
+          min: 0;
+        },
+        number
+      >;
     approvedAt: Schema.Attribute.DateTime;
     candidate: Schema.Attribute.Relation<
       'manyToOne',
@@ -2021,6 +2263,10 @@ export interface ApiRefundRefund extends Struct.CollectionTypeSchema {
       Schema.Attribute.Private;
     currency: Schema.Attribute.String &
       Schema.Attribute.Required &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 3;
+        minLength: 3;
+      }> &
       Schema.Attribute.DefaultTo<'GBP'>;
     eligibilitySource: Schema.Attribute.Enumeration<
       [
@@ -2047,11 +2293,29 @@ export interface ApiRefundRefund extends Struct.CollectionTypeSchema {
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'stripe'>;
     processedAt: Schema.Attribute.DateTime;
-    providerRefundId: Schema.Attribute.String & Schema.Attribute.Unique;
+    providerRefundId: Schema.Attribute.String &
+      Schema.Attribute.Unique &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 255;
+      }>;
     publishedAt: Schema.Attribute.DateTime;
-    qualifyingInterviewsDeliveredCount: Schema.Attribute.Integer;
+    qualifyingInterviewsDeliveredCount: Schema.Attribute.Integer &
+      Schema.Attribute.SetMinMax<
+        {
+          max: 1000;
+          min: 0;
+        },
+        number
+      >;
     reason: Schema.Attribute.Text;
-    refundPercentage: Schema.Attribute.Decimal;
+    refundPercentage: Schema.Attribute.Decimal &
+      Schema.Attribute.SetMinMax<
+        {
+          max: 100;
+          min: 0;
+        },
+        number
+      >;
     requestedAt: Schema.Attribute.DateTime;
     status: Schema.Attribute.Enumeration<
       [
