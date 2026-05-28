@@ -19,7 +19,7 @@ This repo has been reset to a clean Strapi 5 baseline. The previous broken API a
 
 ```bash
 npm install
-cp .env.example .env
+cp .env.example .env.local
 npm run develop
 ```
 
@@ -29,7 +29,9 @@ Generate local secrets with:
 openssl rand -base64 32
 ```
 
-Never commit `.env` files.
+Never commit `.env` or `.env.local` files.
+
+Local development scripts load `.env.local` by default through Strapi's `ENV_PATH` setting. Heroku should use config vars instead of an env file.
 
 ## Useful Commands
 
