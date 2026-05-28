@@ -55,6 +55,11 @@ Local development can use Strapi's local upload provider by setting `UPLOAD_PROV
 
 Deployed environments should set `UPLOAD_PROVIDER=aws-s3` and provide the AWS S3 environment variables from `.env.example`.
 
+The production bucket should be a modern private S3 bucket with Object
+Ownership set to bucket-owner-enforced and ACLs disabled. Leave `AWS_ACL` blank
+for that setup so the API does not send ACL headers. Only set `AWS_ACL` if the
+bucket is deliberately configured to accept ACLs later.
+
 ## Public Interest Protection
 
 The public interest capture endpoint is intended to be called by the homepage

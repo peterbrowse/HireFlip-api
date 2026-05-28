@@ -1,5 +1,6 @@
 export default ({ env }) => {
   const uploadProvider = env('UPLOAD_PROVIDER', 'local');
+  const s3Acl = env('AWS_ACL', undefined);
 
   if (uploadProvider !== 'aws-s3') {
     return {
@@ -23,9 +24,9 @@ export default ({ env }) => {
             },
             region: env('AWS_REGION', 'eu-west-2'),
             params: {
-              ACL: env('AWS_ACL', 'private'),
               signedUrlExpires: env.int('AWS_SIGNED_URL_EXPIRES', 15 * 60),
               Bucket: env('AWS_BUCKET'),
+              ...(s3Acl ? { ACL: s3Acl } : {}),
             },
           },
         },
