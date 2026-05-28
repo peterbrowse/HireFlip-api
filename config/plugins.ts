@@ -18,9 +18,9 @@ export default ({ env }) => {
                 },
                 region: env('AWS_REGION', 'eu-west-2'),
                 params: {
+                  ACL: s3Acl,
                   signedUrlExpires: env.int('AWS_SIGNED_URL_EXPIRES', 15 * 60),
                   Bucket: env('AWS_BUCKET'),
-                  ...(s3Acl ? { ACL: s3Acl } : {}),
                 },
               },
             },
