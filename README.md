@@ -57,8 +57,10 @@ Deployed environments should set `UPLOAD_PROVIDER=aws-s3` and provide the AWS S3
 
 The production bucket should be a modern private S3 bucket with Object
 Ownership set to bucket-owner-enforced and ACLs disabled. Leave `AWS_ACL` blank
-for that setup so the API does not send ACL headers. Only set `AWS_ACL` if the
-bucket is deliberately configured to accept ACLs later.
+for that setup so the API does not send ACL headers. Keep
+`AWS_S3_SIGNED_URLS=true` so Strapi signs Media Library preview/download URLs
+for the private bucket. Only set `AWS_ACL` if the bucket is deliberately
+configured to accept ACLs later.
 
 ## Strapi System Email
 

@@ -2,7 +2,9 @@ import notificationServiceEmailProvider from '../src/providers/notification-serv
 
 export default ({ env }) => {
   const uploadProvider = env('UPLOAD_PROVIDER', 'local');
-  const s3Acl = env('AWS_ACL', undefined);
+  const s3Acl = env('AWS_ACL', '').trim() || undefined;
+  const useS3SignedUrls = env.bool('AWS_S3_SIGNED_URLS', !s3Acl);
+  const providerAcl = useS3SignedUrls ? 'private' : s3Acl;
   const emailProvider = env('STRAPI_EMAIL_PROVIDER', undefined);
 
   const upload =
@@ -18,15 +20,15 @@ export default ({ env }) => {
                 },
                 region: env('AWS_REGION', 'eu-west-2'),
                 params: {
-                  ACL: s3Acl,
+                  ACL: providerAcl,
                   signedUrlExpires: env.int('AWS_SIGNED_URL_EXPIRES', 15 * 60),
                   Bucket: env('AWS_BUCKET'),
                 },
               },
             },
             actionOptions: {
-              upload: {},
-              uploadStream: {},
+              upload: { ACL: s3Acl },
+              uploadStream: { ACL: s3Acl },
               delete: {},
             },
           },
