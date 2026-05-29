@@ -24,7 +24,7 @@ type RequestContext = {
 const communicationChannels = ['email', 'sms', 'phone'] as const;
 const notListedPreferenceValue = 'not_listed';
 const unlistedInterestTypes = ['class_area', 'work_sector'] as const;
-const unlistedInterestSources = ['onboarding', 'settings'] as const;
+const unlistedInterestSources = ['class_page', 'onboarding', 'settings'] as const;
 const candidatePopulate = ['profileImage'];
 const profileImageFormats = ['webp', 'avif'] as const;
 const visiblePreferenceStates = ['active', 'coming_soon'] as const;
@@ -747,26 +747,23 @@ const sanitizeCandidatePreferences = (candidate) => {
         label: preferenceLabel(item) || item,
         value: item,
       })),
-    ...(selection.selected.includes(notListedPreferenceValue) && selection.other
-      ? [
-          {
-            label: selection.other,
-            value: notListedPreferenceValue,
-          },
-        ]
-      : selection.selected.includes(notListedPreferenceValue)
-        ? [
-            {
-              label: 'Not listed',
-              value: notListedPreferenceValue,
-            },
-          ]
-        : []),
   ];
 
   return {
     classAreas: toPreferenceSummary(preferenceSelection(candidate?.classAreaPreferences)),
     workSectors: toPreferenceSummary(preferenceSelection(candidate?.workSectorPreferences)),
+  };
+};
+
+const summarizeUnsupportedPreferences = (value: unknown) => {
+  const selection = preferenceSelection(value);
+  const listedCount = selectedListedPreferences(value).length;
+  const hasNotListed = selection.selected.includes(notListedPreferenceValue);
+
+  return {
+    hasNotListed,
+    listedCount,
+    onlyNotListed: hasNotListed && listedCount === 0,
   };
 };
 
@@ -982,6 +979,10 @@ const buildClassInterestResponse = ({ candidate, enrollments, interestCounts, ma
       preferences: sanitizeCandidatePreferences(candidate),
       registeredInterestAt: candidate.registeredInterestAt,
       status: candidate.status,
+      unsupportedPreferences: {
+        classAreas: summarizeUnsupportedPreferences(candidate.classAreaPreferences),
+        workSectors: summarizeUnsupportedPreferences(candidate.workSectorPreferences),
+      },
     },
     class: firstRelationship?.class || null,
     classes: classRelationships,

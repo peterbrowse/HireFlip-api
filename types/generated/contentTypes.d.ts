@@ -2690,7 +2690,9 @@ export interface ApiUnlistedInterestUnlistedInterest
       Schema.Attribute.Private;
     metadata: Schema.Attribute.JSON;
     publishedAt: Schema.Attribute.DateTime;
-    source: Schema.Attribute.Enumeration<['onboarding', 'settings']> &
+    source: Schema.Attribute.Enumeration<
+      ['class_page', 'onboarding', 'settings']
+    > &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'settings'>;
     status: Schema.Attribute.Enumeration<

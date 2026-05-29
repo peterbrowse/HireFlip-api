@@ -37,6 +37,7 @@
     "source": {
       "type": "enumeration",
       "enum": [
+        "class_page",
         "onboarding",
         "settings"
       ],
