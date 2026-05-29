@@ -60,4 +60,30 @@ export default factories.createCoreController('api::candidate.candidate', ({ str
       data: result,
     };
   },
+
+  async classInterest(ctx) {
+    const result = await (strapi.service('api::candidate.candidate') as any).getCurrentCandidateClassInterest(
+      ctx.state?.hireflipAuth
+    );
+
+    ctx.body = {
+      data: result,
+    };
+  },
+
+  async registerClassInterest(ctx) {
+    const result = await (strapi.service('api::candidate.candidate') as any).registerCurrentCandidateClassInterest(
+      ctx.state?.hireflipAuth,
+      {
+        ipAddress: getForwardedClientIp(ctx),
+        requestId: ctx.state?.requestId,
+        userAgent: ctx.request.get('x-hireflip-client-user-agent') || ctx.request.get('user-agent'),
+      }
+    );
+
+    ctx.status = result.created ? 201 : 200;
+    ctx.body = {
+      data: result.data,
+    };
+  },
 }));

@@ -24,6 +24,19 @@ type RequestContext = {
 const communicationChannels = ['email', 'sms', 'phone'] as const;
 const candidatePopulate = ['profileImage'];
 const profileImageFormats = ['webp', 'avif'] as const;
+const targetClassFallbacks = {
+  capacity: 30,
+  currency: 'GBP',
+  discountedPricePence: 32000,
+  interviewsGuaranteed: 2,
+  pricePence: 80000,
+  region: 'London',
+  sector: 'Marketing',
+};
+
+const terminalEnrollmentStatuses = new Set(['withdrawn', 'expired', 'refunded', 'archived']);
+const terminalClassStatuses = new Set(['cancelled', 'archived', 'completed']);
+const placeSecuredCandidateStatuses = new Set(['paid', 'in_class', 'course_completed', 'passed', 'failed', 'interview_phase', 'hired']);
 
 type UploadedFile = {
   filepath?: string;
@@ -228,6 +241,7 @@ const sanitizeCandidate = async (strapi, candidate) => ({
   status: candidate.status,
   region: candidate.region,
   sector: candidate.sector,
+  registeredInterestAt: candidate.registeredInterestAt,
   recruitmentPlatformVisibility: candidate.recruitmentPlatformVisibility,
   accountCreatedAt: candidate.accountCreatedAt,
 });
@@ -395,6 +409,177 @@ const derivePreferredCommunicationChannel = (
   }
 
   return selectedChannels.find((channel) => channel !== 'email') || 'email';
+};
+
+const getTargetClassRegion = () => process.env.FIRST_CLASS_REGION || targetClassFallbacks.region;
+const getTargetClassSector = () => process.env.FIRST_CLASS_SECTOR || targetClassFallbacks.sector;
+
+const normalizeComparableText = (value?: string) => value?.trim().toLowerCase();
+
+const classMatchesTarget = (classRecord) => {
+  const targetRegion = normalizeComparableText(getTargetClassRegion());
+  const targetSector = normalizeComparableText(getTargetClassSector());
+  const classRegion = normalizeComparableText(classRecord.region || targetClassFallbacks.region);
+  const classSector = normalizeComparableText(classRecord.sector || targetClassFallbacks.sector);
+
+  return classRegion === targetRegion && classSector === targetSector;
+};
+
+const findTargetClass = async (strapi) => {
+  const classes = await strapi.documents('api::class.class').findMany({
+    limit: 100,
+    sort: ['startDate:asc', 'createdAt:desc'],
+  } as any);
+
+  return classes
+    .filter((classRecord) => classMatchesTarget(classRecord))
+    .filter((classRecord) => !terminalClassStatuses.has(classRecord.status))
+    .sort((firstClass, secondClass) => {
+      const firstTime = firstClass.startDate ? Date.parse(firstClass.startDate) : Number.MAX_SAFE_INTEGER;
+      const secondTime = secondClass.startDate ? Date.parse(secondClass.startDate) : Number.MAX_SAFE_INTEGER;
+
+      return firstTime - secondTime;
+    })[0];
+};
+
+const findCurrentEnrollment = async (strapi, candidate, targetClass?) => {
+  const enrollments = await strapi.documents('api::enrollment.enrollment').findMany({
+    filters: {
+      candidate: {
+        documentId: candidate.documentId,
+      },
+    },
+    limit: 25,
+    populate: ['class'],
+    sort: ['createdAt:desc'],
+  } as any);
+
+  return enrollments.find((enrollment) => {
+    if (terminalEnrollmentStatuses.has(enrollment.status)) {
+      return false;
+    }
+
+    const enrolledClass = enrollment.class;
+
+    if (!enrolledClass) {
+      return false;
+    }
+
+    if (targetClass?.documentId) {
+      return enrolledClass.documentId === targetClass.documentId;
+    }
+
+    return classMatchesTarget(enrolledClass);
+  });
+};
+
+const sanitizeClass = (classRecord) => {
+  if (!classRecord) {
+    return null;
+  }
+
+  return {
+    capacity: classRecord.capacity || targetClassFallbacks.capacity,
+    currency: classRecord.currency || targetClassFallbacks.currency,
+    discountedPricePence: classRecord.discountedPricePence ?? targetClassFallbacks.discountedPricePence,
+    documentId: classRecord.documentId,
+    endDate: classRecord.endDate,
+    interviewsGuaranteed: targetClassFallbacks.interviewsGuaranteed,
+    name:
+      classRecord.name ||
+      `First ${classRecord.region || targetClassFallbacks.region} ${classRecord.sector || targetClassFallbacks.sector} class`,
+    pricePence: classRecord.pricePence ?? targetClassFallbacks.pricePence,
+    quarter: classRecord.quarter,
+    region: classRecord.region || targetClassFallbacks.region,
+    sector: classRecord.sector || targetClassFallbacks.sector,
+    startDate: classRecord.startDate,
+    status: classRecord.status,
+    year: classRecord.year,
+  };
+};
+
+const sanitizeEnrollment = (enrollment) => {
+  if (!enrollment) {
+    return null;
+  }
+
+  return {
+    completionStatus: enrollment.completionStatus,
+    documentId: enrollment.documentId,
+    enrolledAt: enrollment.enrolledAt,
+    paymentStatus: enrollment.paymentStatus,
+    status: enrollment.status,
+  };
+};
+
+const classHasPaymentAccess = (classRecord) => classRecord?.status === 'open';
+
+const deriveClassInterestState = (candidate, enrollment, targetClass?) => {
+  if (enrollment) {
+    if (
+      enrollment.paymentStatus === 'paid' ||
+      ['enrolled', 'active', 'completed'].includes(enrollment.status)
+    ) {
+      return 'place_secured';
+    }
+
+    if (enrollment.status === 'slot_reserved') {
+      return 'payment_available';
+    }
+
+    if (classHasPaymentAccess(enrollment.class || targetClass)) {
+      return 'payment_available';
+    }
+
+    return 'waiting_for_class';
+  }
+
+  if (placeSecuredCandidateStatuses.has(candidate.status)) {
+    return 'place_secured';
+  }
+
+  if (candidate.status === 'slot_reserved') {
+    return 'payment_available';
+  }
+
+  if (candidate.status === 'waitlisted') {
+    return 'waiting_for_class';
+  }
+
+  if (candidate.registeredInterestAt || candidate.status === 'interest_registered') {
+    if (classHasPaymentAccess(targetClass)) {
+      return 'payment_available';
+    }
+
+    return 'interest_registered';
+  }
+
+  return 'not_registered';
+};
+
+const buildClassInterestResponse = ({ candidate, enrollment, targetClass }) => {
+  const state = deriveClassInterestState(candidate, enrollment, targetClass);
+
+  return {
+    canRegisterInterest: state === 'not_registered',
+    candidate: {
+      documentId: candidate.documentId,
+      registeredInterestAt: candidate.registeredInterestAt,
+      status: candidate.status,
+    },
+    class: sanitizeClass(targetClass),
+    enrollment: sanitizeEnrollment(enrollment),
+    state,
+    target: {
+      capacity: targetClassFallbacks.capacity,
+      currency: targetClassFallbacks.currency,
+      discountedPricePence: targetClassFallbacks.discountedPricePence,
+      interviewsGuaranteed: targetClassFallbacks.interviewsGuaranteed,
+      pricePence: targetClassFallbacks.pricePence,
+      region: getTargetClassRegion(),
+      sector: getTargetClassSector(),
+    },
+  };
 };
 
 export default factories.createCoreService('api::candidate.candidate', ({ strapi }) => ({
@@ -649,6 +834,126 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
     }
 
     return sanitizeCandidate(strapi, updatedCandidate);
+  },
+
+  async getCurrentCandidateClassInterest(auth: Auth0State | undefined) {
+    if (!auth || auth.type !== 'auth0' || !auth.subject) {
+      throw new UnauthorizedError('Auth0 authentication is required.');
+    }
+
+    const existingCandidate = await findCandidateByAuthIdentity(strapi, auth.subject);
+
+    if (!existingCandidate) {
+      throw new ValidationError('Candidate account must be synced before class interest can be checked.');
+    }
+
+    const targetClass = await findTargetClass(strapi);
+    const enrollment = await findCurrentEnrollment(strapi, existingCandidate, targetClass);
+
+    return buildClassInterestResponse({
+      candidate: existingCandidate,
+      enrollment,
+      targetClass,
+    });
+  },
+
+  async registerCurrentCandidateClassInterest(
+    auth: Auth0State | undefined,
+    requestContext: RequestContext = {}
+  ) {
+    if (!auth || auth.type !== 'auth0' || !auth.subject) {
+      throw new UnauthorizedError('Auth0 authentication is required.');
+    }
+
+    const existingCandidate = await findCandidateByAuthIdentity(strapi, auth.subject);
+
+    if (!existingCandidate) {
+      throw new ValidationError('Candidate account must be synced before class interest can be registered.');
+    }
+
+    const targetClass = await findTargetClass(strapi);
+    const existingEnrollment = await findCurrentEnrollment(strapi, existingCandidate, targetClass);
+    const currentState = deriveClassInterestState(existingCandidate, existingEnrollment, targetClass);
+
+    if (currentState !== 'not_registered') {
+      return {
+        created: false,
+        data: buildClassInterestResponse({
+          candidate: existingCandidate,
+          enrollment: existingEnrollment,
+          targetClass,
+        }),
+      };
+    }
+
+    const now = new Date().toISOString();
+    let enrollment;
+    const candidateUpdates: Record<string, unknown> = {
+      registeredInterestAt: existingCandidate.registeredInterestAt || now,
+      region: existingCandidate.region || getTargetClassRegion(),
+      sector: existingCandidate.sector || getTargetClassSector(),
+      status: targetClass ? 'waitlisted' : 'interest_registered',
+    };
+
+    if (targetClass) {
+      enrollment = await strapi.documents('api::enrollment.enrollment').create({
+        data: {
+          candidate: existingCandidate.documentId,
+          class: targetClass.documentId,
+          completionStatus: 'not_started',
+          metadata: {
+            registeredInterestAt: now,
+            source: 'candidate_dashboard',
+          },
+          passStatus: 'not_assessed',
+          paymentStatus: 'pending',
+          status: 'waitlisted',
+        } as any,
+        populate: ['class'],
+      } as any);
+    }
+
+    const updatedCandidate = await strapi.documents('api::candidate.candidate').update({
+      documentId: existingCandidate.documentId,
+      data: candidateUpdates as any,
+      populate: candidatePopulate,
+    } as any);
+
+    const response = buildClassInterestResponse({
+      candidate: updatedCandidate,
+      enrollment,
+      targetClass,
+    });
+
+    await (strapi.service('api::audit-event.audit-event') as any).record({
+      actorEmail: updatedCandidate.email,
+      actorId: auth.subject,
+      actorType: 'candidate',
+      eventCategory: 'candidate',
+      eventType: 'candidate.class_interest_registered',
+      ipAddress: requestContext.ipAddress,
+      metadata: {
+        targetRegion: getTargetClassRegion(),
+        targetSector: getTargetClassSector(),
+      },
+      newState: response,
+      occurredAt: now,
+      previousState: {
+        registeredInterestAt: existingCandidate.registeredInterestAt,
+        status: existingCandidate.status,
+      },
+      requestId: requestContext.requestId,
+      source: 'candidate_dashboard',
+      subjectDisplayName: updatedCandidate.email,
+      subjectId: updatedCandidate.documentId,
+      subjectType: 'candidate',
+      userAgent: requestContext.userAgent,
+    });
+
+    return {
+      created: true,
+      data: response,
+    };
   },
 
   async updateCurrentCandidateProfileImage(
