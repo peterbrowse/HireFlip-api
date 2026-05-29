@@ -22,6 +22,7 @@ type RequestContext = {
 };
 
 const communicationChannels = ['email', 'sms', 'phone'] as const;
+const notListedPreferenceValue = 'not_listed';
 const candidatePopulate = ['profileImage'];
 const profileImageFormats = ['webp', 'avif'] as const;
 const targetClassFallbacks = {
@@ -33,6 +34,23 @@ const targetClassFallbacks = {
   region: 'London',
   sector: 'Marketing',
 };
+const fallbackClassAreaOptions = [
+  { label: 'London', value: 'london' },
+  { label: 'Manchester', value: 'manchester' },
+  { label: 'Birmingham', value: 'birmingham' },
+  { label: 'Bristol', value: 'bristol' },
+  { label: 'Leeds', value: 'leeds' },
+  { label: 'Remote/online', value: 'remote_online' },
+];
+const fallbackWorkSectorOptions = [
+  { label: 'Marketing', value: 'marketing' },
+  { label: 'Sales', value: 'sales' },
+  { label: 'Accounting', value: 'accounting' },
+  { label: 'Finance', value: 'finance' },
+  { label: 'HR', value: 'hr' },
+  { label: 'Operations', value: 'operations' },
+  { label: 'Technology', value: 'technology' },
+];
 
 const terminalEnrollmentStatuses = new Set(['withdrawn', 'expired', 'refunded', 'archived']);
 const terminalClassStatuses = new Set(['cancelled', 'archived', 'completed']);
@@ -117,6 +135,34 @@ const optionalMobilePhone = z.preprocess(
   mobilePhoneSchema.optional()
 );
 
+const normalizePreferenceValue = (value: string) =>
+  value.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+
+const preferenceValue = z
+  .string()
+  .trim()
+  .min(1)
+  .max(80)
+  .transform(normalizePreferenceValue);
+
+const preferenceSelectionSchema = z
+  .object({
+    other: optionalString(160),
+    selected: z.array(preferenceValue).min(1).max(12),
+  })
+  .strict()
+  .refine(
+    (value) => !value.selected.includes(notListedPreferenceValue) || Boolean(value.other?.trim()),
+    {
+      message: 'Tell us what is not listed.',
+      path: ['other'],
+    }
+  )
+  .transform((value) => ({
+    other: value.other,
+    selected: Array.from(new Set(value.selected)),
+  }));
+
 const syncCandidateSchema = z
   .object({
     email: z
@@ -140,6 +186,7 @@ const validateSyncCandidate = validateZodSchema(syncCandidateSchema);
 
 const updateCandidateAccountSchema = z
   .object({
+    classAreaPreferences: preferenceSelectionSchema,
     communicationChannels: z.array(z.enum(communicationChannels)).optional(),
     firstName: z.string().trim().min(1).max(120),
     lastName: optionalString(120),
@@ -147,6 +194,7 @@ const updateCandidateAccountSchema = z
     preferredCommunicationChannel: z.enum(communicationChannels).optional(),
     marketingConsent: z.boolean(),
     marketingConsentWordingVersion: optionalString(80),
+    workSectorPreferences: preferenceSelectionSchema,
   })
   .strict();
 
@@ -227,6 +275,7 @@ const sanitizeProfileImage = async (strapi, profileImage) => {
 
 const sanitizeCandidate = async (strapi, candidate) => ({
   documentId: candidate.documentId,
+  classAreaPreferences: candidate.classAreaPreferences,
   email: candidate.email,
   firstName: candidate.firstName,
   lastName: candidate.lastName,
@@ -241,6 +290,7 @@ const sanitizeCandidate = async (strapi, candidate) => ({
   status: candidate.status,
   region: candidate.region,
   sector: candidate.sector,
+  workSectorPreferences: candidate.workSectorPreferences,
   registeredInterestAt: candidate.registeredInterestAt,
   recruitmentPlatformVisibility: candidate.recruitmentPlatformVisibility,
   accountCreatedAt: candidate.accountCreatedAt,
@@ -411,28 +461,110 @@ const derivePreferredCommunicationChannel = (
   return selectedChannels.find((channel) => channel !== 'email') || 'email';
 };
 
+const toTitleCase = (value: string) =>
+  value
+    .split(/[_\s-]+/)
+    .filter(Boolean)
+    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+    .join(' ');
+
+const preferenceLabel = (value?: string) => {
+  if (!value) {
+    return undefined;
+  }
+
+  return value === 'remote_online' ? 'Remote/online' : toTitleCase(value);
+};
+
+const sanitizePreferenceOption = (record) => ({
+  label: record.name,
+  value: normalizePreferenceValue(record.slug || record.name),
+});
+
+const getActivePreferenceOptions = async (strapi, uid: string, fallbackOptions: { label: string; value: string }[]) => {
+  const records = await strapi.documents(uid).findMany({
+    filters: {
+      status: 'active',
+    },
+    limit: 100,
+    sort: ['sortOrder:asc', 'name:asc'],
+  } as any);
+
+  return records.length > 0 ? records.map(sanitizePreferenceOption) : fallbackOptions;
+};
+
+const preferenceSelection = (value: unknown) => {
+  const rawValue = objectValue(value);
+  const selected = Array.isArray(rawValue.selected)
+    ? rawValue.selected.filter((item): item is string => typeof item === 'string' && item.trim() !== '')
+    : [];
+  const other = typeof rawValue.other === 'string' && rawValue.other.trim() ? rawValue.other.trim() : undefined;
+
+  return {
+    other,
+    selected,
+  };
+};
+
+const selectedListedPreferences = (value: unknown) =>
+  preferenceSelection(value).selected.filter((item) => item !== notListedPreferenceValue);
+
+const firstPreferenceLabel = (value: unknown, fallback: string) => {
+  const selection = preferenceSelection(value);
+  const firstListedPreference = selection.selected.find((item) => item !== notListedPreferenceValue);
+
+  if (firstListedPreference) {
+    return preferenceLabel(firstListedPreference) || fallback;
+  }
+
+  return selection.other || fallback;
+};
+
 const getTargetClassRegion = () => process.env.FIRST_CLASS_REGION || targetClassFallbacks.region;
 const getTargetClassSector = () => process.env.FIRST_CLASS_SECTOR || targetClassFallbacks.sector;
 
 const normalizeComparableText = (value?: string) => value?.trim().toLowerCase();
 
-const classMatchesTarget = (classRecord) => {
-  const targetRegion = normalizeComparableText(getTargetClassRegion());
-  const targetSector = normalizeComparableText(getTargetClassSector());
-  const classRegion = normalizeComparableText(classRecord.region || targetClassFallbacks.region);
-  const classSector = normalizeComparableText(classRecord.sector || targetClassFallbacks.sector);
+const classRecordAreaValue = (classRecord) =>
+  normalizePreferenceValue(classRecord.classArea?.slug || classRecord.classArea?.name || classRecord.region || targetClassFallbacks.region);
 
-  return classRegion === targetRegion && classSector === targetSector;
+const classRecordSectorValue = (classRecord) =>
+  normalizePreferenceValue(classRecord.workSector?.slug || classRecord.workSector?.name || classRecord.sector || targetClassFallbacks.sector);
+
+const classMatchesTarget = (classRecord, candidate?) => {
+  const classAreaPreference = preferenceSelection(candidate?.classAreaPreferences);
+  const workSectorPreference = preferenceSelection(candidate?.workSectorPreferences);
+  const selectedRegions = selectedListedPreferences(candidate?.classAreaPreferences).map(normalizeComparableText);
+  const selectedSectors = selectedListedPreferences(candidate?.workSectorPreferences).map(normalizeComparableText);
+  const targetRegion = normalizePreferenceValue(getTargetClassRegion());
+  const targetSector = normalizePreferenceValue(getTargetClassSector());
+  const classRegion = classRecordAreaValue(classRecord);
+  const classSector = classRecordSectorValue(classRecord);
+  const regionMatches =
+    selectedRegions.length > 0
+      ? selectedRegions.includes(classRegion)
+      : classAreaPreference.selected.length > 0
+        ? false
+        : classRegion === targetRegion;
+  const sectorMatches =
+    selectedSectors.length > 0
+      ? selectedSectors.includes(classSector)
+      : workSectorPreference.selected.length > 0
+        ? false
+        : classSector === targetSector;
+
+  return regionMatches && sectorMatches;
 };
 
-const findTargetClass = async (strapi) => {
+const findTargetClass = async (strapi, candidate?) => {
   const classes = await strapi.documents('api::class.class').findMany({
     limit: 100,
+    populate: ['classArea', 'workSector'],
     sort: ['startDate:asc', 'createdAt:desc'],
   } as any);
 
   return classes
-    .filter((classRecord) => classMatchesTarget(classRecord))
+    .filter((classRecord) => classMatchesTarget(classRecord, candidate))
     .filter((classRecord) => !terminalClassStatuses.has(classRecord.status))
     .sort((firstClass, secondClass) => {
       const firstTime = firstClass.startDate ? Date.parse(firstClass.startDate) : Number.MAX_SAFE_INTEGER;
@@ -469,14 +601,27 @@ const findCurrentEnrollment = async (strapi, candidate, targetClass?) => {
       return enrolledClass.documentId === targetClass.documentId;
     }
 
-    return classMatchesTarget(enrolledClass);
+    return classMatchesTarget(enrolledClass, candidate);
   });
 };
+
+const buildTarget = (candidate?) => ({
+  capacity: targetClassFallbacks.capacity,
+  currency: targetClassFallbacks.currency,
+  discountedPricePence: targetClassFallbacks.discountedPricePence,
+  interviewsGuaranteed: targetClassFallbacks.interviewsGuaranteed,
+  pricePence: targetClassFallbacks.pricePence,
+  region: firstPreferenceLabel(candidate?.classAreaPreferences, getTargetClassRegion()),
+  sector: firstPreferenceLabel(candidate?.workSectorPreferences, getTargetClassSector()),
+});
 
 const sanitizeClass = (classRecord) => {
   if (!classRecord) {
     return null;
   }
+
+  const region = classRecord.classArea?.name || classRecord.region || targetClassFallbacks.region;
+  const sector = classRecord.workSector?.name || classRecord.sector || targetClassFallbacks.sector;
 
   return {
     capacity: classRecord.capacity || targetClassFallbacks.capacity,
@@ -487,11 +632,11 @@ const sanitizeClass = (classRecord) => {
     interviewsGuaranteed: targetClassFallbacks.interviewsGuaranteed,
     name:
       classRecord.name ||
-      `First ${classRecord.region || targetClassFallbacks.region} ${classRecord.sector || targetClassFallbacks.sector} class`,
+      `First ${region} ${sector} class`,
     pricePence: classRecord.pricePence ?? targetClassFallbacks.pricePence,
     quarter: classRecord.quarter,
-    region: classRecord.region || targetClassFallbacks.region,
-    sector: classRecord.sector || targetClassFallbacks.sector,
+    region,
+    sector,
     startDate: classRecord.startDate,
     status: classRecord.status,
     year: classRecord.year,
@@ -559,6 +704,7 @@ const deriveClassInterestState = (candidate, enrollment, targetClass?) => {
 
 const buildClassInterestResponse = ({ candidate, enrollment, targetClass }) => {
   const state = deriveClassInterestState(candidate, enrollment, targetClass);
+  const target = buildTarget(candidate);
 
   return {
     canRegisterInterest: state === 'not_registered',
@@ -570,15 +716,7 @@ const buildClassInterestResponse = ({ candidate, enrollment, targetClass }) => {
     class: sanitizeClass(targetClass),
     enrollment: sanitizeEnrollment(enrollment),
     state,
-    target: {
-      capacity: targetClassFallbacks.capacity,
-      currency: targetClassFallbacks.currency,
-      discountedPricePence: targetClassFallbacks.discountedPricePence,
-      interviewsGuaranteed: targetClassFallbacks.interviewsGuaranteed,
-      pricePence: targetClassFallbacks.pricePence,
-      region: getTargetClassRegion(),
-      sector: getTargetClassSector(),
-    },
+    target,
   };
 };
 
@@ -690,6 +828,22 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
     return sanitizeCandidate(strapi, updatedCandidate);
   },
 
+  async getCandidatePreferenceOptions(auth: Auth0State | undefined) {
+    if (!auth || auth.type !== 'auth0' || !auth.subject) {
+      throw new UnauthorizedError('Auth0 authentication is required.');
+    }
+
+    const [classAreas, workSectors] = await Promise.all([
+      getActivePreferenceOptions(strapi, 'api::class-area.class-area', fallbackClassAreaOptions),
+      getActivePreferenceOptions(strapi, 'api::work-sector.work-sector', fallbackWorkSectorOptions),
+    ]);
+
+    return {
+      classAreas,
+      workSectors,
+    };
+  },
+
   async updateCurrentCandidateAccount(
     auth: Auth0State | undefined,
     input: unknown,
@@ -737,6 +891,10 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
         sms: selectedCommunicationChannels.includes('sms'),
       },
     };
+    const target = buildTarget({
+      classAreaPreferences: payload.classAreaPreferences,
+      workSectorPreferences: payload.workSectorPreferences,
+    });
 
     const profileSettings = {
       ...previousProfileSettings,
@@ -748,6 +906,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
 
     const changes = diffDefinedFields(existingCandidate, {
       accountOnboardingCompletedAt: onboardingCompletedAt,
+      classAreaPreferences: payload.classAreaPreferences,
       firstName: payload.firstName,
       lastName: payload.lastName,
       marketingConsentCapturedAt: consentCapturedAt,
@@ -758,6 +917,9 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       phone: payload.phone,
       preferredCommunicationChannel,
       profileSettings,
+      region: target.region,
+      sector: target.sector,
+      workSectorPreferences: payload.workSectorPreferences,
     });
 
     if (Object.keys(changes).length === 0) {
@@ -772,6 +934,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
 
     const previousState = {
       accountOnboardingCompletedAt: existingCandidate.accountOnboardingCompletedAt,
+      classAreaPreferences: existingCandidate.classAreaPreferences,
       firstName: existingCandidate.firstName,
       lastName: existingCandidate.lastName,
       marketingConsentCapturedAt: existingCandidate.marketingConsentCapturedAt,
@@ -779,6 +942,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       marketingConsentWordingVersion: existingCandidate.marketingConsentWordingVersion,
       phone: existingCandidate.phone,
       preferredCommunicationChannel: existingCandidate.preferredCommunicationChannel,
+      workSectorPreferences: existingCandidate.workSectorPreferences,
     };
 
     await (strapi.service('api::audit-event.audit-event') as any).record({
@@ -847,7 +1011,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       throw new ValidationError('Candidate account must be synced before class interest can be checked.');
     }
 
-    const targetClass = await findTargetClass(strapi);
+    const targetClass = await findTargetClass(strapi, existingCandidate);
     const enrollment = await findCurrentEnrollment(strapi, existingCandidate, targetClass);
 
     return buildClassInterestResponse({
@@ -871,7 +1035,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       throw new ValidationError('Candidate account must be synced before class interest can be registered.');
     }
 
-    const targetClass = await findTargetClass(strapi);
+    const targetClass = await findTargetClass(strapi, existingCandidate);
     const existingEnrollment = await findCurrentEnrollment(strapi, existingCandidate, targetClass);
     const currentState = deriveClassInterestState(existingCandidate, existingEnrollment, targetClass);
 
@@ -890,16 +1054,20 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
     let enrollment;
     const candidateUpdates: Record<string, unknown> = {
       registeredInterestAt: existingCandidate.registeredInterestAt || now,
-      region: existingCandidate.region || getTargetClassRegion(),
-      sector: existingCandidate.sector || getTargetClassSector(),
+      region: existingCandidate.region || buildTarget(existingCandidate).region,
+      sector: existingCandidate.sector || buildTarget(existingCandidate).sector,
       status: targetClass ? 'waitlisted' : 'interest_registered',
     };
 
     if (targetClass) {
       enrollment = await strapi.documents('api::enrollment.enrollment').create({
         data: {
-          candidate: existingCandidate.documentId,
-          class: targetClass.documentId,
+          candidate: {
+            connect: [{ documentId: existingCandidate.documentId }],
+          },
+          class: {
+            connect: [{ documentId: targetClass.documentId }],
+          },
           completionStatus: 'not_started',
           metadata: {
             registeredInterestAt: now,

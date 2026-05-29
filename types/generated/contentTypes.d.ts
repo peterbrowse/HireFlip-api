@@ -818,6 +818,7 @@ export interface ApiCandidateCandidate extends Struct.CollectionTypeSchema {
     authProvider: Schema.Attribute.Enumeration<['auth0', 'manual', 'unknown']> &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'unknown'>;
+    classAreaPreferences: Schema.Attribute.JSON;
     createdAt: Schema.Attribute.DateTime;
     createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
@@ -900,6 +901,62 @@ export interface ApiCandidateCandidate extends Struct.CollectionTypeSchema {
     updatedAt: Schema.Attribute.DateTime;
     updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
+    workSectorPreferences: Schema.Attribute.JSON;
+  };
+}
+
+export interface ApiClassAreaClassArea extends Struct.CollectionTypeSchema {
+  collectionName: 'class_areas';
+  info: {
+    description: 'Geographic or delivery areas candidates can select for HireFlip classes.';
+    displayName: 'Class Area';
+    pluralName: 'class-areas';
+    singularName: 'class-area';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    classes: Schema.Attribute.Relation<'oneToMany', 'api::class.class'>;
+    country: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 120;
+      }> &
+      Schema.Attribute.DefaultTo<'United Kingdom'>;
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::class-area.class-area'
+    > &
+      Schema.Attribute.Private;
+    name: Schema.Attribute.String &
+      Schema.Attribute.Required &
+      Schema.Attribute.Unique &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 120;
+        minLength: 1;
+      }>;
+    notes: Schema.Attribute.Text;
+    publishedAt: Schema.Attribute.DateTime;
+    slug: Schema.Attribute.UID<'name'> & Schema.Attribute.Required;
+    sortOrder: Schema.Attribute.Integer &
+      Schema.Attribute.SetMinMax<
+        {
+          max: 10000;
+          min: 0;
+        },
+        number
+      > &
+      Schema.Attribute.DefaultTo<100>;
+    status: Schema.Attribute.Enumeration<['active', 'hidden', 'archived']> &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'active'>;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
   };
 }
 
@@ -924,6 +981,10 @@ export interface ApiClassClass extends Struct.CollectionTypeSchema {
         number
       > &
       Schema.Attribute.DefaultTo<30>;
+    classArea: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::class-area.class-area'
+    >;
     closedAt: Schema.Attribute.DateTime;
     completionDeadline: Schema.Attribute.DateTime;
     course: Schema.Attribute.Relation<'manyToOne', 'api::course.course'>;
@@ -993,6 +1054,10 @@ export interface ApiClassClass extends Struct.CollectionTypeSchema {
     updatedAt: Schema.Attribute.DateTime;
     updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
+    workSector: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::work-sector.work-sector'
+    >;
     year: Schema.Attribute.Integer &
       Schema.Attribute.SetMinMax<
         {
@@ -2570,6 +2635,56 @@ export interface ApiTestTest extends Struct.CollectionTypeSchema {
   };
 }
 
+export interface ApiWorkSectorWorkSector extends Struct.CollectionTypeSchema {
+  collectionName: 'work_sectors';
+  info: {
+    description: 'Work sectors candidates can select for HireFlip class and career interest.';
+    displayName: 'Work Sector';
+    pluralName: 'work-sectors';
+    singularName: 'work-sector';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    classes: Schema.Attribute.Relation<'oneToMany', 'api::class.class'>;
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::work-sector.work-sector'
+    > &
+      Schema.Attribute.Private;
+    name: Schema.Attribute.String &
+      Schema.Attribute.Required &
+      Schema.Attribute.Unique &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 120;
+        minLength: 1;
+      }>;
+    notes: Schema.Attribute.Text;
+    publishedAt: Schema.Attribute.DateTime;
+    slug: Schema.Attribute.UID<'name'> & Schema.Attribute.Required;
+    sortOrder: Schema.Attribute.Integer &
+      Schema.Attribute.SetMinMax<
+        {
+          max: 10000;
+          min: 0;
+        },
+        number
+      > &
+      Schema.Attribute.DefaultTo<100>;
+    status: Schema.Attribute.Enumeration<['active', 'hidden', 'archived']> &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'active'>;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+  };
+}
+
 export interface PluginContentReleasesRelease
   extends Struct.CollectionTypeSchema {
   collectionName: 'strapi_releases';
@@ -3087,6 +3202,7 @@ declare module '@strapi/strapi' {
       'api::candidate-interview-strike.candidate-interview-strike': ApiCandidateInterviewStrikeCandidateInterviewStrike;
       'api::candidate-profile.candidate-profile': ApiCandidateProfileCandidateProfile;
       'api::candidate.candidate': ApiCandidateCandidate;
+      'api::class-area.class-area': ApiClassAreaClassArea;
       'api::class.class': ApiClassClass;
       'api::course-material.course-material': ApiCourseMaterialCourseMaterial;
       'api::course-module.course-module': ApiCourseModuleCourseModule;
@@ -3109,6 +3225,7 @@ declare module '@strapi/strapi' {
       'api::stored-file.stored-file': ApiStoredFileStoredFile;
       'api::test-attempt.test-attempt': ApiTestAttemptTestAttempt;
       'api::test.test': ApiTestTest;
+      'api::work-sector.work-sector': ApiWorkSectorWorkSector;
       'plugin::content-releases.release': PluginContentReleasesRelease;
       'plugin::content-releases.release-action': PluginContentReleasesReleaseAction;
       'plugin::i18n.locale': PluginI18NLocale;

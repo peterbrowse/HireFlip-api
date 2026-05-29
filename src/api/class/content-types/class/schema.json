@@ -55,6 +55,18 @@
       "target": "api::course.course",
       "inversedBy": "classes"
     },
+    "classArea": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::class-area.class-area",
+      "inversedBy": "classes"
+    },
+    "workSector": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::work-sector.work-sector",
+      "inversedBy": "classes"
+    },
     "startDate": {
       "type": "date"
     },

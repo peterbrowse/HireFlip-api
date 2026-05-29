@@ -71,6 +71,16 @@ export default factories.createCoreController('api::candidate.candidate', ({ str
     };
   },
 
+  async preferenceOptions(ctx) {
+    const result = await (strapi.service('api::candidate.candidate') as any).getCandidatePreferenceOptions(
+      ctx.state?.hireflipAuth
+    );
+
+    ctx.body = {
+      data: result,
+    };
+  },
+
   async registerClassInterest(ctx) {
     const result = await (strapi.service('api::candidate.candidate') as any).registerCurrentCandidateClassInterest(
       ctx.state?.hireflipAuth,

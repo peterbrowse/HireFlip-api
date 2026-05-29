@@ -1,0 +1,57 @@
+{
+  "kind": "collectionType",
+  "collectionName": "class_areas",
+  "info": {
+    "singularName": "class-area",
+    "pluralName": "class-areas",
+    "displayName": "Class Area",
+    "description": "Geographic or delivery areas candidates can select for HireFlip classes."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120,
+      "required": true,
+      "unique": true
+    },
+    "slug": {
+      "type": "uid",
+      "targetField": "name",
+      "required": true
+    },
+    "status": {
+      "type": "enumeration",
+      "enum": [
+        "active",
+        "hidden",
+        "archived"
+      ],
+      "default": "active",
+      "required": true
+    },
+    "sortOrder": {
+      "type": "integer",
+      "min": 0,
+      "max": 10000,
+      "default": 100
+    },
+    "country": {
+      "type": "string",
+      "maxLength": 120,
+      "default": "United Kingdom"
+    },
+    "notes": {
+      "type": "text"
+    },
+    "classes": {
+      "type": "relation",
+      "relation": "oneToMany",
+      "target": "api::class.class",
+      "mappedBy": "classArea"
+    }
+  }
+}

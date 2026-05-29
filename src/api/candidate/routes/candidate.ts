@@ -41,6 +41,19 @@ export default {
     },
     {
       method: 'GET',
+      path: '/candidates/preference-options',
+      handler: 'candidate.preferenceOptions',
+      config: {
+        auth: false,
+        middlewares: [
+          {
+            name: 'global::auth0-jwt',
+          },
+        ],
+      },
+    },
+    {
+      method: 'GET',
       path: '/candidates/me/class-interest',
       handler: 'candidate.classInterest',
       config: {

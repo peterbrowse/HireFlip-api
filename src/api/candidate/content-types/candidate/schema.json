@@ -124,6 +124,12 @@
     "profileSettings": {
       "type": "json"
     },
+    "classAreaPreferences": {
+      "type": "json"
+    },
+    "workSectorPreferences": {
+      "type": "json"
+    },
     "notificationPreferences": {
       "type": "json"
     },
