@@ -144,7 +144,51 @@ const signProfileImage = async (strapi, profileImage) => {
     return null;
   }
 
-  return strapi.plugin('upload').service('file').signFileUrls(profileImage);
+  return strapi.plugin('upload').service('file').signFileUrls(withRecoveredUploadPath(profileImage));
+};
+
+const recoverUploadPath = (file) => {
+  if (!file?.url || file.path || !file.hash) {
+    return file;
+  }
+
+  try {
+    const objectKey = decodeURIComponent(new URL(file.url).pathname.replace(/^\/+/, ''));
+    const expectedFileName = `${file.hash}${file.ext || ''}`;
+
+    if (!expectedFileName || !objectKey.endsWith(expectedFileName)) {
+      return file;
+    }
+
+    const prefix = objectKey.slice(0, -expectedFileName.length).replace(/\/+$/, '');
+
+    return prefix
+      ? {
+          ...file,
+          path: prefix,
+        }
+      : file;
+  } catch {
+    return file;
+  }
+};
+
+const withRecoveredUploadPath = (file) => {
+  const recoveredFile = recoverUploadPath(file);
+
+  if (!recoveredFile?.formats) {
+    return recoveredFile;
+  }
+
+  return {
+    ...recoveredFile,
+    formats: Object.fromEntries(
+      Object.entries(recoveredFile.formats).map(([key, format]) => [
+        key,
+        recoverUploadPath(format),
+      ])
+    ),
+  };
 };
 
 const sanitizeProfileImage = async (strapi, profileImage) => {
@@ -633,7 +677,6 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
             name: `candidate-profile-${existingCandidate.documentId}.${processedImage.format}`,
           },
           field: 'profileImage',
-          path: 'candidate-profile-images',
           ref: 'api::candidate.candidate',
           refId: existingCandidate.id,
         },
