@@ -26,6 +26,24 @@ const notListedPreferenceValue = 'not_listed';
 const candidatePopulate = ['profileImage'];
 const profileImageFormats = ['webp', 'avif'] as const;
 const visiblePreferenceStates = ['active', 'coming_soon'] as const;
+const profileImageSignedUrlCache = new Map<
+  string,
+  {
+    expiresAt: number;
+    value: {
+      alternativeText?: string;
+      documentId?: string;
+      ext?: string;
+      height?: number;
+      id?: number;
+      mime?: string;
+      name?: string;
+      size?: number;
+      url?: string;
+      width?: number;
+    };
+  }
+>();
 
 const terminalEnrollmentStatuses = new Set(['withdrawn', 'expired', 'refunded', 'archived']);
 const terminalClassStatuses = new Set(['cancelled', 'archived', 'completed']);
@@ -195,14 +213,6 @@ const registerClassInterestSchema = z
 
 const validateRegisterClassInterest = validateZodSchema(registerClassInterestSchema);
 
-const signProfileImage = async (strapi, profileImage) => {
-  if (!profileImage) {
-    return null;
-  }
-
-  return strapi.plugin('upload').service('file').signFileUrls(withRecoveredUploadPath(profileImage));
-};
-
 const recoverUploadPath = (file) => {
   if (!file?.url || file.path || !file.hash) {
     return file;
@@ -247,14 +257,62 @@ const withRecoveredUploadPath = (file) => {
   };
 };
 
+const getProfileImageCacheKey = (profileImage) => {
+  const id = profileImage?.documentId || profileImage?.id;
+
+  if (!id) {
+    return undefined;
+  }
+
+  return [
+    id,
+    profileImage.hash,
+    profileImage.ext,
+    profileImage.updatedAt,
+    profileImage.url,
+  ]
+    .filter(Boolean)
+    .join(':');
+};
+
+const getProfileImageSignedUrlCacheTtlMs = () =>
+  getIntegerEnv('CANDIDATE_PROFILE_IMAGE_SIGNED_URL_CACHE_TTL_SECONDS', 300) * 1000;
+
+const pruneExpiredProfileImageCache = (now = Date.now()) => {
+  for (const [key, entry] of profileImageSignedUrlCache.entries()) {
+    if (entry.expiresAt <= now) {
+      profileImageSignedUrlCache.delete(key);
+    }
+  }
+};
+
 const sanitizeProfileImage = async (strapi, profileImage) => {
-  const signedProfileImage = await signProfileImage(strapi, profileImage);
+  if (!profileImage) {
+    return null;
+  }
+
+  const now = Date.now();
+  const cacheKey = getProfileImageCacheKey(profileImage);
+  const cachedProfileImage = cacheKey ? profileImageSignedUrlCache.get(cacheKey) : undefined;
+
+  if (cachedProfileImage && cachedProfileImage.expiresAt > now) {
+    return {
+      ...cachedProfileImage.value,
+    };
+  }
+
+  pruneExpiredProfileImageCache(now);
+
+  const signedProfileImage = await strapi
+    .plugin('upload')
+    .service('file')
+    .signFileUrls(withRecoveredUploadPath(profileImage));
 
   if (!signedProfileImage) {
     return null;
   }
 
-  return {
+  const sanitizedProfileImage = {
     id: signedProfileImage.id,
     documentId: signedProfileImage.documentId,
     name: signedProfileImage.name,
@@ -266,6 +324,15 @@ const sanitizeProfileImage = async (strapi, profileImage) => {
     height: signedProfileImage.height,
     url: signedProfileImage.url,
   };
+
+  if (cacheKey) {
+    profileImageSignedUrlCache.set(cacheKey, {
+      expiresAt: now + getProfileImageSignedUrlCacheTtlMs(),
+      value: sanitizedProfileImage,
+    });
+  }
+
+  return sanitizedProfileImage;
 };
 
 const sanitizeCandidate = async (strapi, candidate) => ({
