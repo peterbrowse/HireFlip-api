@@ -10,6 +10,7 @@ export default ({ env }) => {
   return [
     'strapi::logger',
     'strapi::errors',
+    'global::noindex',
     {
       name: 'strapi::security',
       config: {
