@@ -1,6 +1,10 @@
+import { mkdtemp, rm, stat } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { factories } from '@strapi/strapi';
 import { errors, validateZodSchema, z } from '@strapi/utils';
 import { parsePhoneNumberFromString } from 'libphonenumber-js/max';
+import sharp from 'sharp';
 
 const { UnauthorizedError, ValidationError } = errors;
 
@@ -18,6 +22,31 @@ type RequestContext = {
 };
 
 const communicationChannels = ['email', 'sms', 'phone'] as const;
+const candidatePopulate = ['profileImage'];
+const profileImageFormats = ['webp', 'avif'] as const;
+
+type UploadedFile = {
+  filepath?: string;
+  mimetype?: string;
+  originalFilename?: string;
+  path?: string;
+  size?: number;
+};
+
+const getIntegerEnv = (name: string, fallback: number) => {
+  const value = Number.parseInt(process.env[name] || '', 10);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+};
+
+const getProfileImageFormat = () => {
+  const configuredFormat = (process.env.CANDIDATE_PROFILE_IMAGE_FORMAT || 'webp').toLowerCase();
+  return profileImageFormats.includes(configuredFormat as (typeof profileImageFormats)[number])
+    ? (configuredFormat as (typeof profileImageFormats)[number])
+    : 'webp';
+};
+
+const getProfileImageMime = (format: (typeof profileImageFormats)[number]) =>
+  format === 'avif' ? 'image/avif' : 'image/webp';
 
 const coercePhoneInput = (value: string) => {
   const trimmedValue = value.trim();
@@ -110,11 +139,41 @@ const updateCandidateAccountSchema = z
 
 const validateUpdateCandidateAccount = validateZodSchema(updateCandidateAccountSchema);
 
-const sanitizeCandidate = (candidate) => ({
+const signProfileImage = async (strapi, profileImage) => {
+  if (!profileImage) {
+    return null;
+  }
+
+  return strapi.plugin('upload').service('file').signFileUrls(profileImage);
+};
+
+const sanitizeProfileImage = async (strapi, profileImage) => {
+  const signedProfileImage = await signProfileImage(strapi, profileImage);
+
+  if (!signedProfileImage) {
+    return null;
+  }
+
+  return {
+    id: signedProfileImage.id,
+    documentId: signedProfileImage.documentId,
+    name: signedProfileImage.name,
+    alternativeText: signedProfileImage.alternativeText,
+    ext: signedProfileImage.ext,
+    mime: signedProfileImage.mime,
+    size: signedProfileImage.size,
+    width: signedProfileImage.width,
+    height: signedProfileImage.height,
+    url: signedProfileImage.url,
+  };
+};
+
+const sanitizeCandidate = async (strapi, candidate) => ({
   documentId: candidate.documentId,
   email: candidate.email,
   firstName: candidate.firstName,
   lastName: candidate.lastName,
+  profileImage: await sanitizeProfileImage(strapi, candidate.profileImage),
   notificationPreferences: candidate.notificationPreferences,
   phone: candidate.phone,
   preferredCommunicationChannel: candidate.preferredCommunicationChannel,
@@ -128,6 +187,63 @@ const sanitizeCandidate = (candidate) => ({
   recruitmentPlatformVisibility: candidate.recruitmentPlatformVisibility,
   accountCreatedAt: candidate.accountCreatedAt,
 });
+
+const getUploadedFilePath = (file?: UploadedFile) => file?.filepath || file?.path;
+
+const processProfileImage = async (file?: UploadedFile) => {
+  const inputPath = getUploadedFilePath(file);
+
+  if (!inputPath) {
+    throw new ValidationError('A profile image file is required.');
+  }
+
+  const maxBytes = getIntegerEnv('CANDIDATE_PROFILE_IMAGE_MAX_BYTES', 6 * 1024 * 1024);
+
+  if (file?.size && file.size > maxBytes) {
+    throw new ValidationError('Profile image is too large.');
+  }
+
+  const format = getProfileImageFormat();
+  const mime = getProfileImageMime(format);
+  const size = getIntegerEnv('CANDIDATE_PROFILE_IMAGE_SIZE', 512);
+  const quality = Math.min(
+    100,
+    Math.max(1, getIntegerEnv('CANDIDATE_PROFILE_IMAGE_QUALITY', format === 'avif' ? 58 : 82))
+  );
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), 'hireflip-profile-image-'));
+  const outputPath = path.join(tmpDir, `profile-image.${format}`);
+
+  try {
+    const transformer = sharp(inputPath, { failOn: 'error' })
+      .rotate()
+      .resize(size, size, {
+        fit: 'cover',
+        position: 'attention',
+      });
+
+    if (format === 'avif') {
+      await transformer.avif({ quality }).toFile(outputPath);
+    } else {
+      await transformer.webp({ quality }).toFile(outputPath);
+    }
+
+    const outputStats = await stat(outputPath);
+
+    return {
+      format,
+      mime,
+      outputPath,
+      sizeInBytes: outputStats.size,
+      tmpDir,
+    };
+  } catch (error) {
+    await rm(tmpDir, { force: true, recursive: true });
+
+    throw new ValidationError(
+      error instanceof Error ? `Profile image could not be processed: ${error.message}` : 'Profile image could not be processed.'
+    );
+  }
+};
 
 const getClaimString = (claims: Record<string, unknown> | undefined, key: string) => {
   const value = claims?.[key];
@@ -175,6 +291,7 @@ const findCandidateByAuthIdentity = async (strapi, authIdentityId: string) => {
       authIdentityId,
     },
     limit: 1,
+    populate: candidatePopulate,
   } as any);
 
   return candidates[0];
@@ -280,7 +397,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
         eventCategory: 'candidate',
         eventType: 'candidate.account_created',
         ipAddress: requestContext.ipAddress,
-        newState: sanitizeCandidate(candidate),
+        newState: await sanitizeCandidate(strapi, candidate),
         occurredAt: now,
         requestId: requestContext.requestId,
         source: 'core_api',
@@ -290,7 +407,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
         userAgent: requestContext.userAgent,
       });
 
-      return sanitizeCandidate(candidate);
+      return sanitizeCandidate(strapi, candidate);
     }
 
     const changes = diffDefinedFields(existingCandidate, {
@@ -307,13 +424,14 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
     });
 
     if (Object.keys(changes).length === 0) {
-      return sanitizeCandidate(existingCandidate);
+      return sanitizeCandidate(strapi, existingCandidate);
     }
 
     const updatedCandidate = await strapi.documents('api::candidate.candidate').update({
       documentId: existingCandidate.documentId,
       data: changes as any,
-    });
+      populate: candidatePopulate,
+    } as any);
 
     await (strapi.service('api::audit-event.audit-event') as any).record({
       actorEmail: updatedCandidate.email,
@@ -340,7 +458,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       userAgent: requestContext.userAgent,
     });
 
-    return sanitizeCandidate(updatedCandidate);
+    return sanitizeCandidate(strapi, updatedCandidate);
   },
 
   async updateCurrentCandidateAccount(
@@ -414,13 +532,14 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
     });
 
     if (Object.keys(changes).length === 0) {
-      return sanitizeCandidate(existingCandidate);
+      return sanitizeCandidate(strapi, existingCandidate);
     }
 
     const updatedCandidate = await strapi.documents('api::candidate.candidate').update({
       documentId: existingCandidate.documentId,
       data: changes as any,
-    });
+      populate: candidatePopulate,
+    } as any);
 
     const previousState = {
       accountOnboardingCompletedAt: existingCandidate.accountOnboardingCompletedAt,
@@ -442,7 +561,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
         ? 'candidate.account_updated'
         : 'candidate.account_onboarding_completed',
       ipAddress: requestContext.ipAddress,
-      newState: sanitizeCandidate(updatedCandidate),
+      newState: await sanitizeCandidate(strapi, updatedCandidate),
       occurredAt: now,
       previousState,
       requestId: requestContext.requestId,
@@ -485,6 +604,98 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       });
     }
 
-    return sanitizeCandidate(updatedCandidate);
+    return sanitizeCandidate(strapi, updatedCandidate);
+  },
+
+  async updateCurrentCandidateProfileImage(
+    auth: Auth0State | undefined,
+    file: UploadedFile | undefined,
+    requestContext: RequestContext = {}
+  ) {
+    if (!auth || auth.type !== 'auth0' || !auth.subject) {
+      throw new UnauthorizedError('Auth0 authentication is required.');
+    }
+
+    const existingCandidate = await findCandidateByAuthIdentity(strapi, auth.subject);
+
+    if (!existingCandidate) {
+      throw new ValidationError('Candidate account must be synced before a profile image can be updated.');
+    }
+
+    const previousProfileImage = existingCandidate.profileImage;
+    const processedImage = await processProfileImage(file);
+
+    try {
+      const uploadedFiles = await strapi.plugin('upload').service('upload').upload({
+        data: {
+          fileInfo: {
+            alternativeText: `${existingCandidate.firstName || existingCandidate.email} profile image`,
+            name: `candidate-profile-${existingCandidate.documentId}.${processedImage.format}`,
+          },
+          field: 'profileImage',
+          path: 'candidate-profile-images',
+          ref: 'api::candidate.candidate',
+          refId: existingCandidate.id,
+        },
+        files: {
+          filepath: processedImage.outputPath,
+          mimetype: processedImage.mime,
+          originalFilename: `candidate-profile-${existingCandidate.documentId}.${processedImage.format}`,
+          size: processedImage.sizeInBytes,
+        },
+      });
+
+      const uploadedFile = uploadedFiles[0];
+
+      if (!uploadedFile?.id) {
+        throw new ValidationError('Profile image upload did not return a stored file.');
+      }
+
+      const updatedCandidate = await strapi.documents('api::candidate.candidate').update({
+        documentId: existingCandidate.documentId,
+        data: {
+          profileImage: uploadedFile.id,
+        } as any,
+        populate: candidatePopulate,
+      } as any);
+      const sanitizedCandidate = await sanitizeCandidate(strapi, updatedCandidate);
+      const now = new Date().toISOString();
+
+      await (strapi.service('api::audit-event.audit-event') as any).record({
+        actorEmail: updatedCandidate.email,
+        actorId: auth.subject,
+        actorType: 'candidate',
+        eventCategory: 'candidate',
+        eventType: 'candidate.profile_image_updated',
+        ipAddress: requestContext.ipAddress,
+        newState: {
+          profileImage: sanitizedCandidate.profileImage,
+        },
+        occurredAt: now,
+        previousState: {
+          profileImage: await sanitizeProfileImage(strapi, previousProfileImage),
+        },
+        requestId: requestContext.requestId,
+        source: 'candidate_dashboard',
+        subjectDisplayName: updatedCandidate.email,
+        subjectId: updatedCandidate.documentId,
+        subjectType: 'candidate',
+        userAgent: requestContext.userAgent,
+      });
+
+      if (previousProfileImage?.id && previousProfileImage.id !== uploadedFile?.id) {
+        await strapi.plugin('upload').service('upload').remove(previousProfileImage).catch((error) => {
+          strapi.log.warn(
+            `Could not remove previous candidate profile image ${previousProfileImage.id}: ${
+              error instanceof Error ? error.message : String(error)
+            }`
+          );
+        });
+      }
+
+      return sanitizedCandidate;
+    } finally {
+      await rm(processedImage.tmpDir, { force: true, recursive: true });
+    }
   },
 }));

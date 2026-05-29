@@ -861,6 +861,7 @@ export interface ApiCandidateCandidate extends Struct.CollectionTypeSchema {
     > &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'not_set'>;
+    profileImage: Schema.Attribute.Media<'images'>;
     profileSettings: Schema.Attribute.JSON;
     publishedAt: Schema.Attribute.DateTime;
     recruitmentPlatformVisibility: Schema.Attribute.Enumeration<

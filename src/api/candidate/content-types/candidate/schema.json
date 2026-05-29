@@ -44,6 +44,13 @@
       "type": "string",
       "maxLength": 40
     },
+    "profileImage": {
+      "type": "media",
+      "multiple": false,
+      "allowedTypes": [
+        "images"
+      ]
+    },
     "preferredCommunicationChannel": {
       "type": "enumeration",
       "enum": [

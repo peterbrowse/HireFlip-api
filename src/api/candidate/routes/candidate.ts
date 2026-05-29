@@ -26,5 +26,18 @@ export default {
         ],
       },
     },
+    {
+      method: 'POST',
+      path: '/candidates/me/profile-image',
+      handler: 'candidate.updateProfileImage',
+      config: {
+        auth: false,
+        middlewares: [
+          {
+            name: 'global::auth0-jwt',
+          },
+        ],
+      },
+    },
   ],
 };

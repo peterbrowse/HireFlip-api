@@ -6,6 +6,11 @@ const getForwardedClientIp = (ctx) =>
   ctx.request.get('x-forwarded-for')?.split(',')[0]?.trim() ||
   ctx.request.ip;
 
+const getUploadedProfileImage = (files) => {
+  const file = files?.profileImage || files?.image || files?.file;
+  return Array.isArray(file) ? file[0] : file;
+};
+
 export default factories.createCoreController('api::candidate.candidate', ({ strapi }) => ({
   async me(ctx) {
     const result = await (strapi.service('api::candidate.candidate') as any).syncCurrentCandidate(
@@ -27,6 +32,23 @@ export default factories.createCoreController('api::candidate.candidate', ({ str
     const result = await (strapi.service('api::candidate.candidate') as any).updateCurrentCandidateAccount(
       ctx.state?.hireflipAuth,
       ctx.request.body,
+      {
+        ipAddress: getForwardedClientIp(ctx),
+        requestId: ctx.state?.requestId,
+        userAgent: ctx.request.get('x-hireflip-client-user-agent') || ctx.request.get('user-agent'),
+      }
+    );
+
+    ctx.body = {
+      data: result,
+    };
+  },
+
+  async updateProfileImage(ctx) {
+    const file = getUploadedProfileImage(ctx.request.files);
+    const result = await (strapi.service('api::candidate.candidate') as any).updateCurrentCandidateProfileImage(
+      ctx.state?.hireflipAuth,
+      file,
       {
         ipAddress: getForwardedClientIp(ctx),
         requestId: ctx.state?.requestId,
