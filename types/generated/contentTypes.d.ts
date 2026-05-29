@@ -975,14 +975,14 @@ export interface ApiClassClass extends Struct.CollectionTypeSchema {
   };
   attributes: {
     capacity: Schema.Attribute.Integer &
+      Schema.Attribute.Required &
       Schema.Attribute.SetMinMax<
         {
           max: 1000;
           min: 1;
         },
         number
-      > &
-      Schema.Attribute.DefaultTo<30>;
+      >;
     classArea: Schema.Attribute.Relation<
       'manyToOne',
       'api::class-area.class-area'
@@ -994,11 +994,11 @@ export interface ApiClassClass extends Struct.CollectionTypeSchema {
     createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
     currency: Schema.Attribute.String &
+      Schema.Attribute.Required &
       Schema.Attribute.SetMinMaxLength<{
         maxLength: 3;
         minLength: 3;
-      }> &
-      Schema.Attribute.DefaultTo<'GBP'>;
+      }>;
     discountedPricePence: Schema.Attribute.Integer &
       Schema.Attribute.SetMinMax<
         {
@@ -1008,6 +1008,15 @@ export interface ApiClassClass extends Struct.CollectionTypeSchema {
       >;
     endDate: Schema.Attribute.Date;
     interviewGuaranteeDeadline: Schema.Attribute.DateTime;
+    interviewsGuaranteed: Schema.Attribute.Integer &
+      Schema.Attribute.Required &
+      Schema.Attribute.SetMinMax<
+        {
+          max: 50;
+          min: 0;
+        },
+        number
+      >;
     locale: Schema.Attribute.String & Schema.Attribute.Private;
     localizations: Schema.Attribute.Relation<'oneToMany', 'api::class.class'> &
       Schema.Attribute.Private;
@@ -1037,7 +1046,7 @@ export interface ApiClassClass extends Struct.CollectionTypeSchema {
         maxLength: 120;
       }>;
     startDate: Schema.Attribute.Date;
-    status: Schema.Attribute.Enumeration<
+    state: Schema.Attribute.Enumeration<
       [
         'draft',
         'waitlist_open',

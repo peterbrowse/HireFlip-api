@@ -32,7 +32,7 @@
         "q4"
       ]
     },
-    "status": {
+    "state": {
       "type": "enumeration",
       "enum": [
         "draft",
@@ -83,7 +83,13 @@
       "type": "integer",
       "min": 1,
       "max": 1000,
-      "default": 30
+      "required": true
+    },
+    "interviewsGuaranteed": {
+      "type": "integer",
+      "min": 0,
+      "max": 50,
+      "required": true
     },
     "pricePence": {
       "type": "integer",
@@ -97,7 +103,7 @@
       "type": "string",
       "minLength": 3,
       "maxLength": 3,
-      "default": "GBP"
+      "required": true
     },
     "region": {
       "type": "string",

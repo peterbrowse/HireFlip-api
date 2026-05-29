@@ -26,32 +26,6 @@ const notListedPreferenceValue = 'not_listed';
 const candidatePopulate = ['profileImage'];
 const profileImageFormats = ['webp', 'avif'] as const;
 const visiblePreferenceStates = ['active', 'coming_soon'] as const;
-const targetClassFallbacks = {
-  capacity: 30,
-  currency: 'GBP',
-  discountedPricePence: 32000,
-  interviewsGuaranteed: 2,
-  pricePence: 80000,
-  region: 'London',
-  sector: 'Marketing',
-};
-const fallbackClassAreaOptions = [
-  { label: 'London', state: 'active', value: 'london' },
-  { label: 'Manchester', state: 'coming_soon', value: 'manchester' },
-  { label: 'Birmingham', state: 'coming_soon', value: 'birmingham' },
-  { label: 'Bristol', state: 'coming_soon', value: 'bristol' },
-  { label: 'Leeds', state: 'coming_soon', value: 'leeds' },
-  { label: 'Remote/online', state: 'coming_soon', value: 'remote_online' },
-];
-const fallbackWorkSectorOptions = [
-  { label: 'Marketing', state: 'active', value: 'marketing' },
-  { label: 'Sales', state: 'coming_soon', value: 'sales' },
-  { label: 'Accounting', state: 'coming_soon', value: 'accounting' },
-  { label: 'Finance', state: 'coming_soon', value: 'finance' },
-  { label: 'HR', state: 'coming_soon', value: 'hr' },
-  { label: 'Operations', state: 'coming_soon', value: 'operations' },
-  { label: 'Technology', state: 'coming_soon', value: 'technology' },
-];
 
 const terminalEnrollmentStatuses = new Set(['withdrawn', 'expired', 'refunded', 'archived']);
 const terminalClassStatuses = new Set(['cancelled', 'archived', 'completed']);
@@ -485,8 +459,7 @@ const sanitizePreferenceOption = (record) => ({
 
 const getVisiblePreferenceOptions = async (
   strapi,
-  uid: string,
-  fallbackOptions: { label: string; state: string; value: string }[]
+  uid: string
 ) => {
   const records = await strapi.documents(uid).findMany({
     filters: {
@@ -498,7 +471,7 @@ const getVisiblePreferenceOptions = async (
     sort: ['sortOrder:asc', 'name:asc'],
   } as any);
 
-  return records.length > 0 ? records.map(sanitizePreferenceOption) : fallbackOptions;
+  return records.map(sanitizePreferenceOption);
 };
 
 const preferenceSelection = (value: unknown) => {
@@ -517,51 +490,62 @@ const preferenceSelection = (value: unknown) => {
 const selectedListedPreferences = (value: unknown) =>
   preferenceSelection(value).selected.filter((item) => item !== notListedPreferenceValue);
 
-const firstPreferenceLabel = (value: unknown, fallback: string) => {
+const firstPreferenceLabel = (value: unknown) => {
   const selection = preferenceSelection(value);
   const firstListedPreference = selection.selected.find((item) => item !== notListedPreferenceValue);
 
   if (firstListedPreference) {
-    return preferenceLabel(firstListedPreference) || fallback;
+    return preferenceLabel(firstListedPreference);
   }
 
-  return selection.other || fallback;
+  return selection.other;
 };
 
-const getTargetClassRegion = () => process.env.FIRST_CLASS_REGION || targetClassFallbacks.region;
-const getTargetClassSector = () => process.env.FIRST_CLASS_SECTOR || targetClassFallbacks.sector;
+const buildCandidatePreferenceSnapshot = (candidateOrPayload) => ({
+  region: firstPreferenceLabel(candidateOrPayload?.classAreaPreferences),
+  sector: firstPreferenceLabel(candidateOrPayload?.workSectorPreferences),
+});
 
 const normalizeComparableText = (value?: string) => value?.trim().toLowerCase();
 
-const classRecordAreaValue = (classRecord) =>
-  normalizePreferenceValue(classRecord.classArea?.slug || classRecord.classArea?.name || classRecord.region || targetClassFallbacks.region);
+const classRecordAreaValue = (classRecord) => {
+  const value = classRecord.classArea?.slug || classRecord.classArea?.name || classRecord.region;
+  return value ? normalizePreferenceValue(value) : undefined;
+};
 
-const classRecordSectorValue = (classRecord) =>
-  normalizePreferenceValue(classRecord.workSector?.slug || classRecord.workSector?.name || classRecord.sector || targetClassFallbacks.sector);
+const classRecordSectorValue = (classRecord) => {
+  const value = classRecord.workSector?.slug || classRecord.workSector?.name || classRecord.sector;
+  return value ? normalizePreferenceValue(value) : undefined;
+};
 
 const classMatchesTarget = (classRecord, candidate?) => {
   const classAreaPreference = preferenceSelection(candidate?.classAreaPreferences);
   const workSectorPreference = preferenceSelection(candidate?.workSectorPreferences);
-  const selectedRegions = selectedListedPreferences(candidate?.classAreaPreferences).map(normalizeComparableText);
-  const selectedSectors = selectedListedPreferences(candidate?.workSectorPreferences).map(normalizeComparableText);
-  const targetRegion = normalizePreferenceValue(getTargetClassRegion());
-  const targetSector = normalizePreferenceValue(getTargetClassSector());
+  const selectedRegions = selectedListedPreferences(candidate?.classAreaPreferences)
+    .map(normalizeComparableText)
+    .filter((value): value is string => Boolean(value));
+  const selectedSectors = selectedListedPreferences(candidate?.workSectorPreferences)
+    .map(normalizeComparableText)
+    .filter((value): value is string => Boolean(value));
   const classRegion = classRecordAreaValue(classRecord);
   const classSector = classRecordSectorValue(classRecord);
   const regionMatches =
-    selectedRegions.length > 0
+    selectedRegions.length > 0 && classRegion
       ? selectedRegions.includes(classRegion)
-      : classAreaPreference.selected.length > 0
-        ? false
-        : classRegion === targetRegion;
+      : false;
   const sectorMatches =
-    selectedSectors.length > 0
+    selectedSectors.length > 0 && classSector
       ? selectedSectors.includes(classSector)
-      : workSectorPreference.selected.length > 0
-        ? false
-        : classSector === targetSector;
+      : false;
 
-  return regionMatches && sectorMatches;
+  return (
+    classAreaPreference.selected.length > 0 &&
+    workSectorPreference.selected.length > 0 &&
+    Boolean(classRegion) &&
+    Boolean(classSector) &&
+    regionMatches &&
+    sectorMatches
+  );
 };
 
 const findTargetClass = async (strapi, candidate?) => {
@@ -573,7 +557,7 @@ const findTargetClass = async (strapi, candidate?) => {
 
   return classes
     .filter((classRecord) => classMatchesTarget(classRecord, candidate))
-    .filter((classRecord) => !terminalClassStatuses.has(classRecord.status))
+    .filter((classRecord) => !terminalClassStatuses.has(classRecord.state))
     .sort((firstClass, secondClass) => {
       const firstTime = firstClass.startDate ? Date.parse(firstClass.startDate) : Number.MAX_SAFE_INTEGER;
       const secondTime = secondClass.startDate ? Date.parse(secondClass.startDate) : Number.MAX_SAFE_INTEGER;
@@ -613,40 +597,28 @@ const findCurrentEnrollment = async (strapi, candidate, targetClass?) => {
   });
 };
 
-const buildTarget = (candidate?) => ({
-  capacity: targetClassFallbacks.capacity,
-  currency: targetClassFallbacks.currency,
-  discountedPricePence: targetClassFallbacks.discountedPricePence,
-  interviewsGuaranteed: targetClassFallbacks.interviewsGuaranteed,
-  pricePence: targetClassFallbacks.pricePence,
-  region: firstPreferenceLabel(candidate?.classAreaPreferences, getTargetClassRegion()),
-  sector: firstPreferenceLabel(candidate?.workSectorPreferences, getTargetClassSector()),
-});
-
 const sanitizeClass = (classRecord) => {
   if (!classRecord) {
     return null;
   }
 
-  const region = classRecord.classArea?.name || classRecord.region || targetClassFallbacks.region;
-  const sector = classRecord.workSector?.name || classRecord.sector || targetClassFallbacks.sector;
+  const region = classRecord.classArea?.name || classRecord.region;
+  const sector = classRecord.workSector?.name || classRecord.sector;
 
   return {
-    capacity: classRecord.capacity || targetClassFallbacks.capacity,
-    currency: classRecord.currency || targetClassFallbacks.currency,
-    discountedPricePence: classRecord.discountedPricePence ?? targetClassFallbacks.discountedPricePence,
+    capacity: classRecord.capacity,
+    currency: classRecord.currency,
+    discountedPricePence: classRecord.discountedPricePence,
     documentId: classRecord.documentId,
     endDate: classRecord.endDate,
-    interviewsGuaranteed: targetClassFallbacks.interviewsGuaranteed,
-    name:
-      classRecord.name ||
-      `First ${region} ${sector} class`,
-    pricePence: classRecord.pricePence ?? targetClassFallbacks.pricePence,
+    interviewsGuaranteed: classRecord.interviewsGuaranteed,
+    name: classRecord.name,
+    pricePence: classRecord.pricePence,
     quarter: classRecord.quarter,
     region,
     sector,
     startDate: classRecord.startDate,
-    status: classRecord.status,
+    state: classRecord.state,
     year: classRecord.year,
   };
 };
@@ -665,7 +637,7 @@ const sanitizeEnrollment = (enrollment) => {
   };
 };
 
-const classHasPaymentAccess = (classRecord) => classRecord?.status === 'open';
+const classHasPaymentAccess = (classRecord) => classRecord?.state === 'open';
 
 const deriveClassInterestState = (candidate, enrollment, targetClass?) => {
   if (enrollment) {
@@ -712,7 +684,7 @@ const deriveClassInterestState = (candidate, enrollment, targetClass?) => {
 
 const buildClassInterestResponse = ({ candidate, enrollment, targetClass }) => {
   const state = deriveClassInterestState(candidate, enrollment, targetClass);
-  const target = buildTarget(candidate);
+  const target = sanitizeClass(targetClass);
 
   return {
     canRegisterInterest: state === 'not_registered',
@@ -842,8 +814,8 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
     }
 
     const [classAreas, workSectors] = await Promise.all([
-      getVisiblePreferenceOptions(strapi, 'api::class-area.class-area', fallbackClassAreaOptions),
-      getVisiblePreferenceOptions(strapi, 'api::work-sector.work-sector', fallbackWorkSectorOptions),
+      getVisiblePreferenceOptions(strapi, 'api::class-area.class-area'),
+      getVisiblePreferenceOptions(strapi, 'api::work-sector.work-sector'),
     ]);
 
     return {
@@ -899,7 +871,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
         sms: selectedCommunicationChannels.includes('sms'),
       },
     };
-    const target = buildTarget({
+    const preferenceSnapshot = buildCandidatePreferenceSnapshot({
       classAreaPreferences: payload.classAreaPreferences,
       workSectorPreferences: payload.workSectorPreferences,
     });
@@ -925,8 +897,8 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       phone: payload.phone,
       preferredCommunicationChannel,
       profileSettings,
-      region: target.region,
-      sector: target.sector,
+      region: preferenceSnapshot.region,
+      sector: preferenceSnapshot.sector,
       workSectorPreferences: payload.workSectorPreferences,
     });
 
@@ -1060,10 +1032,11 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
 
     const now = new Date().toISOString();
     let enrollment;
+    const preferenceSnapshot = buildCandidatePreferenceSnapshot(existingCandidate);
     const candidateUpdates: Record<string, unknown> = {
       registeredInterestAt: existingCandidate.registeredInterestAt || now,
-      region: existingCandidate.region || buildTarget(existingCandidate).region,
-      sector: existingCandidate.sector || buildTarget(existingCandidate).sector,
+      region: existingCandidate.region || preferenceSnapshot.region,
+      sector: existingCandidate.sector || preferenceSnapshot.sector,
       status: targetClass ? 'waitlisted' : 'interest_registered',
     };
 
@@ -1109,8 +1082,8 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       eventType: 'candidate.class_interest_registered',
       ipAddress: requestContext.ipAddress,
       metadata: {
-        targetRegion: getTargetClassRegion(),
-        targetSector: getTargetClassSector(),
+        class: sanitizeClass(targetClass),
+        preferences: preferenceSnapshot,
       },
       newState: response,
       occurredAt: now,
