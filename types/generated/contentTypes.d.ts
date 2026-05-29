@@ -951,7 +951,7 @@ export interface ApiClassAreaClassArea extends Struct.CollectionTypeSchema {
         number
       > &
       Schema.Attribute.DefaultTo<100>;
-    status: Schema.Attribute.Enumeration<
+    state: Schema.Attribute.Enumeration<
       ['active', 'coming_soon', 'hidden', 'archived']
     > &
       Schema.Attribute.Required &
@@ -2678,7 +2678,7 @@ export interface ApiWorkSectorWorkSector extends Struct.CollectionTypeSchema {
         number
       > &
       Schema.Attribute.DefaultTo<100>;
-    status: Schema.Attribute.Enumeration<
+    state: Schema.Attribute.Enumeration<
       ['active', 'coming_soon', 'hidden', 'archived']
     > &
       Schema.Attribute.Required &

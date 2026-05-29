@@ -23,7 +23,7 @@
       "targetField": "name",
       "required": true
     },
-    "status": {
+    "state": {
       "type": "enumeration",
       "enum": [
         "active",
