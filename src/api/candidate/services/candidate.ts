@@ -29,7 +29,18 @@ const visiblePreferenceStates = ['active', 'coming_soon'] as const;
 
 const terminalEnrollmentStatuses = new Set(['withdrawn', 'expired', 'refunded', 'archived']);
 const terminalClassStatuses = new Set(['cancelled', 'archived', 'completed']);
-const placeSecuredCandidateStatuses = new Set(['paid', 'in_class', 'course_completed', 'passed', 'failed', 'interview_phase', 'hired']);
+const candidateVisibleClassStates = new Set([
+  'coming_soon',
+  'waitlist_open',
+  'open',
+  'full',
+  'in_progress',
+  'completion_window',
+  'interview_window',
+]);
+const paidEnrollmentStatuses = new Set(['enrolled', 'active']);
+const completedEnrollmentStatuses = new Set(['completed']);
+const interestCountEnrollmentStatuses = ['waitlisted', 'slot_reserved', 'enrolled', 'active', 'completed'];
 
 type UploadedFile = {
   filepath?: string;
@@ -174,6 +185,15 @@ const updateCandidateAccountSchema = z
   .strict();
 
 const validateUpdateCandidateAccount = validateZodSchema(updateCandidateAccountSchema);
+
+const registerClassInterestSchema = z
+  .object({
+    classDocumentId: optionalString(80),
+  })
+  .strict()
+  .default({});
+
+const validateRegisterClassInterest = validateZodSchema(registerClassInterestSchema);
 
 const signProfileImage = async (strapi, profileImage) => {
   if (!profileImage) {
@@ -548,7 +568,7 @@ const classMatchesTarget = (classRecord, candidate?) => {
   );
 };
 
-const findTargetClass = async (strapi, candidate?) => {
+const findMatchingClasses = async (strapi, candidate?) => {
   const classes = await strapi.documents('api::class.class').findMany({
     limit: 100,
     populate: ['classArea', 'workSector'],
@@ -558,44 +578,150 @@ const findTargetClass = async (strapi, candidate?) => {
   return classes
     .filter((classRecord) => classMatchesTarget(classRecord, candidate))
     .filter((classRecord) => !terminalClassStatuses.has(classRecord.state))
+    .filter((classRecord) => candidateVisibleClassStates.has(classRecord.state))
     .sort((firstClass, secondClass) => {
       const firstTime = firstClass.startDate ? Date.parse(firstClass.startDate) : Number.MAX_SAFE_INTEGER;
       const secondTime = secondClass.startDate ? Date.parse(secondClass.startDate) : Number.MAX_SAFE_INTEGER;
 
       return firstTime - secondTime;
-    })[0];
+    });
 };
 
-const findCurrentEnrollment = async (strapi, candidate, targetClass?) => {
-  const enrollments = await strapi.documents('api::enrollment.enrollment').findMany({
+const findCandidateEnrollments = async (strapi, candidate) =>
+  strapi.documents('api::enrollment.enrollment').findMany({
     filters: {
       candidate: {
         documentId: candidate.documentId,
       },
     },
-    limit: 25,
+    limit: 100,
     populate: ['class'],
     sort: ['createdAt:desc'],
   } as any);
 
-  return enrollments.find((enrollment) => {
+const enrollmentClassDocumentId = (enrollment) => enrollment?.class?.documentId;
+
+const enrollmentsByClassDocumentId = (enrollments = []) =>
+  enrollments.reduce((map, enrollment) => {
+    const classDocumentId = enrollmentClassDocumentId(enrollment);
+
+    if (classDocumentId && !map.has(classDocumentId)) {
+      map.set(classDocumentId, enrollment);
+    }
+
+    return map;
+  }, new Map<string, unknown>());
+
+const findClassInterestCounts = async (strapi, classes = []) => {
+  const classDocumentIds = classes
+    .map((classRecord) => classRecord.documentId)
+    .filter((documentId): documentId is string => Boolean(documentId));
+
+  if (classDocumentIds.length === 0) {
+    return new Map<string, number>();
+  }
+
+  const enrollments = await strapi.documents('api::enrollment.enrollment').findMany({
+    filters: {
+      class: {
+        documentId: {
+          $in: classDocumentIds,
+        },
+      },
+      status: {
+        $in: interestCountEnrollmentStatuses,
+      },
+    },
+    limit: 1000,
+    populate: ['class'],
+  } as any);
+
+  return enrollments.reduce((map, enrollment) => {
+    const classDocumentId = enrollmentClassDocumentId(enrollment);
+
+    if (classDocumentId) {
+      map.set(classDocumentId, (map.get(classDocumentId) || 0) + 1);
+    }
+
+    return map;
+  }, new Map<string, number>());
+};
+
+const slugify = (value?: string) =>
+  value
+    ?.toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || undefined;
+
+const sanitizeIncludedItems = (value: unknown) =>
+  Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && item.trim() !== '') : [];
+
+const sanitizeFaqs = (value: unknown) =>
+  Array.isArray(value)
+    ? value
+        .map((item) => objectValue(item))
+        .map((item) => ({
+          answer: typeof item.answer === 'string' ? item.answer : '',
+          question: typeof item.question === 'string' ? item.question : '',
+        }))
+        .filter((item) => item.answer && item.question)
+    : [];
+
+const sanitizeCandidatePreferences = (candidate) => {
+  const toPreferenceSummary = (selection) => [
+    ...selection.selected
+      .filter((item) => item !== notListedPreferenceValue)
+      .map((item) => ({
+        label: preferenceLabel(item) || item,
+        value: item,
+      })),
+    ...(selection.selected.includes(notListedPreferenceValue) && selection.other
+      ? [
+          {
+            label: selection.other,
+            value: notListedPreferenceValue,
+          },
+        ]
+      : []),
+  ];
+
+  return {
+    classAreas: toPreferenceSummary(preferenceSelection(candidate?.classAreaPreferences)),
+    workSectors: toPreferenceSummary(preferenceSelection(candidate?.workSectorPreferences)),
+  };
+};
+
+const deriveCandidateLifecycleState = (enrollments = []) => {
+  const activeEnrollment = enrollments.find((enrollment) => {
     if (terminalEnrollmentStatuses.has(enrollment.status)) {
       return false;
     }
 
-    const enrolledClass = enrollment.class;
+    return enrollment.paymentStatus === 'paid' || paidEnrollmentStatuses.has(enrollment.status);
+  });
 
-    if (!enrolledClass) {
+  if (activeEnrollment) {
+    return 'enrolled';
+  }
+
+  const passedEnrollment = enrollments.find(
+    (enrollment) =>
+      enrollment.passStatus === 'passed' ||
+      Boolean(enrollment.passedAt) ||
+      (completedEnrollmentStatuses.has(enrollment.status) && enrollment.passStatus !== 'failed')
+  );
+
+  return passedEnrollment ? 'alumni' : 'unenrolled';
+};
+
+const findActiveEnrollment = (enrollments = []) =>
+  enrollments.find((enrollment) => {
+    if (terminalEnrollmentStatuses.has(enrollment.status)) {
       return false;
     }
 
-    if (targetClass?.documentId) {
-      return enrolledClass.documentId === targetClass.documentId;
-    }
-
-    return classMatchesTarget(enrolledClass, candidate);
+    return enrollment.paymentStatus === 'paid' || paidEnrollmentStatuses.has(enrollment.status);
   });
-};
 
 const sanitizeClass = (classRecord) => {
   if (!classRecord) {
@@ -611,12 +737,19 @@ const sanitizeClass = (classRecord) => {
     discountedPricePence: classRecord.discountedPricePence,
     documentId: classRecord.documentId,
     endDate: classRecord.endDate,
+    faqs: sanitizeFaqs(classRecord.faqs),
+    includedItems: sanitizeIncludedItems(classRecord.includedItems),
     interviewsGuaranteed: classRecord.interviewsGuaranteed,
+    moduleSummary: classRecord.moduleSummary,
     name: classRecord.name,
+    overview: classRecord.overview,
     pricePence: classRecord.pricePence,
     quarter: classRecord.quarter,
     region,
+    requirements: classRecord.requirements,
+    scheduleNotes: classRecord.scheduleNotes,
     sector,
+    slug: classRecord.slug || slugify(classRecord.name),
     startDate: classRecord.startDate,
     state: classRecord.state,
     year: classRecord.year,
@@ -632,6 +765,9 @@ const sanitizeEnrollment = (enrollment) => {
     completionStatus: enrollment.completionStatus,
     documentId: enrollment.documentId,
     enrolledAt: enrollment.enrolledAt,
+    interestRegisteredAt: enrollment.interestRegisteredAt || enrollment.metadata?.registeredInterestAt,
+    invitedToJoinAt: enrollment.invitedToJoinAt,
+    passStatus: enrollment.passStatus,
     paymentStatus: enrollment.paymentStatus,
     status: enrollment.status,
   };
@@ -639,7 +775,7 @@ const sanitizeEnrollment = (enrollment) => {
 
 const classHasPaymentAccess = (classRecord) => classRecord?.state === 'open';
 
-const deriveClassInterestState = (candidate, enrollment, targetClass?) => {
+const deriveClassRelationshipState = (enrollment, classRecord?) => {
   if (enrollment) {
     if (
       enrollment.paymentStatus === 'paid' ||
@@ -652,51 +788,124 @@ const deriveClassInterestState = (candidate, enrollment, targetClass?) => {
       return 'payment_available';
     }
 
-    if (classHasPaymentAccess(enrollment.class || targetClass)) {
+    if (classHasPaymentAccess(enrollment.class || classRecord)) {
       return 'payment_available';
     }
 
     return 'waiting_for_class';
   }
 
-  if (placeSecuredCandidateStatuses.has(candidate.status)) {
-    return 'place_secured';
-  }
-
-  if (candidate.status === 'slot_reserved') {
+  if (classHasPaymentAccess(classRecord)) {
     return 'payment_available';
   }
 
-  if (candidate.status === 'waitlisted') {
+  return 'not_registered';
+};
+
+const buildClassTimeline = (classRecord, relationshipState) => {
+  const paymentOpen = classHasPaymentAccess(classRecord);
+  const openOrLater =
+    paymentOpen ||
+    ['full', 'in_progress', 'completion_window', 'interview_window', 'completed'].includes(classRecord?.state);
+  const placeSecured = relationshipState === 'place_secured';
+
+  return [
+    {
+      key: 'interest',
+      label: 'Interest',
+      state: relationshipState === 'not_registered' ? 'current' : 'complete',
+    },
+    {
+      key: 'opens',
+      label: 'Class opens',
+      state:
+        relationshipState === 'not_registered'
+          ? 'upcoming'
+          : openOrLater
+            ? 'complete'
+            : 'current',
+    },
+    {
+      key: 'payment',
+      label: 'Join',
+      state: placeSecured ? 'complete' : relationshipState === 'payment_available' ? 'current' : 'upcoming',
+    },
+    {
+      key: 'class',
+      label: 'Class',
+      state: placeSecured ? 'current' : 'upcoming',
+    },
+  ];
+};
+
+const buildClassRelationship = ({ classRecord, enrollment, registeredInterestCount = 0 }) => {
+  const state = deriveClassRelationshipState(enrollment, classRecord);
+
+  return {
+    canRegisterInterest: state === 'not_registered',
+    canJoinClass: state === 'payment_available',
+    class: sanitizeClass(classRecord),
+    enrollment: sanitizeEnrollment(enrollment),
+    registeredInterestCount,
+    state,
+    timeline: buildClassTimeline(classRecord, state),
+  };
+};
+
+const summarizeClassInterestState = (classRelationships = [], activeEnrollment?) => {
+  if (activeEnrollment) {
+    return 'place_secured';
+  }
+
+  if (classRelationships.some((relationship) => relationship.state === 'payment_available')) {
+    return 'payment_available';
+  }
+
+  if (classRelationships.some((relationship) => relationship.state === 'waiting_for_class')) {
     return 'waiting_for_class';
   }
 
-  if (candidate.registeredInterestAt || candidate.status === 'interest_registered') {
-    if (classHasPaymentAccess(targetClass)) {
-      return 'payment_available';
-    }
-
+  if (classRelationships.some((relationship) => relationship.state === 'interest_registered')) {
     return 'interest_registered';
   }
 
   return 'not_registered';
 };
 
-const buildClassInterestResponse = ({ candidate, enrollment, targetClass }) => {
-  const state = deriveClassInterestState(candidate, enrollment, targetClass);
-  const target = sanitizeClass(targetClass);
+const buildClassInterestResponse = ({ candidate, enrollments, interestCounts, matchingClasses }) => {
+  const enrollmentMap = enrollmentsByClassDocumentId(enrollments);
+  const classRelationships = matchingClasses.map((classRecord) =>
+    buildClassRelationship({
+      classRecord,
+      enrollment: enrollmentMap.get(classRecord.documentId),
+      registeredInterestCount: interestCounts?.get(classRecord.documentId) || 0,
+    })
+  );
+  const activeEnrollment = findActiveEnrollment(enrollments);
+  const activeClass =
+    activeEnrollment?.class &&
+    (matchingClasses.find((classRecord) => classRecord.documentId === activeEnrollment.class.documentId) ||
+      activeEnrollment.class);
+  const state = summarizeClassInterestState(classRelationships, activeEnrollment);
+  const firstRelationship = classRelationships[0];
 
   return {
-    canRegisterInterest: state === 'not_registered',
+    activeClass: sanitizeClass(activeClass),
+    activeEnrollment: sanitizeEnrollment(activeEnrollment),
+    canRegisterInterest: firstRelationship?.canRegisterInterest || false,
     candidate: {
       documentId: candidate.documentId,
+      lifecycleState: deriveCandidateLifecycleState(enrollments),
+      preferences: sanitizeCandidatePreferences(candidate),
       registeredInterestAt: candidate.registeredInterestAt,
       status: candidate.status,
     },
-    class: sanitizeClass(targetClass),
-    enrollment: sanitizeEnrollment(enrollment),
+    class: firstRelationship?.class || null,
+    classes: classRelationships,
+    enrollment: firstRelationship?.enrollment || null,
+    filters: sanitizeCandidatePreferences(candidate),
     state,
-    target,
+    target: firstRelationship?.class || null,
   };
 };
 
@@ -991,18 +1200,23 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       throw new ValidationError('Candidate account must be synced before class interest can be checked.');
     }
 
-    const targetClass = await findTargetClass(strapi, existingCandidate);
-    const enrollment = await findCurrentEnrollment(strapi, existingCandidate, targetClass);
+    const matchingClasses = await findMatchingClasses(strapi, existingCandidate);
+    const [enrollments, interestCounts] = await Promise.all([
+      findCandidateEnrollments(strapi, existingCandidate),
+      findClassInterestCounts(strapi, matchingClasses),
+    ]);
 
     return buildClassInterestResponse({
       candidate: existingCandidate,
-      enrollment,
-      targetClass,
+      enrollments,
+      interestCounts,
+      matchingClasses,
     });
   },
 
   async registerCurrentCandidateClassInterest(
     auth: Auth0State | undefined,
+    input: unknown = {},
     requestContext: RequestContext = {}
   ) {
     if (!auth || auth.type !== 'auth0' || !auth.subject) {
@@ -1015,17 +1229,30 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       throw new ValidationError('Candidate account must be synced before class interest can be registered.');
     }
 
-    const targetClass = await findTargetClass(strapi, existingCandidate);
-    const existingEnrollment = await findCurrentEnrollment(strapi, existingCandidate, targetClass);
-    const currentState = deriveClassInterestState(existingCandidate, existingEnrollment, targetClass);
+    const payload = validateRegisterClassInterest(input ?? {});
+    const matchingClasses = await findMatchingClasses(strapi, existingCandidate);
+    const targetClass = payload.classDocumentId
+      ? matchingClasses.find((classRecord) => classRecord.documentId === payload.classDocumentId)
+      : matchingClasses[0];
+
+    if (!targetClass) {
+      throw new ValidationError('No matching class is currently available for the selected preferences.');
+    }
+
+    const existingEnrollments = await findCandidateEnrollments(strapi, existingCandidate);
+    const existingEnrollment = enrollmentsByClassDocumentId(existingEnrollments).get(targetClass.documentId);
+    const currentState = deriveClassRelationshipState(existingEnrollment, targetClass);
 
     if (currentState !== 'not_registered') {
+      const interestCounts = await findClassInterestCounts(strapi, matchingClasses);
+
       return {
         created: false,
         data: buildClassInterestResponse({
           candidate: existingCandidate,
-          enrollment: existingEnrollment,
-          targetClass,
+          enrollments: existingEnrollments,
+          interestCounts,
+          matchingClasses,
         }),
       };
     }
@@ -1037,30 +1264,29 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       registeredInterestAt: existingCandidate.registeredInterestAt || now,
       region: existingCandidate.region || preferenceSnapshot.region,
       sector: existingCandidate.sector || preferenceSnapshot.sector,
-      status: targetClass ? 'waitlisted' : 'interest_registered',
+      status: existingCandidate.status === 'account_created' ? 'interest_registered' : existingCandidate.status,
     };
 
-    if (targetClass) {
-      enrollment = await strapi.documents('api::enrollment.enrollment').create({
-        data: {
-          candidate: {
-            connect: [{ documentId: existingCandidate.documentId }],
-          },
-          class: {
-            connect: [{ documentId: targetClass.documentId }],
-          },
-          completionStatus: 'not_started',
-          metadata: {
-            registeredInterestAt: now,
-            source: 'candidate_dashboard',
-          },
-          passStatus: 'not_assessed',
-          paymentStatus: 'pending',
-          status: 'waitlisted',
-        } as any,
-        populate: ['class'],
-      } as any);
-    }
+    enrollment = await strapi.documents('api::enrollment.enrollment').create({
+      data: {
+        candidate: {
+          connect: [{ documentId: existingCandidate.documentId }],
+        },
+        class: {
+          connect: [{ documentId: targetClass.documentId }],
+        },
+        completionStatus: 'not_started',
+        interestRegisteredAt: now,
+        metadata: {
+          registeredInterestAt: now,
+          source: 'candidate_dashboard',
+        },
+        passStatus: 'not_assessed',
+        paymentStatus: 'pending',
+        status: 'waitlisted',
+      } as any,
+      populate: ['class'],
+    } as any);
 
     const updatedCandidate = await strapi.documents('api::candidate.candidate').update({
       documentId: existingCandidate.documentId,
@@ -1068,10 +1294,16 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       populate: candidatePopulate,
     } as any);
 
+    const nextEnrollments = [
+      enrollment,
+      ...existingEnrollments.filter((item) => item.documentId !== enrollment.documentId),
+    ];
+    const interestCounts = await findClassInterestCounts(strapi, matchingClasses);
     const response = buildClassInterestResponse({
       candidate: updatedCandidate,
-      enrollment,
-      targetClass,
+      enrollments: nextEnrollments,
+      interestCounts,
+      matchingClasses,
     });
 
     await (strapi.service('api::audit-event.audit-event') as any).record({

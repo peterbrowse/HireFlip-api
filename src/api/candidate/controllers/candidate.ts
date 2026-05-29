@@ -84,6 +84,7 @@ export default factories.createCoreController('api::candidate.candidate', ({ str
   async registerClassInterest(ctx) {
     const result = await (strapi.service('api::candidate.candidate') as any).registerCurrentCandidateClassInterest(
       ctx.state?.hireflipAuth,
+      ctx.request.body,
       {
         ipAddress: getForwardedClientIp(ctx),
         requestId: ctx.state?.requestId,

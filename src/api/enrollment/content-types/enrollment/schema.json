@@ -72,6 +72,12 @@
       "default": "not_assessed",
       "required": true
     },
+    "interestRegisteredAt": {
+      "type": "datetime"
+    },
+    "invitedToJoinAt": {
+      "type": "datetime"
+    },
     "beganClassAt": {
       "type": "datetime"
     },

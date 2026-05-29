@@ -18,6 +18,10 @@
       "required": true,
       "unique": true
     },
+    "slug": {
+      "type": "uid",
+      "targetField": "name"
+    },
     "year": {
       "type": "integer",
       "min": 2026,
@@ -36,6 +40,7 @@
       "type": "enumeration",
       "enum": [
         "draft",
+        "coming_soon",
         "waitlist_open",
         "open",
         "full",
@@ -118,6 +123,24 @@
     },
     "closedAt": {
       "type": "datetime"
+    },
+    "overview": {
+      "type": "text"
+    },
+    "includedItems": {
+      "type": "json"
+    },
+    "moduleSummary": {
+      "type": "text"
+    },
+    "scheduleNotes": {
+      "type": "text"
+    },
+    "requirements": {
+      "type": "text"
+    },
+    "faqs": {
+      "type": "json"
     }
   }
 }

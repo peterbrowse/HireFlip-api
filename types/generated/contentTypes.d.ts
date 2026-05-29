@@ -1007,6 +1007,8 @@ export interface ApiClassClass extends Struct.CollectionTypeSchema {
         number
       >;
     endDate: Schema.Attribute.Date;
+    faqs: Schema.Attribute.JSON;
+    includedItems: Schema.Attribute.JSON;
     interviewGuaranteeDeadline: Schema.Attribute.DateTime;
     interviewsGuaranteed: Schema.Attribute.Integer &
       Schema.Attribute.Required &
@@ -1020,6 +1022,7 @@ export interface ApiClassClass extends Struct.CollectionTypeSchema {
     locale: Schema.Attribute.String & Schema.Attribute.Private;
     localizations: Schema.Attribute.Relation<'oneToMany', 'api::class.class'> &
       Schema.Attribute.Private;
+    moduleSummary: Schema.Attribute.Text;
     name: Schema.Attribute.String &
       Schema.Attribute.Required &
       Schema.Attribute.Unique &
@@ -1028,6 +1031,7 @@ export interface ApiClassClass extends Struct.CollectionTypeSchema {
         minLength: 1;
       }>;
     openedAt: Schema.Attribute.DateTime;
+    overview: Schema.Attribute.Text;
     pricePence: Schema.Attribute.Integer &
       Schema.Attribute.SetMinMax<
         {
@@ -1041,14 +1045,18 @@ export interface ApiClassClass extends Struct.CollectionTypeSchema {
       Schema.Attribute.SetMinMaxLength<{
         maxLength: 120;
       }>;
+    requirements: Schema.Attribute.Text;
+    scheduleNotes: Schema.Attribute.Text;
     sector: Schema.Attribute.String &
       Schema.Attribute.SetMinMaxLength<{
         maxLength: 120;
       }>;
+    slug: Schema.Attribute.UID<'name'>;
     startDate: Schema.Attribute.Date;
     state: Schema.Attribute.Enumeration<
       [
         'draft',
+        'coming_soon',
         'waitlist_open',
         'open',
         'full',
@@ -1484,8 +1492,10 @@ export interface ApiEnrollmentEnrollment extends Struct.CollectionTypeSchema {
     createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
     enrolledAt: Schema.Attribute.DateTime;
+    interestRegisteredAt: Schema.Attribute.DateTime;
     interviewGuaranteeDeadline: Schema.Attribute.DateTime;
     interviewGuaranteeWindowStartsAt: Schema.Attribute.DateTime;
+    invitedToJoinAt: Schema.Attribute.DateTime;
     locale: Schema.Attribute.String & Schema.Attribute.Private;
     localizations: Schema.Attribute.Relation<
       'oneToMany',
