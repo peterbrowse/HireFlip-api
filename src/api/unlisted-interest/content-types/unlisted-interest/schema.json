@@ -1,0 +1,62 @@
+{
+  "kind": "collectionType",
+  "collectionName": "unlisted_interests",
+  "info": {
+    "singularName": "unlisted-interest",
+    "pluralName": "unlisted-interests",
+    "displayName": "Unlisted Interest",
+    "description": "Candidate suggestions for class areas or work sectors that are not currently listed."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "candidate": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::candidate.candidate"
+    },
+    "candidateEmail": {
+      "type": "email",
+      "maxLength": 254
+    },
+    "interestType": {
+      "type": "enumeration",
+      "enum": [
+        "class_area",
+        "work_sector"
+      ],
+      "required": true
+    },
+    "suggestedValue": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "required": true
+    },
+    "source": {
+      "type": "enumeration",
+      "enum": [
+        "onboarding",
+        "settings"
+      ],
+      "default": "settings",
+      "required": true
+    },
+    "status": {
+      "type": "enumeration",
+      "enum": [
+        "new",
+        "reviewed",
+        "planned",
+        "rejected",
+        "archived"
+      ],
+      "default": "new",
+      "required": true
+    },
+    "metadata": {
+      "type": "json"
+    }
+  }
+}

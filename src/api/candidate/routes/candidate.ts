@@ -78,5 +78,18 @@ export default {
         ],
       },
     },
+    {
+      method: 'POST',
+      path: '/candidates/me/unlisted-interest',
+      handler: 'candidate.createUnlistedInterest',
+      config: {
+        auth: false,
+        middlewares: [
+          {
+            name: 'global::auth0-jwt',
+          },
+        ],
+      },
+    },
   ],
 };

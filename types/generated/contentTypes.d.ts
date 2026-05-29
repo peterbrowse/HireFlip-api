@@ -2656,6 +2656,60 @@ export interface ApiTestTest extends Struct.CollectionTypeSchema {
   };
 }
 
+export interface ApiUnlistedInterestUnlistedInterest
+  extends Struct.CollectionTypeSchema {
+  collectionName: 'unlisted_interests';
+  info: {
+    description: 'Candidate suggestions for class areas or work sectors that are not currently listed.';
+    displayName: 'Unlisted Interest';
+    pluralName: 'unlisted-interests';
+    singularName: 'unlisted-interest';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    candidate: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::candidate.candidate'
+    >;
+    candidateEmail: Schema.Attribute.Email &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 254;
+      }>;
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    interestType: Schema.Attribute.Enumeration<['class_area', 'work_sector']> &
+      Schema.Attribute.Required;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::unlisted-interest.unlisted-interest'
+    > &
+      Schema.Attribute.Private;
+    metadata: Schema.Attribute.JSON;
+    publishedAt: Schema.Attribute.DateTime;
+    source: Schema.Attribute.Enumeration<['onboarding', 'settings']> &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'settings'>;
+    status: Schema.Attribute.Enumeration<
+      ['new', 'reviewed', 'planned', 'rejected', 'archived']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'new'>;
+    suggestedValue: Schema.Attribute.String &
+      Schema.Attribute.Required &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 160;
+        minLength: 1;
+      }>;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+  };
+}
+
 export interface ApiWorkSectorWorkSector extends Struct.CollectionTypeSchema {
   collectionName: 'work_sectors';
   info: {
@@ -3248,6 +3302,7 @@ declare module '@strapi/strapi' {
       'api::stored-file.stored-file': ApiStoredFileStoredFile;
       'api::test-attempt.test-attempt': ApiTestAttemptTestAttempt;
       'api::test.test': ApiTestTest;
+      'api::unlisted-interest.unlisted-interest': ApiUnlistedInterestUnlistedInterest;
       'api::work-sector.work-sector': ApiWorkSectorWorkSector;
       'plugin::content-releases.release': PluginContentReleasesRelease;
       'plugin::content-releases.release-action': PluginContentReleasesReleaseAction;

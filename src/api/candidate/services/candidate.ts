@@ -23,6 +23,8 @@ type RequestContext = {
 
 const communicationChannels = ['email', 'sms', 'phone'] as const;
 const notListedPreferenceValue = 'not_listed';
+const unlistedInterestTypes = ['class_area', 'work_sector'] as const;
+const unlistedInterestSources = ['onboarding', 'settings'] as const;
 const candidatePopulate = ['profileImage'];
 const profileImageFormats = ['webp', 'avif'] as const;
 const visiblePreferenceStates = ['active', 'coming_soon'] as const;
@@ -155,13 +157,6 @@ const preferenceSelectionSchema = z
     selected: z.array(preferenceValue).min(1).max(12),
   })
   .strict()
-  .refine(
-    (value) => !value.selected.includes(notListedPreferenceValue) || Boolean(value.other?.trim()),
-    {
-      message: 'Tell us what is not listed.',
-      path: ['other'],
-    }
-  )
   .transform((value) => ({
     other: value.other,
     selected: Array.from(new Set(value.selected)),
@@ -212,6 +207,16 @@ const registerClassInterestSchema = z
   .default({});
 
 const validateRegisterClassInterest = validateZodSchema(registerClassInterestSchema);
+
+const createUnlistedInterestSchema = z
+  .object({
+    interestType: z.enum(unlistedInterestTypes),
+    source: z.enum(unlistedInterestSources).default('settings'),
+    suggestedValue: z.string().trim().min(1).max(160),
+  })
+  .strict();
+
+const validateCreateUnlistedInterest = validateZodSchema(createUnlistedInterestSchema);
 
 const recoverUploadPath = (file) => {
   if (!file?.url || file.path || !file.hash) {
@@ -749,7 +754,14 @@ const sanitizeCandidatePreferences = (candidate) => {
             value: notListedPreferenceValue,
           },
         ]
-      : []),
+      : selection.selected.includes(notListedPreferenceValue)
+        ? [
+            {
+              label: 'Not listed',
+              value: notListedPreferenceValue,
+            },
+          ]
+        : []),
   ];
 
   return {
@@ -870,37 +882,41 @@ const deriveClassRelationshipState = (enrollment, classRecord?) => {
 };
 
 const buildClassTimeline = (classRecord, relationshipState) => {
-  const paymentOpen = classHasPaymentAccess(classRecord);
-  const openOrLater =
-    paymentOpen ||
+  const enrollmentOpen =
+    classHasPaymentAccess(classRecord) ||
     ['full', 'in_progress', 'completion_window', 'interview_window', 'completed'].includes(classRecord?.state);
+  const classStarted =
+    ['in_progress', 'completion_window', 'interview_window', 'completed'].includes(classRecord?.state);
+  const interviewsActive = ['interview_window'].includes(classRecord?.state);
+  const interviewsComplete = classRecord?.state === 'completed';
   const placeSecured = relationshipState === 'place_secured';
+  const hasRegisteredInterest = relationshipState !== 'not_registered';
 
   return [
     {
       key: 'interest',
-      label: 'Interest',
-      state: relationshipState === 'not_registered' ? 'current' : 'complete',
+      label: 'Register Interest',
+      state: hasRegisteredInterest ? 'complete' : 'current',
     },
     {
-      key: 'opens',
-      label: 'Class opens',
-      state:
-        relationshipState === 'not_registered'
-          ? 'upcoming'
-          : openOrLater
-            ? 'complete'
-            : 'current',
+      key: 'enrollment_open',
+      label: 'Enrollment open',
+      state: placeSecured ? 'complete' : enrollmentOpen || hasRegisteredInterest ? 'current' : 'upcoming',
     },
     {
-      key: 'payment',
-      label: 'Join',
-      state: placeSecured ? 'complete' : relationshipState === 'payment_available' ? 'current' : 'upcoming',
+      key: 'place_secured',
+      label: 'Place secured',
+      state: placeSecured ? (classStarted ? 'complete' : 'current') : 'upcoming',
     },
     {
       key: 'class',
-      label: 'Class',
-      state: placeSecured ? 'current' : 'upcoming',
+      label: 'Class starts',
+      state: classStarted ? (interviewsActive || interviewsComplete ? 'complete' : 'current') : 'upcoming',
+    },
+    {
+      key: 'interviews',
+      label: 'Interviews',
+      state: interviewsComplete ? 'complete' : interviewsActive ? 'current' : 'upcoming',
     },
   ];
 };
@@ -1402,6 +1418,77 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       created: true,
       data: response,
     };
+  },
+
+  async createCurrentCandidateUnlistedInterest(
+    auth: Auth0State | undefined,
+    input: unknown = {},
+    requestContext: RequestContext = {}
+  ) {
+    if (!auth || auth.type !== 'auth0' || !auth.subject) {
+      throw new UnauthorizedError('Auth0 authentication is required.');
+    }
+
+    const existingCandidate = await findCandidateByAuthIdentity(strapi, auth.subject);
+
+    if (!existingCandidate) {
+      throw new ValidationError('Candidate account must be synced before an unlisted interest can be submitted.');
+    }
+
+    const payload = validateCreateUnlistedInterest(input ?? {});
+    const now = new Date().toISOString();
+    const preferenceSnapshot = buildCandidatePreferenceSnapshot(existingCandidate);
+    const unlistedInterest = await strapi.documents('api::unlisted-interest.unlisted-interest').create({
+      data: {
+        candidate: {
+          connect: [{ documentId: existingCandidate.documentId }],
+        },
+        candidateEmail: existingCandidate.email,
+        interestType: payload.interestType,
+        metadata: {
+          preferences: {
+            classAreaPreferences: existingCandidate.classAreaPreferences,
+            workSectorPreferences: existingCandidate.workSectorPreferences,
+          },
+          snapshot: preferenceSnapshot,
+        },
+        source: payload.source,
+        status: 'new',
+        suggestedValue: payload.suggestedValue,
+      } as any,
+    } as any);
+    const response = {
+      candidateEmail: unlistedInterest.candidateEmail,
+      documentId: unlistedInterest.documentId,
+      interestType: unlistedInterest.interestType,
+      source: unlistedInterest.source,
+      status: unlistedInterest.status,
+      suggestedValue: unlistedInterest.suggestedValue,
+    };
+
+    await (strapi.service('api::audit-event.audit-event') as any).record({
+      actorEmail: existingCandidate.email,
+      actorId: auth.subject,
+      actorType: 'candidate',
+      eventCategory: 'candidate',
+      eventType: 'candidate.unlisted_interest_created',
+      ipAddress: requestContext.ipAddress,
+      metadata: {
+        interestType: payload.interestType,
+        source: payload.source,
+        suggestedValue: payload.suggestedValue,
+      },
+      newState: response,
+      occurredAt: now,
+      requestId: requestContext.requestId,
+      source: 'candidate_dashboard',
+      subjectDisplayName: payload.suggestedValue,
+      subjectId: unlistedInterest.documentId,
+      subjectType: 'unlisted_interest',
+      userAgent: requestContext.userAgent,
+    });
+
+    return response;
   },
 
   async updateCurrentCandidateProfileImage(
