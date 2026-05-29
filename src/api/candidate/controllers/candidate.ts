@@ -22,4 +22,20 @@ export default factories.createCoreController('api::candidate.candidate', ({ str
       data: result,
     };
   },
+
+  async updateAccount(ctx) {
+    const result = await (strapi.service('api::candidate.candidate') as any).updateCurrentCandidateAccount(
+      ctx.state?.hireflipAuth,
+      ctx.request.body,
+      {
+        ipAddress: getForwardedClientIp(ctx),
+        requestId: ctx.state?.requestId,
+        userAgent: ctx.request.get('x-hireflip-client-user-agent') || ctx.request.get('user-agent'),
+      }
+    );
+
+    ctx.body = {
+      data: result,
+    };
+  },
 }));

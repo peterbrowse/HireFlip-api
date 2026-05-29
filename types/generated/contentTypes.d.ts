@@ -809,6 +809,7 @@ export interface ApiCandidateCandidate extends Struct.CollectionTypeSchema {
   };
   attributes: {
     accountCreatedAt: Schema.Attribute.DateTime;
+    accountOnboardingCompletedAt: Schema.Attribute.DateTime;
     authIdentityId: Schema.Attribute.String &
       Schema.Attribute.Unique &
       Schema.Attribute.SetMinMaxLength<{
@@ -840,11 +841,26 @@ export interface ApiCandidateCandidate extends Struct.CollectionTypeSchema {
       'api::candidate.candidate'
     > &
       Schema.Attribute.Private;
+    marketingConsentCapturedAt: Schema.Attribute.DateTime;
+    marketingConsentState: Schema.Attribute.Enumeration<
+      ['not_asked', 'opted_in', 'opted_out', 'withdrawn']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'not_asked'>;
+    marketingConsentWordingVersion: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 80;
+      }>;
     notificationPreferences: Schema.Attribute.JSON;
     phone: Schema.Attribute.String &
       Schema.Attribute.SetMinMaxLength<{
         maxLength: 40;
       }>;
+    preferredCommunicationChannel: Schema.Attribute.Enumeration<
+      ['not_set', 'email', 'sms', 'phone']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'not_set'>;
     profileSettings: Schema.Attribute.JSON;
     publishedAt: Schema.Attribute.DateTime;
     recruitmentPlatformVisibility: Schema.Attribute.Enumeration<

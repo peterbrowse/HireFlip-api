@@ -13,5 +13,18 @@ export default {
         ],
       },
     },
+    {
+      method: 'PATCH',
+      path: '/candidates/me/account',
+      handler: 'candidate.updateAccount',
+      config: {
+        auth: false,
+        middlewares: [
+          {
+            name: 'global::auth0-jwt',
+          },
+        ],
+      },
+    },
   ],
 };

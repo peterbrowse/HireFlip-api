@@ -44,6 +44,38 @@
       "type": "string",
       "maxLength": 40
     },
+    "preferredCommunicationChannel": {
+      "type": "enumeration",
+      "enum": [
+        "not_set",
+        "email",
+        "sms",
+        "phone"
+      ],
+      "default": "not_set",
+      "required": true
+    },
+    "marketingConsentState": {
+      "type": "enumeration",
+      "enum": [
+        "not_asked",
+        "opted_in",
+        "opted_out",
+        "withdrawn"
+      ],
+      "default": "not_asked",
+      "required": true
+    },
+    "marketingConsentCapturedAt": {
+      "type": "datetime"
+    },
+    "marketingConsentWordingVersion": {
+      "type": "string",
+      "maxLength": 80
+    },
+    "accountOnboardingCompletedAt": {
+      "type": "datetime"
+    },
     "status": {
       "type": "enumeration",
       "enum": [
