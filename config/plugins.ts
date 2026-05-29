@@ -1,5 +1,3 @@
-import notificationServiceEmailProvider from '../src/providers/notification-service-email';
-
 export default ({ env }) => {
   const uploadProvider = env('UPLOAD_PROVIDER', 'local');
   const s3Acl = env('AWS_ACL', '').trim() || undefined;
@@ -43,7 +41,7 @@ export default ({ env }) => {
     emailProvider === 'notification-service'
       ? {
           config: {
-            provider: notificationServiceEmailProvider,
+            provider: 'notification-service',
             providerOptions: {
               baseUrl: env('NOTIFICATION_SERVICE_URL'),
               serviceToken: env('NOTIFICATION_SERVICE_TOKEN'),
