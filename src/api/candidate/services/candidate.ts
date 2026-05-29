@@ -1,5 +1,6 @@
 import { factories } from '@strapi/strapi';
 import { errors, validateZodSchema, z } from '@strapi/utils';
+import { parsePhoneNumberFromString } from 'libphonenumber-js/max';
 
 const { UnauthorizedError, ValidationError } = errors;
 
@@ -18,11 +19,61 @@ type RequestContext = {
 
 const communicationChannels = ['email', 'sms', 'phone'] as const;
 
+const coercePhoneInput = (value: string) => {
+  const trimmedValue = value.trim();
+  const compactValue = trimmedValue.replace(/[\s().-]/g, '');
+
+  if (/^00\d+$/.test(compactValue)) {
+    return `+${compactValue.slice(2)}`;
+  }
+
+  if (/^44\d{9,}$/.test(compactValue)) {
+    return `+${compactValue}`;
+  }
+
+  if (/^7\d{9}$/.test(compactValue)) {
+    return `0${compactValue}`;
+  }
+
+  return trimmedValue;
+};
+
+const parseMobilePhone = (value: string) => {
+  const phone = parsePhoneNumberFromString(coercePhoneInput(value), 'GB');
+
+  if (!phone || !phone.isValid()) {
+    return undefined;
+  }
+
+  const phoneType = phone.getType();
+
+  if (phoneType !== 'MOBILE' && phoneType !== 'FIXED_LINE_OR_MOBILE') {
+    return undefined;
+  }
+
+  return phone;
+};
+
 const optionalString = (maxLength: number) =>
   z.preprocess(
     (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
     z.string().trim().max(maxLength).optional()
   );
+
+const mobilePhoneSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(40)
+  .refine((value) => Boolean(parseMobilePhone(value)), {
+    message: 'Enter a valid mobile number. UK numbers can be entered with or without +44.',
+  })
+  .transform((value) => parseMobilePhone(value)!.number);
+
+const optionalMobilePhone = z.preprocess(
+  (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+  mobilePhoneSchema.optional()
+);
 
 const syncCandidateSchema = z
   .object({
@@ -36,7 +87,7 @@ const syncCandidateSchema = z
     firstName: optionalString(120),
     lastName: optionalString(120),
     name: optionalString(240),
-    phone: optionalString(40),
+    phone: optionalMobilePhone,
     region: optionalString(120),
     sector: optionalString(120),
   })
@@ -49,7 +100,7 @@ const updateCandidateAccountSchema = z
   .object({
     firstName: z.string().trim().min(1).max(120),
     lastName: optionalString(120),
-    phone: z.string().trim().min(1).max(40),
+    phone: mobilePhoneSchema,
     preferredCommunicationChannel: z.enum(communicationChannels),
     marketingConsent: z.boolean(),
     marketingConsentWordingVersion: optionalString(80),

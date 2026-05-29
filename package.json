@@ -22,6 +22,7 @@
     "@strapi/strapi": "5.47.0",
     "better-sqlite3": "^12.10.0",
     "jose": "^6.2.3",
+    "libphonenumber-js": "^1.13.3",
     "pg": "8.8.0",
     "react": "^18.0.0",
     "react-dom": "^18.0.0",
