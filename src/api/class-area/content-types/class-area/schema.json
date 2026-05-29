@@ -27,6 +27,7 @@
       "type": "enumeration",
       "enum": [
         "active",
+        "coming_soon",
         "hidden",
         "archived"
       ],

@@ -25,6 +25,7 @@ const communicationChannels = ['email', 'sms', 'phone'] as const;
 const notListedPreferenceValue = 'not_listed';
 const candidatePopulate = ['profileImage'];
 const profileImageFormats = ['webp', 'avif'] as const;
+const visiblePreferenceStatuses = ['active', 'coming_soon'] as const;
 const targetClassFallbacks = {
   capacity: 30,
   currency: 'GBP',
@@ -35,21 +36,21 @@ const targetClassFallbacks = {
   sector: 'Marketing',
 };
 const fallbackClassAreaOptions = [
-  { label: 'London', value: 'london' },
-  { label: 'Manchester', value: 'manchester' },
-  { label: 'Birmingham', value: 'birmingham' },
-  { label: 'Bristol', value: 'bristol' },
-  { label: 'Leeds', value: 'leeds' },
-  { label: 'Remote/online', value: 'remote_online' },
+  { label: 'London', status: 'active', value: 'london' },
+  { label: 'Manchester', status: 'coming_soon', value: 'manchester' },
+  { label: 'Birmingham', status: 'coming_soon', value: 'birmingham' },
+  { label: 'Bristol', status: 'coming_soon', value: 'bristol' },
+  { label: 'Leeds', status: 'coming_soon', value: 'leeds' },
+  { label: 'Remote/online', status: 'coming_soon', value: 'remote_online' },
 ];
 const fallbackWorkSectorOptions = [
-  { label: 'Marketing', value: 'marketing' },
-  { label: 'Sales', value: 'sales' },
-  { label: 'Accounting', value: 'accounting' },
-  { label: 'Finance', value: 'finance' },
-  { label: 'HR', value: 'hr' },
-  { label: 'Operations', value: 'operations' },
-  { label: 'Technology', value: 'technology' },
+  { label: 'Marketing', status: 'active', value: 'marketing' },
+  { label: 'Sales', status: 'coming_soon', value: 'sales' },
+  { label: 'Accounting', status: 'coming_soon', value: 'accounting' },
+  { label: 'Finance', status: 'coming_soon', value: 'finance' },
+  { label: 'HR', status: 'coming_soon', value: 'hr' },
+  { label: 'Operations', status: 'coming_soon', value: 'operations' },
+  { label: 'Technology', status: 'coming_soon', value: 'technology' },
 ];
 
 const terminalEnrollmentStatuses = new Set(['withdrawn', 'expired', 'refunded', 'archived']);
@@ -478,13 +479,20 @@ const preferenceLabel = (value?: string) => {
 
 const sanitizePreferenceOption = (record) => ({
   label: record.name,
+  status: visiblePreferenceStatuses.includes(record.status) ? record.status : 'active',
   value: normalizePreferenceValue(record.slug || record.name),
 });
 
-const getActivePreferenceOptions = async (strapi, uid: string, fallbackOptions: { label: string; value: string }[]) => {
+const getVisiblePreferenceOptions = async (
+  strapi,
+  uid: string,
+  fallbackOptions: { label: string; status: string; value: string }[]
+) => {
   const records = await strapi.documents(uid).findMany({
     filters: {
-      status: 'active',
+      status: {
+        $in: visiblePreferenceStatuses,
+      },
     },
     limit: 100,
     sort: ['sortOrder:asc', 'name:asc'],
@@ -834,8 +842,8 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
     }
 
     const [classAreas, workSectors] = await Promise.all([
-      getActivePreferenceOptions(strapi, 'api::class-area.class-area', fallbackClassAreaOptions),
-      getActivePreferenceOptions(strapi, 'api::work-sector.work-sector', fallbackWorkSectorOptions),
+      getVisiblePreferenceOptions(strapi, 'api::class-area.class-area', fallbackClassAreaOptions),
+      getVisiblePreferenceOptions(strapi, 'api::work-sector.work-sector', fallbackWorkSectorOptions),
     ]);
 
     return {
