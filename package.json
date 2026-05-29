@@ -11,6 +11,8 @@
     "develop": "npm run dev",
     "start": "ENV_PATH=${ENV_PATH:-.env.local} strapi start",
     "strapi": "ENV_PATH=${ENV_PATH:-.env.local} strapi",
+    "seed:content": "ENV_PATH=${ENV_PATH:-.env.local} node scripts/seed-content.js",
+    "seed:local-content": "npm run seed:content",
     "upgrade": "npx @strapi/upgrade latest",
     "upgrade:dry": "npx @strapi/upgrade latest --dry"
   },
