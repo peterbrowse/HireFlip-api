@@ -98,10 +98,11 @@ const validateSyncCandidate = validateZodSchema(syncCandidateSchema);
 
 const updateCandidateAccountSchema = z
   .object({
+    communicationChannels: z.array(z.enum(communicationChannels)).optional(),
     firstName: z.string().trim().min(1).max(120),
     lastName: optionalString(120),
     phone: mobilePhoneSchema,
-    preferredCommunicationChannel: z.enum(communicationChannels),
+    preferredCommunicationChannel: z.enum(communicationChannels).optional(),
     marketingConsent: z.boolean(),
     marketingConsentWordingVersion: optionalString(80),
   })
@@ -114,6 +115,7 @@ const sanitizeCandidate = (candidate) => ({
   email: candidate.email,
   firstName: candidate.firstName,
   lastName: candidate.lastName,
+  notificationPreferences: candidate.notificationPreferences,
   phone: candidate.phone,
   preferredCommunicationChannel: candidate.preferredCommunicationChannel,
   marketingConsentState: candidate.marketingConsentState,
@@ -206,6 +208,32 @@ const objectValue = (value: unknown) => {
   }
 
   return {};
+};
+
+const normalizeCommunicationChannels = (
+  channels?: readonly (typeof communicationChannels)[number][],
+  preferredChannel?: (typeof communicationChannels)[number]
+) => {
+  const selectedChannels = new Set<(typeof communicationChannels)[number]>(['email']);
+
+  if (preferredChannel) {
+    selectedChannels.add(preferredChannel);
+  }
+
+  channels?.forEach((channel) => selectedChannels.add(channel));
+
+  return communicationChannels.filter((channel) => selectedChannels.has(channel));
+};
+
+const derivePreferredCommunicationChannel = (
+  selectedChannels: readonly (typeof communicationChannels)[number][],
+  currentPreferredChannel?: (typeof communicationChannels)[number]
+) => {
+  if (currentPreferredChannel && selectedChannels.includes(currentPreferredChannel)) {
+    return currentPreferredChannel;
+  }
+
+  return selectedChannels.find((channel) => channel !== 'email') || 'email';
 };
 
 export default factories.createCoreService('api::candidate.candidate', ({ strapi }) => ({
@@ -343,15 +371,23 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
 
     const previousNotificationPreferences = objectValue(existingCandidate.notificationPreferences);
     const previousProfileSettings = objectValue(existingCandidate.profileSettings);
+    const selectedCommunicationChannels = normalizeCommunicationChannels(
+      payload.communicationChannels,
+      payload.preferredCommunicationChannel
+    );
+    const preferredCommunicationChannel = derivePreferredCommunicationChannel(
+      selectedCommunicationChannels,
+      payload.preferredCommunicationChannel || existingCandidate.preferredCommunicationChannel
+    );
 
     const notificationPreferences = {
       ...previousNotificationPreferences,
-      preferredCommunicationChannel: payload.preferredCommunicationChannel,
+      preferredCommunicationChannel,
       channels: {
         ...(objectValue(previousNotificationPreferences.channels)),
         email: true,
-        phone: payload.preferredCommunicationChannel === 'phone',
-        sms: payload.preferredCommunicationChannel === 'sms',
+        phone: selectedCommunicationChannels.includes('phone'),
+        sms: selectedCommunicationChannels.includes('sms'),
       },
     };
 
@@ -373,7 +409,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
         payload.marketingConsentWordingVersion || process.env.CANDIDATE_ACCOUNT_CONSENT_WORDING_VERSION || 'candidate-account-v1',
       notificationPreferences,
       phone: payload.phone,
-      preferredCommunicationChannel: payload.preferredCommunicationChannel,
+      preferredCommunicationChannel,
       profileSettings,
     });
 
