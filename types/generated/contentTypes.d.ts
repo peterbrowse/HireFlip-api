@@ -598,9 +598,9 @@ export interface ApiAuditEventAuditEvent extends Struct.CollectionTypeSchema {
         'file',
         'interview',
         'notification',
-        'offer',
         'payment',
         'privacy',
+        'progression',
         'recruitment',
         'refund',
         'security',
@@ -810,6 +810,37 @@ export interface ApiCandidateCandidate extends Struct.CollectionTypeSchema {
   attributes: {
     accountCreatedAt: Schema.Attribute.DateTime;
     accountOnboardingCompletedAt: Schema.Attribute.DateTime;
+    accountRestrictedAt: Schema.Attribute.DateTime;
+    accountRestrictedBy: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 160;
+      }>;
+    accountRestrictionAppealStatus: Schema.Attribute.Enumeration<
+      [
+        'not_applicable',
+        'not_started',
+        'submitted',
+        'under_review',
+        'upheld',
+        'rejected',
+      ]
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'not_applicable'>;
+    accountRestrictionEvidenceReference: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 240;
+      }>;
+    accountRestrictionMessage: Schema.Attribute.Text;
+    accountRestrictionReason: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 160;
+      }>;
+    accountRestrictionStatus: Schema.Attribute.Enumeration<
+      ['active', 'suspended', 'blacklisted']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'active'>;
     authIdentityId: Schema.Attribute.String &
       Schema.Attribute.Unique &
       Schema.Attribute.SetMinMaxLength<{
@@ -883,9 +914,9 @@ export interface ApiCandidateCandidate extends Struct.CollectionTypeSchema {
       [
         'interest_registered',
         'account_created',
-        'waitlisted',
-        'slot_reserved',
-        'paid',
+        'unenrolled',
+        'enrolled',
+        'alumni',
         'in_class',
         'course_completed',
         'passed',
@@ -893,11 +924,13 @@ export interface ApiCandidateCandidate extends Struct.CollectionTypeSchema {
         'interview_phase',
         'hired',
         'refunded',
+        'suspended',
+        'blacklisted',
         'archived',
       ]
     > &
       Schema.Attribute.Required &
-      Schema.Attribute.DefaultTo<'interest_registered'>;
+      Schema.Attribute.DefaultTo<'account_created'>;
     updatedAt: Schema.Attribute.DateTime;
     updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
@@ -974,6 +1007,11 @@ export interface ApiClassClass extends Struct.CollectionTypeSchema {
     draftAndPublish: false;
   };
   attributes: {
+    automaticOpeningReadinessStatus: Schema.Attribute.Enumeration<
+      ['not_checked', 'not_ready', 'ready', 'opened']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'not_checked'>;
     capacity: Schema.Attribute.Integer &
       Schema.Attribute.Required &
       Schema.Attribute.SetMinMax<
@@ -1006,9 +1044,38 @@ export interface ApiClassClass extends Struct.CollectionTypeSchema {
         },
         number
       >;
+    displayTitle: Schema.Attribute.String &
+      Schema.Attribute.Required &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 160;
+        minLength: 1;
+      }>;
+    employerInterviewAvailabilityThresholdPercentage: Schema.Attribute.Integer &
+      Schema.Attribute.SetMinMax<
+        {
+          max: 1000;
+          min: 1;
+        },
+        number
+      > &
+      Schema.Attribute.DefaultTo<150>;
     endDate: Schema.Attribute.Date;
+    enrollmentOpenedAt: Schema.Attribute.DateTime;
+    enrollmentOpenedBy: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 160;
+      }>;
     faqs: Schema.Attribute.JSON;
     includedItems: Schema.Attribute.JSON;
+    interestThresholdPercentage: Schema.Attribute.Integer &
+      Schema.Attribute.SetMinMax<
+        {
+          max: 1000;
+          min: 1;
+        },
+        number
+      > &
+      Schema.Attribute.DefaultTo<200>;
     interviewGuaranteeDeadline: Schema.Attribute.DateTime;
     interviewsGuaranteed: Schema.Attribute.Integer &
       Schema.Attribute.Required &
@@ -1022,6 +1089,9 @@ export interface ApiClassClass extends Struct.CollectionTypeSchema {
     locale: Schema.Attribute.String & Schema.Attribute.Private;
     localizations: Schema.Attribute.Relation<'oneToMany', 'api::class.class'> &
       Schema.Attribute.Private;
+    modulesPassCriteriaAttached: Schema.Attribute.Boolean &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<false>;
     moduleSummary: Schema.Attribute.Text;
     name: Schema.Attribute.String &
       Schema.Attribute.Required &
@@ -1030,7 +1100,19 @@ export interface ApiClassClass extends Struct.CollectionTypeSchema {
         maxLength: 160;
         minLength: 1;
       }>;
+    officialClassCode: Schema.Attribute.String &
+      Schema.Attribute.Required &
+      Schema.Attribute.Unique &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 40;
+        minLength: 1;
+      }>;
     openedAt: Schema.Attribute.DateTime;
+    openingMode: Schema.Attribute.Enumeration<
+      ['admin_scheduled', 'admin_immediate', 'automatic']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'admin_scheduled'>;
     overview: Schema.Attribute.Text;
     pricePence: Schema.Attribute.Integer &
       Schema.Attribute.SetMinMax<
@@ -1040,18 +1122,18 @@ export interface ApiClassClass extends Struct.CollectionTypeSchema {
         number
       >;
     publishedAt: Schema.Attribute.DateTime;
-    quarter: Schema.Attribute.Enumeration<['q1', 'q2', 'q3', 'q4']>;
     region: Schema.Attribute.String &
       Schema.Attribute.SetMinMaxLength<{
         maxLength: 120;
       }>;
     requirements: Schema.Attribute.Text;
+    scheduledEnrollmentOpenAt: Schema.Attribute.DateTime;
     scheduleNotes: Schema.Attribute.Text;
     sector: Schema.Attribute.String &
       Schema.Attribute.SetMinMaxLength<{
         maxLength: 120;
       }>;
-    slug: Schema.Attribute.UID<'name'>;
+    slug: Schema.Attribute.UID<'displayTitle'>;
     startDate: Schema.Attribute.Date;
     state: Schema.Attribute.Enumeration<
       [
@@ -1082,6 +1164,14 @@ export interface ApiClassClass extends Struct.CollectionTypeSchema {
         {
           max: 2100;
           min: 2026;
+        },
+        number
+      >;
+    yearSequenceNumber: Schema.Attribute.Integer &
+      Schema.Attribute.SetMinMax<
+        {
+          max: 999;
+          min: 1;
         },
         number
       >;
@@ -1329,6 +1419,79 @@ export interface ApiCourseCourse extends Struct.CollectionTypeSchema {
   };
 }
 
+export interface ApiEmployerCapacityChangeRequestEmployerCapacityChangeRequest
+  extends Struct.CollectionTypeSchema {
+  collectionName: 'employer_capacity_change_requests';
+  info: {
+    description: 'Employer representative request to change interview volume or cadence after onboarding.';
+    displayName: 'Employer Capacity Change Request';
+    pluralName: 'employer-capacity-change-requests';
+    singularName: 'employer-capacity-change-request';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    currentInterviewCommitmentCadence: Schema.Attribute.Enumeration<
+      ['not_set', 'quarterly', 'biannually', 'annually']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'not_set'>;
+    currentInterviewCommitmentVolume: Schema.Attribute.Integer &
+      Schema.Attribute.SetMinMax<
+        {
+          max: 1000;
+          min: 0;
+        },
+        number
+      >;
+    employer: Schema.Attribute.Relation<'manyToOne', 'api::employer.employer'>;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::employer-capacity-change-request.employer-capacity-change-request'
+    > &
+      Schema.Attribute.Private;
+    metadata: Schema.Attribute.JSON;
+    publishedAt: Schema.Attribute.DateTime;
+    reason: Schema.Attribute.Text;
+    requestedByEmployerContact: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::employer-contact.employer-contact'
+    >;
+    requestedInterviewCommitmentCadence: Schema.Attribute.Enumeration<
+      ['not_set', 'quarterly', 'biannually', 'annually']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'not_set'>;
+    requestedInterviewCommitmentVolume: Schema.Attribute.Integer &
+      Schema.Attribute.SetMinMax<
+        {
+          max: 1000;
+          min: 0;
+        },
+        number
+      >;
+    reviewedAt: Schema.Attribute.DateTime;
+    reviewedBy: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 160;
+      }>;
+    reviewNotes: Schema.Attribute.Text;
+    status: Schema.Attribute.Enumeration<
+      ['pending', 'approved', 'denied', 'cancelled']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'pending'>;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+  };
+}
+
 export interface ApiEmployerContactEmployerContact
   extends Struct.CollectionTypeSchema {
   collectionName: 'employer_contacts';
@@ -1408,11 +1571,20 @@ export interface ApiEmployerEmployer extends Struct.CollectionTypeSchema {
     draftAndPublish: false;
   };
   attributes: {
-    candidateSelectionPreference: Schema.Attribute.Enumeration<
-      ['not_set', 'manual_masked_cv_review', 'automated_matching']
+    assignmentMode: Schema.Attribute.Enumeration<
+      ['automatic', 'manual_masked_cv_review', 'criteria_matching']
     > &
       Schema.Attribute.Required &
-      Schema.Attribute.DefaultTo<'not_set'>;
+      Schema.Attribute.DefaultTo<'automatic'>;
+    capacityChangeRequests: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::employer-capacity-change-request.employer-capacity-change-request'
+    >;
+    capacityChangeRequestStatus: Schema.Attribute.Enumeration<
+      ['none', 'pending', 'approved', 'denied']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'none'>;
     companyName: Schema.Attribute.String &
       Schema.Attribute.Required &
       Schema.Attribute.SetMinMaxLength<{
@@ -1426,6 +1598,19 @@ export interface ApiEmployerEmployer extends Struct.CollectionTypeSchema {
     createdAt: Schema.Attribute.DateTime;
     createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
+    initialInterviewCommitmentCadence: Schema.Attribute.Enumeration<
+      ['not_set', 'quarterly', 'biannually', 'annually']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'not_set'>;
+    initialInterviewCommitmentVolume: Schema.Attribute.Integer &
+      Schema.Attribute.SetMinMax<
+        {
+          max: 1000;
+          min: 0;
+        },
+        number
+      >;
     interviewCommitmentCadence: Schema.Attribute.Enumeration<
       ['not_set', 'quarterly', 'biannually', 'annually']
     > &
@@ -1503,6 +1688,7 @@ export interface ApiEnrollmentEnrollment extends Struct.CollectionTypeSchema {
     > &
       Schema.Attribute.Private;
     metadata: Schema.Attribute.JSON;
+    missedOutAt: Schema.Attribute.DateTime;
     passedAt: Schema.Attribute.DateTime;
     passStatus: Schema.Attribute.Enumeration<
       ['not_assessed', 'passed', 'failed', 'appealed']
@@ -1539,24 +1725,38 @@ export interface ApiEnrollmentEnrollment extends Struct.CollectionTypeSchema {
     > &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'not_assessed'>;
+    reservationExpiresAt: Schema.Attribute.DateTime;
     status: Schema.Attribute.Enumeration<
       [
-        'waitlisted',
-        'slot_reserved',
+        'interest_registered',
+        'enrollment_open',
+        'place_reserved',
+        'waiting_list',
+        'missed_out',
         'enrolled',
-        'active',
+        'in_class',
+        'interview_phase',
         'completed',
+        'failed',
         'withdrawn',
-        'expired',
         'refunded',
-        'archived',
+        'removed_no_refund',
+        'removed_partial_refund',
+        'removed_full_refund',
       ]
     > &
       Schema.Attribute.Required &
-      Schema.Attribute.DefaultTo<'waitlisted'>;
+      Schema.Attribute.DefaultTo<'interest_registered'>;
     updatedAt: Schema.Attribute.DateTime;
     updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
+    waitingListPosition: Schema.Attribute.Integer &
+      Schema.Attribute.SetMinMax<
+        {
+          min: 1;
+        },
+        number
+      >;
   };
 }
 
@@ -1844,8 +2044,8 @@ export interface ApiNotificationEventNotificationEvent
 export interface ApiOfferOffer extends Struct.CollectionTypeSchema {
   collectionName: 'offers';
   info: {
-    description: 'Job offer recorded through HireFlip.';
-    displayName: 'Offer';
+    description: 'Non-binding employer request for candidate details so the employer can progress the candidate internally.';
+    displayName: 'Progression Request';
     pluralName: 'offers';
     singularName: 'offer';
   };
@@ -1853,16 +2053,17 @@ export interface ApiOfferOffer extends Struct.CollectionTypeSchema {
     draftAndPublish: false;
   };
   attributes: {
-    acceptedAt: Schema.Attribute.DateTime;
     candidate: Schema.Attribute.Relation<
       'manyToOne',
       'api::candidate.candidate'
     >;
+    candidateNotifiedAt: Schema.Attribute.DateTime;
     createdAt: Schema.Attribute.DateTime;
     createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
-    declinedAt: Schema.Attribute.DateTime;
+    detailsReleasedAt: Schema.Attribute.DateTime;
     employer: Schema.Attribute.Relation<'manyToOne', 'api::employer.employer'>;
+    internalProcessNotes: Schema.Attribute.Text;
     interview: Schema.Attribute.Relation<
       'manyToOne',
       'api::interview.interview'
@@ -1871,20 +2072,24 @@ export interface ApiOfferOffer extends Struct.CollectionTypeSchema {
     localizations: Schema.Attribute.Relation<'oneToMany', 'api::offer.offer'> &
       Schema.Attribute.Private;
     metadata: Schema.Attribute.JSON;
-    offeredRole: Schema.Attribute.String;
     publishedAt: Schema.Attribute.DateTime;
-    salaryAmountPence: Schema.Attribute.Integer;
-    salaryCurrency: Schema.Attribute.String & Schema.Attribute.DefaultTo<'GBP'>;
-    salaryPeriod: Schema.Attribute.Enumeration<
-      ['annual', 'monthly', 'hourly', 'unknown']
-    > &
-      Schema.Attribute.DefaultTo<'annual'>;
-    sentAt: Schema.Attribute.DateTime;
+    requestedByEmployerContact: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::employer-contact.employer-contact'
+    >;
+    requestedDetailsAt: Schema.Attribute.DateTime;
     status: Schema.Attribute.Enumeration<
-      ['draft', 'sent', 'accepted', 'declined', 'withdrawn', 'expired']
+      [
+        'draft',
+        'requested',
+        'candidate_notified',
+        'details_released',
+        'closed',
+        'cancelled',
+      ]
     > &
       Schema.Attribute.Required &
-      Schema.Attribute.DefaultTo<'draft'>;
+      Schema.Attribute.DefaultTo<'requested'>;
     updatedAt: Schema.Attribute.DateTime;
     updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
@@ -3287,6 +3492,7 @@ declare module '@strapi/strapi' {
       'api::course-module.course-module': ApiCourseModuleCourseModule;
       'api::course-progress.course-progress': ApiCourseProgressCourseProgress;
       'api::course.course': ApiCourseCourse;
+      'api::employer-capacity-change-request.employer-capacity-change-request': ApiEmployerCapacityChangeRequestEmployerCapacityChangeRequest;
       'api::employer-contact.employer-contact': ApiEmployerContactEmployerContact;
       'api::employer.employer': ApiEmployerEmployer;
       'api::enrollment.enrollment': ApiEnrollmentEnrollment;

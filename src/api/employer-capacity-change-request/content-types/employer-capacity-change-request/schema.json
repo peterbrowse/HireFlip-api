@@ -1,0 +1,84 @@
+{
+  "kind": "collectionType",
+  "collectionName": "employer_capacity_change_requests",
+  "info": {
+    "singularName": "employer-capacity-change-request",
+    "pluralName": "employer-capacity-change-requests",
+    "displayName": "Employer Capacity Change Request",
+    "description": "Employer representative request to change interview volume or cadence after onboarding."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "employer": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::employer.employer"
+    },
+    "requestedByEmployerContact": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::employer-contact.employer-contact"
+    },
+    "currentInterviewCommitmentVolume": {
+      "type": "integer",
+      "min": 0,
+      "max": 1000
+    },
+    "requestedInterviewCommitmentVolume": {
+      "type": "integer",
+      "min": 0,
+      "max": 1000
+    },
+    "currentInterviewCommitmentCadence": {
+      "type": "enumeration",
+      "enum": [
+        "not_set",
+        "quarterly",
+        "biannually",
+        "annually"
+      ],
+      "default": "not_set",
+      "required": true
+    },
+    "requestedInterviewCommitmentCadence": {
+      "type": "enumeration",
+      "enum": [
+        "not_set",
+        "quarterly",
+        "biannually",
+        "annually"
+      ],
+      "default": "not_set",
+      "required": true
+    },
+    "reason": {
+      "type": "text"
+    },
+    "status": {
+      "type": "enumeration",
+      "enum": [
+        "pending",
+        "approved",
+        "denied",
+        "cancelled"
+      ],
+      "default": "pending",
+      "required": true
+    },
+    "reviewedBy": {
+      "type": "string",
+      "maxLength": 160
+    },
+    "reviewedAt": {
+      "type": "datetime"
+    },
+    "reviewNotes": {
+      "type": "text"
+    },
+    "metadata": {
+      "type": "json"
+    }
+  }
+}

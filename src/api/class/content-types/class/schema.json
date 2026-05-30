@@ -18,23 +18,32 @@
       "required": true,
       "unique": true
     },
+    "officialClassCode": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "required": true,
+      "unique": true
+    },
+    "displayTitle": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "required": true
+    },
     "slug": {
       "type": "uid",
-      "targetField": "name"
+      "targetField": "displayTitle"
     },
     "year": {
       "type": "integer",
       "min": 2026,
       "max": 2100
     },
-    "quarter": {
-      "type": "enumeration",
-      "enum": [
-        "q1",
-        "q2",
-        "q3",
-        "q4"
-      ]
+    "yearSequenceNumber": {
+      "type": "integer",
+      "min": 1,
+      "max": 999
     },
     "state": {
       "type": "enumeration",
@@ -120,6 +129,54 @@
     },
     "openedAt": {
       "type": "datetime"
+    },
+    "openingMode": {
+      "type": "enumeration",
+      "enum": [
+        "admin_scheduled",
+        "admin_immediate",
+        "automatic"
+      ],
+      "default": "admin_scheduled",
+      "required": true
+    },
+    "scheduledEnrollmentOpenAt": {
+      "type": "datetime"
+    },
+    "enrollmentOpenedAt": {
+      "type": "datetime"
+    },
+    "enrollmentOpenedBy": {
+      "type": "string",
+      "maxLength": 160
+    },
+    "automaticOpeningReadinessStatus": {
+      "type": "enumeration",
+      "enum": [
+        "not_checked",
+        "not_ready",
+        "ready",
+        "opened"
+      ],
+      "default": "not_checked",
+      "required": true
+    },
+    "interestThresholdPercentage": {
+      "type": "integer",
+      "default": 200,
+      "min": 1,
+      "max": 1000
+    },
+    "employerInterviewAvailabilityThresholdPercentage": {
+      "type": "integer",
+      "default": 150,
+      "min": 1,
+      "max": 1000
+    },
+    "modulesPassCriteriaAttached": {
+      "type": "boolean",
+      "default": false,
+      "required": true
     },
     "closedAt": {
       "type": "datetime"

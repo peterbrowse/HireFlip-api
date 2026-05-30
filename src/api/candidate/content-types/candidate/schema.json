@@ -88,9 +88,9 @@
       "enum": [
         "interest_registered",
         "account_created",
-        "waitlisted",
-        "slot_reserved",
-        "paid",
+        "unenrolled",
+        "enrolled",
+        "alumni",
         "in_class",
         "course_completed",
         "passed",
@@ -98,10 +98,53 @@
         "interview_phase",
         "hired",
         "refunded",
+        "suspended",
+        "blacklisted",
         "archived"
       ],
-      "default": "interest_registered",
+      "default": "account_created",
       "required": true
+    },
+    "accountRestrictionStatus": {
+      "type": "enumeration",
+      "enum": [
+        "active",
+        "suspended",
+        "blacklisted"
+      ],
+      "default": "active",
+      "required": true
+    },
+    "accountRestrictionReason": {
+      "type": "string",
+      "maxLength": 160
+    },
+    "accountRestrictionMessage": {
+      "type": "text"
+    },
+    "accountRestrictionEvidenceReference": {
+      "type": "string",
+      "maxLength": 240
+    },
+    "accountRestrictionAppealStatus": {
+      "type": "enumeration",
+      "enum": [
+        "not_applicable",
+        "not_started",
+        "submitted",
+        "under_review",
+        "upheld",
+        "rejected"
+      ],
+      "default": "not_applicable",
+      "required": true
+    },
+    "accountRestrictedAt": {
+      "type": "datetime"
+    },
+    "accountRestrictedBy": {
+      "type": "string",
+      "maxLength": 160
     },
     "region": {
       "type": "string",

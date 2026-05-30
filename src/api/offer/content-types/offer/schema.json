@@ -4,8 +4,8 @@
   "info": {
     "singularName": "offer",
     "pluralName": "offers",
-    "displayName": "Offer",
-    "description": "Job offer recorded through HireFlip."
+    "displayName": "Progression Request",
+    "description": "Non-binding employer request for candidate details so the employer can progress the candidate internally."
   },
   "options": {
     "draftAndPublish": false
@@ -30,43 +30,31 @@
       "type": "enumeration",
       "enum": [
         "draft",
-        "sent",
-        "accepted",
-        "declined",
-        "withdrawn",
-        "expired"
+        "requested",
+        "candidate_notified",
+        "details_released",
+        "closed",
+        "cancelled"
       ],
-      "default": "draft",
+      "default": "requested",
       "required": true
     },
-    "offeredRole": {
-      "type": "string"
+    "requestedByEmployerContact": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::employer-contact.employer-contact"
     },
-    "salaryAmountPence": {
-      "type": "integer"
-    },
-    "salaryCurrency": {
-      "type": "string",
-      "default": "GBP"
-    },
-    "salaryPeriod": {
-      "type": "enumeration",
-      "enum": [
-        "annual",
-        "monthly",
-        "hourly",
-        "unknown"
-      ],
-      "default": "annual"
-    },
-    "sentAt": {
+    "requestedDetailsAt": {
       "type": "datetime"
     },
-    "acceptedAt": {
+    "candidateNotifiedAt": {
       "type": "datetime"
     },
-    "declinedAt": {
+    "detailsReleasedAt": {
       "type": "datetime"
+    },
+    "internalProcessNotes": {
+      "type": "text"
     },
     "metadata": {
       "type": "json"

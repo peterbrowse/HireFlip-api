@@ -146,6 +146,10 @@ const main = async () => {
         'The class will cover marketing fundamentals, day-to-day junior marketing tasks, office etiquette, communication expectations, interview preparation, and practical readiness checks.',
       overview:
         'A paid online HireFlip class for entry-level marketing candidates. Register interest now and we will notify you when places are ready to secure.',
+      employerInterviewAvailabilityThresholdPercentage: 150,
+      interestThresholdPercentage: 200,
+      modulesPassCriteriaAttached: false,
+      openingMode: 'admin_scheduled',
       pricePence: 80000,
       requirements:
         'Candidates should be ready to commit to the full class window, complete module work online, and engage with interview preparation once they pass.',
@@ -158,28 +162,32 @@ const main = async () => {
       ...sharedClassContent,
       classArea: connectDocument(london),
       course: connectDocument(launchCourse),
+      displayTitle: 'London Entry-Level Marketing - First Class',
       name: 'London Entry-Level Marketing - First Class',
-      quarter: 'q3',
+      officialClassCode: 'Class 2026-01',
       region: 'London',
       sector: 'Marketing',
-      slug: 'london-entry-level-marketing-first-class',
+      slug: '2026-01-london-marketing-first-class',
       startDate: '2026-07-01',
       workSector: connectDocument(marketing),
       year: 2026,
+      yearSequenceNumber: 1,
     });
 
     const manchesterClass = await upsertClass(strapi, {
       ...sharedClassContent,
       classArea: connectDocument(manchester),
       course: connectDocument(launchCourse),
+      displayTitle: 'Manchester Entry-Level Marketing - First Class',
       name: 'Manchester Entry-Level Marketing - First Class',
-      quarter: 'q4',
+      officialClassCode: 'Class 2026-02',
       region: 'Manchester',
       sector: 'Marketing',
-      slug: 'manchester-entry-level-marketing-first-class',
+      slug: '2026-02-manchester-marketing-first-class',
       startDate: '2026-10-01',
       workSector: connectDocument(marketing),
       year: 2026,
+      yearSequenceNumber: 2,
     });
 
     const summary = {

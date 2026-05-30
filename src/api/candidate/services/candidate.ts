@@ -47,7 +47,16 @@ const profileImageSignedUrlCache = new Map<
   }
 >();
 
-const terminalEnrollmentStatuses = new Set(['withdrawn', 'expired', 'refunded', 'archived']);
+const restrictedCandidateStatuses = new Set(['suspended', 'blacklisted']);
+const terminalEnrollmentStatuses = new Set([
+  'withdrawn',
+  'refunded',
+  'removed_no_refund',
+  'removed_partial_refund',
+  'removed_full_refund',
+  'expired',
+  'archived',
+]);
 const terminalClassStatuses = new Set(['cancelled', 'archived', 'completed']);
 const candidateVisibleClassStates = new Set([
   'coming_soon',
@@ -58,9 +67,36 @@ const candidateVisibleClassStates = new Set([
   'completion_window',
   'interview_window',
 ]);
-const paidEnrollmentStatuses = new Set(['enrolled', 'active']);
+const paidEnrollmentStatuses = new Set(['enrolled', 'in_class', 'interview_phase', 'completed', 'active']);
 const completedEnrollmentStatuses = new Set(['completed']);
-const interestCountEnrollmentStatuses = ['waitlisted', 'slot_reserved', 'enrolled', 'active', 'completed'];
+const interestCountEnrollmentStatuses = [
+  'interest_registered',
+  'enrollment_open',
+  'place_reserved',
+  'waiting_list',
+  'enrolled',
+  'in_class',
+  'interview_phase',
+  'completed',
+  'waitlisted',
+  'slot_reserved',
+  'active',
+];
+
+const enrollmentStatusAliases: Record<string, string> = {
+  active: 'in_class',
+  archived: 'withdrawn',
+  expired: 'waiting_list',
+  slot_reserved: 'place_reserved',
+  waitlisted: 'interest_registered',
+};
+
+const normalizeEnrollmentStatus = (status?: string) =>
+  status ? enrollmentStatusAliases[status] || status : undefined;
+
+const isCandidateRestricted = (candidate) =>
+  restrictedCandidateStatuses.has(candidate?.accountRestrictionStatus) ||
+  restrictedCandidateStatuses.has(candidate?.status);
 
 type UploadedFile = {
   filepath?: string;
@@ -355,6 +391,11 @@ const sanitizeCandidate = async (strapi, candidate) => ({
   marketingConsentWordingVersion: candidate.marketingConsentWordingVersion,
   accountOnboardingCompletedAt: candidate.accountOnboardingCompletedAt,
   status: candidate.status,
+  accountRestrictionStatus: candidate.accountRestrictionStatus || 'active',
+  accountRestrictionReason: candidate.accountRestrictionReason,
+  accountRestrictionMessage: candidate.accountRestrictionMessage,
+  accountRestrictionAppealStatus: candidate.accountRestrictionAppealStatus || 'not_applicable',
+  accountRestrictedAt: candidate.accountRestrictedAt,
   region: candidate.region,
   sector: candidate.sector,
   workSectorPreferences: candidate.workSectorPreferences,
@@ -817,15 +858,16 @@ const sanitizeClass = (classRecord) => {
     includedItems: sanitizeIncludedItems(classRecord.includedItems),
     interviewsGuaranteed: classRecord.interviewsGuaranteed,
     moduleSummary: classRecord.moduleSummary,
-    name: classRecord.name,
+    displayTitle: classRecord.displayTitle || classRecord.name,
+    name: classRecord.displayTitle || classRecord.name,
+    officialClassCode: classRecord.officialClassCode,
     overview: classRecord.overview,
     pricePence: classRecord.pricePence,
-    quarter: classRecord.quarter,
     region,
     requirements: classRecord.requirements,
     scheduleNotes: classRecord.scheduleNotes,
     sector,
-    slug: classRecord.slug || slugify(classRecord.name),
+    slug: classRecord.slug || slugify(`${classRecord.officialClassCode || ''} ${classRecord.displayTitle || classRecord.name}`),
     startDate: classRecord.startDate,
     state: classRecord.state,
     year: classRecord.year,
@@ -846,6 +888,8 @@ const sanitizeEnrollment = (enrollment) => {
     passStatus: enrollment.passStatus,
     paymentStatus: enrollment.paymentStatus,
     status: enrollment.status,
+    reservationExpiresAt: enrollment.reservationExpiresAt,
+    waitingListPosition: enrollment.waitingListPosition,
   };
 };
 
@@ -853,57 +897,83 @@ const classHasPaymentAccess = (classRecord) => classRecord?.state === 'open';
 
 const deriveClassRelationshipState = (enrollment, classRecord?) => {
   if (enrollment) {
+    const normalizedStatus = normalizeEnrollmentStatus(enrollment.status);
+
+    if (
+      [
+        'waiting_list',
+        'missed_out',
+        'withdrawn',
+        'refunded',
+        'removed_no_refund',
+        'removed_partial_refund',
+        'removed_full_refund',
+        'failed',
+      ].includes(normalizedStatus)
+    ) {
+      return normalizedStatus;
+    }
+
     if (
       enrollment.paymentStatus === 'paid' ||
-      ['enrolled', 'active', 'completed'].includes(enrollment.status)
+      ['enrolled', 'in_class', 'interview_phase', 'completed'].includes(normalizedStatus)
     ) {
-      return 'place_secured';
+      return normalizedStatus === 'enrolled' ? 'enrolled' : normalizedStatus;
     }
 
-    if (enrollment.status === 'slot_reserved') {
-      return 'payment_available';
+    if (normalizedStatus === 'place_reserved') {
+      return 'place_reserved';
     }
 
-    if (classHasPaymentAccess(enrollment.class || classRecord)) {
-      return 'payment_available';
+    if (classHasPaymentAccess(enrollment.class || classRecord) || normalizedStatus === 'enrollment_open') {
+      return 'enrollment_open';
     }
 
-    return 'waiting_for_class';
+    return 'interest_registered';
   }
 
   if (classHasPaymentAccess(classRecord)) {
-    return 'payment_available';
+    return 'enrollment_open';
   }
 
   return 'not_registered';
 };
 
 const buildClassTimeline = (classRecord, relationshipState) => {
+  const completedInterest = relationshipState !== 'not_registered';
+  const completedEnrollmentOpen = [
+    'place_reserved',
+    'enrolled',
+    'in_class',
+    'interview_phase',
+    'completed',
+    'refunded',
+  ].includes(relationshipState);
+  const completedPlaceSecured = ['enrolled', 'in_class', 'interview_phase', 'completed'].includes(relationshipState);
   const enrollmentOpen =
     classHasPaymentAccess(classRecord) ||
     ['full', 'in_progress', 'completion_window', 'interview_window', 'completed'].includes(classRecord?.state);
   const classStarted =
+    ['in_class', 'interview_phase', 'completed'].includes(relationshipState) ||
     ['in_progress', 'completion_window', 'interview_window', 'completed'].includes(classRecord?.state);
-  const interviewsActive = ['interview_window'].includes(classRecord?.state);
-  const interviewsComplete = classRecord?.state === 'completed';
-  const placeSecured = relationshipState === 'place_secured';
-  const hasRegisteredInterest = relationshipState !== 'not_registered';
+  const interviewsActive = relationshipState === 'interview_phase' || ['interview_window'].includes(classRecord?.state);
+  const interviewsComplete = relationshipState === 'completed' || classRecord?.state === 'completed';
 
   return [
     {
       key: 'interest',
       label: 'Register Interest',
-      state: hasRegisteredInterest ? 'complete' : 'current',
+      state: completedInterest ? 'complete' : 'current',
     },
     {
       key: 'enrollment_open',
       label: 'Enrollment open',
-      state: placeSecured ? 'complete' : enrollmentOpen || hasRegisteredInterest ? 'current' : 'upcoming',
+      state: completedEnrollmentOpen ? 'complete' : enrollmentOpen ? 'current' : 'upcoming',
     },
     {
       key: 'place_secured',
       label: 'Place secured',
-      state: placeSecured ? (classStarted ? 'complete' : 'current') : 'upcoming',
+      state: completedPlaceSecured ? (classStarted ? 'complete' : 'current') : relationshipState === 'place_reserved' ? 'current' : 'upcoming',
     },
     {
       key: 'class',
@@ -923,7 +993,7 @@ const buildClassRelationship = ({ classRecord, enrollment, registeredInterestCou
 
   return {
     canRegisterInterest: state === 'not_registered',
-    canJoinClass: state === 'payment_available',
+    canJoinClass: state === 'enrollment_open',
     class: sanitizeClass(classRecord),
     enrollment: sanitizeEnrollment(enrollment),
     registeredInterestCount,
@@ -934,15 +1004,19 @@ const buildClassRelationship = ({ classRecord, enrollment, registeredInterestCou
 
 const summarizeClassInterestState = (classRelationships = [], activeEnrollment?) => {
   if (activeEnrollment) {
-    return 'place_secured';
+    return deriveClassRelationshipState(activeEnrollment, activeEnrollment.class);
   }
 
-  if (classRelationships.some((relationship) => relationship.state === 'payment_available')) {
-    return 'payment_available';
+  if (classRelationships.some((relationship) => relationship.state === 'enrollment_open')) {
+    return 'enrollment_open';
   }
 
-  if (classRelationships.some((relationship) => relationship.state === 'waiting_for_class')) {
-    return 'waiting_for_class';
+  if (classRelationships.some((relationship) => relationship.state === 'place_reserved')) {
+    return 'place_reserved';
+  }
+
+  if (classRelationships.some((relationship) => relationship.state === 'waiting_list')) {
+    return 'waiting_list';
   }
 
   if (classRelationships.some((relationship) => relationship.state === 'interest_registered')) {
@@ -975,6 +1049,11 @@ const buildClassInterestResponse = ({ candidate, enrollments, interestCounts, ma
     canRegisterInterest: firstRelationship?.canRegisterInterest || false,
     candidate: {
       documentId: candidate.documentId,
+      accountRestrictionStatus: candidate.accountRestrictionStatus || 'active',
+      accountRestrictionReason: candidate.accountRestrictionReason,
+      accountRestrictionMessage: candidate.accountRestrictionMessage,
+      accountRestrictionAppealStatus: candidate.accountRestrictionAppealStatus || 'not_applicable',
+      accountRestrictedAt: candidate.accountRestrictedAt,
       lifecycleState: deriveCandidateLifecycleState(enrollments),
       preferences: sanitizeCandidatePreferences(candidate),
       registeredInterestAt: candidate.registeredInterestAt,
@@ -1284,7 +1363,9 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       throw new ValidationError('Candidate account must be synced before class interest can be checked.');
     }
 
-    const matchingClasses = await findMatchingClasses(strapi, existingCandidate);
+    const matchingClasses = isCandidateRestricted(existingCandidate)
+      ? []
+      : await findMatchingClasses(strapi, existingCandidate);
     const [enrollments, interestCounts] = await Promise.all([
       findCandidateEnrollments(strapi, existingCandidate),
       findClassInterestCounts(strapi, matchingClasses),
@@ -1311,6 +1392,10 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
 
     if (!existingCandidate) {
       throw new ValidationError('Candidate account must be synced before class interest can be registered.');
+    }
+
+    if (isCandidateRestricted(existingCandidate)) {
+      throw new ValidationError('This account is currently restricted and cannot register interest in classes.');
     }
 
     const payload = validateRegisterClassInterest(input ?? {});
@@ -1366,8 +1451,8 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
           source: 'candidate_dashboard',
         },
         passStatus: 'not_assessed',
-        paymentStatus: 'pending',
-        status: 'waitlisted',
+        paymentStatus: 'not_required',
+        status: 'interest_registered',
       } as any,
       populate: ['class'],
     } as any);
