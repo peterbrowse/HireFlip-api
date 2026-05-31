@@ -80,6 +80,58 @@ export default {
     },
     {
       method: 'POST',
+      path: '/candidates/me/class-reservation',
+      handler: 'candidate.reserveClassPlace',
+      config: {
+        auth: false,
+        middlewares: [
+          {
+            name: 'global::auth0-jwt',
+          },
+        ],
+      },
+    },
+    {
+      method: 'GET',
+      path: '/candidates/me/class-reservation/:reservationDocumentId',
+      handler: 'candidate.classReservation',
+      config: {
+        auth: false,
+        middlewares: [
+          {
+            name: 'global::auth0-jwt',
+          },
+        ],
+      },
+    },
+    {
+      method: 'POST',
+      path: '/candidates/me/class-reservation/:reservationDocumentId/cancel',
+      handler: 'candidate.cancelClassReservation',
+      config: {
+        auth: false,
+        middlewares: [
+          {
+            name: 'global::auth0-jwt',
+          },
+        ],
+      },
+    },
+    {
+      method: 'POST',
+      path: '/candidates/me/class-reservation/:reservationDocumentId/expire',
+      handler: 'candidate.expireClassReservation',
+      config: {
+        auth: false,
+        middlewares: [
+          {
+            name: 'global::auth0-jwt',
+          },
+        ],
+      },
+    },
+    {
+      method: 'POST',
       path: '/candidates/me/unlisted-interest',
       handler: 'candidate.createUnlistedInterest',
       config: {

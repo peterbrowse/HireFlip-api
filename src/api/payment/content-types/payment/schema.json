@@ -21,6 +21,11 @@
       "relation": "manyToOne",
       "target": "api::enrollment.enrollment"
     },
+    "reservation": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::reservation.reservation"
+    },
     "paymentProvider": {
       "type": "enumeration",
       "enum": [

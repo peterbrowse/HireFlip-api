@@ -69,6 +69,8 @@ const candidateVisibleClassStates = new Set([
 ]);
 const paidEnrollmentStatuses = new Set(['enrolled', 'in_class', 'interview_phase', 'completed', 'active']);
 const completedEnrollmentStatuses = new Set(['completed']);
+const capacityHoldingEnrollmentStatuses = new Set(['place_reserved', 'enrolled', 'in_class', 'interview_phase', 'completed']);
+const reservationWindowMs = 10 * 60 * 1000;
 const interestCountEnrollmentStatuses = [
   'interest_registered',
   'enrollment_open',
@@ -243,6 +245,14 @@ const registerClassInterestSchema = z
   .default({});
 
 const validateRegisterClassInterest = validateZodSchema(registerClassInterestSchema);
+
+const reserveClassPlaceSchema = z
+  .object({
+    classDocumentId: z.string().trim().min(1).max(80),
+  })
+  .strict();
+
+const validateReserveClassPlace = validateZodSchema(reserveClassPlaceSchema);
 
 const createUnlistedInterestSchema = z
   .object({
@@ -760,6 +770,136 @@ const findClassInterestCounts = async (strapi, classes = []) => {
   }, new Map<string, number>());
 };
 
+const isPastDate = (value?: string) => Boolean(value && Date.parse(value) <= Date.now());
+
+const getReservationExpiry = (now = new Date()) => new Date(now.getTime() + reservationWindowMs).toISOString();
+
+const classPaymentAmount = (classRecord) => classRecord?.discountedPricePence ?? classRecord?.pricePence ?? 0;
+
+const getNextWaitingListPosition = async (strapi, classRecord, candidate?) => {
+  const waitingListEnrollments = await strapi.documents('api::enrollment.enrollment').findMany({
+    filters: {
+      class: {
+        documentId: classRecord.documentId,
+      },
+      status: 'waiting_list',
+    },
+    limit: 1000,
+    sort: ['waitingListPosition:desc', 'createdAt:asc'],
+    populate: ['candidate'],
+  } as any);
+
+  const existingWaitingEnrollment = waitingListEnrollments.find(
+    (enrollment) => enrollment.candidate?.documentId === candidate?.documentId
+  );
+
+  if (existingWaitingEnrollment?.waitingListPosition) {
+    return existingWaitingEnrollment.waitingListPosition;
+  }
+
+  const highestPosition = waitingListEnrollments.reduce(
+    (position, enrollment) => Math.max(position, enrollment.waitingListPosition || 0),
+    0
+  );
+
+  return highestPosition + 1;
+};
+
+const hasWaitingListAhead = async (strapi, classRecord, candidate?) => {
+  const waitingListEnrollments = await strapi.documents('api::enrollment.enrollment').findMany({
+    filters: {
+      class: {
+        documentId: classRecord.documentId,
+      },
+      status: 'waiting_list',
+    },
+    limit: 1,
+    populate: ['candidate'],
+  } as any);
+
+  return waitingListEnrollments.some((enrollment) => enrollment.candidate?.documentId !== candidate?.documentId);
+};
+
+const findActiveReservationForEnrollment = async (strapi, enrollment) => {
+  if (!enrollment?.documentId) {
+    return undefined;
+  }
+
+  const reservations = await strapi.documents('api::reservation.reservation').findMany({
+    filters: {
+      enrollment: {
+        documentId: enrollment.documentId,
+      },
+      status: 'active',
+    },
+    limit: 1,
+    populate: ['candidate', 'class', 'enrollment'],
+    sort: ['createdAt:desc'],
+  } as any);
+
+  return reservations[0];
+};
+
+const findCandidateReservation = async (strapi, candidate, reservationDocumentId: string) => {
+  const reservations = await strapi.documents('api::reservation.reservation').findMany({
+    filters: {
+      candidate: {
+        documentId: candidate.documentId,
+      },
+      documentId: reservationDocumentId,
+    },
+    limit: 1,
+    populate: ['candidate', 'class', 'enrollment'],
+  } as any);
+
+  return reservations[0];
+};
+
+const countCapacityHeldPlaces = async (strapi, classRecord) => {
+  const enrollments = await strapi.documents('api::enrollment.enrollment').findMany({
+    filters: {
+      class: {
+        documentId: classRecord.documentId,
+      },
+      status: {
+        $in: Array.from(capacityHoldingEnrollmentStatuses),
+      },
+    },
+    limit: 1000,
+    populate: ['class'],
+  } as any);
+
+  return enrollments.filter((enrollment) => {
+    if (normalizeEnrollmentStatus(enrollment.status) !== 'place_reserved') {
+      return true;
+    }
+
+    return !isPastDate(enrollment.reservationExpiresAt);
+  }).length;
+};
+
+const sanitizeReservation = (reservation) => {
+  if (!reservation) {
+    return null;
+  }
+
+  return {
+    amountPence: reservation.amountPence,
+    cancelledAt: reservation.cancelledAt,
+    class: sanitizeClass(reservation.class),
+    currency: reservation.currency,
+    documentId: reservation.documentId,
+    enrollment: sanitizeEnrollment(reservation.enrollment),
+    expiredAt: reservation.expiredAt,
+    expiresAt: reservation.expiresAt,
+    paidAt: reservation.paidAt,
+    reservationStartedAt: reservation.reservationStartedAt,
+    status: reservation.status,
+    termsAcceptedAt: reservation.termsAcceptedAt,
+    termsVersion: reservation.termsVersion,
+  };
+};
+
 const slugify = (value?: string) =>
   value
     ?.toLowerCase()
@@ -922,7 +1062,7 @@ const deriveClassRelationshipState = (enrollment, classRecord?) => {
     }
 
     if (normalizedStatus === 'place_reserved') {
-      return 'place_reserved';
+      return isPastDate(enrollment.reservationExpiresAt) ? 'enrollment_open' : 'place_reserved';
     }
 
     if (classHasPaymentAccess(enrollment.class || classRecord) || normalizedStatus === 'enrollment_open') {
@@ -1070,6 +1210,21 @@ const buildClassInterestResponse = ({ candidate, enrollments, interestCounts, ma
     state,
     target: firstRelationship?.class || null,
   };
+};
+
+const buildCandidateClassInterestForCandidate = async (strapi, candidate) => {
+  const matchingClasses = isCandidateRestricted(candidate) ? [] : await findMatchingClasses(strapi, candidate);
+  const [enrollments, interestCounts] = await Promise.all([
+    findCandidateEnrollments(strapi, candidate),
+    findClassInterestCounts(strapi, matchingClasses),
+  ]);
+
+  return buildClassInterestResponse({
+    candidate,
+    enrollments,
+    interestCounts,
+    matchingClasses,
+  });
 };
 
 export default factories.createCoreService('api::candidate.candidate', ({ strapi }) => ({
@@ -1363,20 +1518,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       throw new ValidationError('Candidate account must be synced before class interest can be checked.');
     }
 
-    const matchingClasses = isCandidateRestricted(existingCandidate)
-      ? []
-      : await findMatchingClasses(strapi, existingCandidate);
-    const [enrollments, interestCounts] = await Promise.all([
-      findCandidateEnrollments(strapi, existingCandidate),
-      findClassInterestCounts(strapi, matchingClasses),
-    ]);
-
-    return buildClassInterestResponse({
-      candidate: existingCandidate,
-      enrollments,
-      interestCounts,
-      matchingClasses,
-    });
+    return buildCandidateClassInterestForCandidate(strapi, existingCandidate);
   },
 
   async registerCurrentCandidateClassInterest(
@@ -1503,6 +1645,517 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
     return {
       created: true,
       data: response,
+    };
+  },
+
+  async reserveCurrentCandidateClassPlace(
+    auth: Auth0State | undefined,
+    input: unknown = {},
+    requestContext: RequestContext = {}
+  ) {
+    if (!auth || auth.type !== 'auth0' || !auth.subject) {
+      throw new UnauthorizedError('Auth0 authentication is required.');
+    }
+
+    const existingCandidate = await findCandidateByAuthIdentity(strapi, auth.subject);
+
+    if (!existingCandidate) {
+      throw new ValidationError('Candidate account must be synced before a place can be reserved.');
+    }
+
+    if (isCandidateRestricted(existingCandidate)) {
+      throw new ValidationError('This account is currently restricted and cannot reserve class places.');
+    }
+
+    const payload = validateReserveClassPlace(input ?? {});
+    const matchingClasses = await findMatchingClasses(strapi, existingCandidate);
+    const targetClass = matchingClasses.find((classRecord) => classRecord.documentId === payload.classDocumentId);
+
+    if (!targetClass) {
+      throw new ValidationError('No matching class is currently available for the selected preferences.');
+    }
+
+    if (!classHasPaymentAccess(targetClass)) {
+      throw new ValidationError('Enrollment is not open for this class yet.');
+    }
+
+    const nowDate = new Date();
+    const now = nowDate.toISOString();
+    const existingEnrollments = await findCandidateEnrollments(strapi, existingCandidate);
+    let existingEnrollment = enrollmentsByClassDocumentId(existingEnrollments).get(targetClass.documentId) as any;
+    let existingReservation = await findActiveReservationForEnrollment(strapi, existingEnrollment);
+
+    if (existingReservation && isPastDate(existingReservation.expiresAt)) {
+      const fallbackStatus = (await hasWaitingListAhead(strapi, targetClass, existingCandidate))
+        ? 'waiting_list'
+        : 'enrollment_open';
+      const waitingListPosition =
+        fallbackStatus === 'waiting_list'
+          ? await getNextWaitingListPosition(strapi, targetClass, existingCandidate)
+          : null;
+
+      existingReservation = await strapi.documents('api::reservation.reservation').update({
+        documentId: existingReservation.documentId,
+        data: {
+          expiredAt: now,
+          status: 'expired',
+        } as any,
+        populate: ['candidate', 'class', 'enrollment'],
+      } as any);
+
+      if (existingEnrollment?.documentId && normalizeEnrollmentStatus(existingEnrollment.status) === 'place_reserved') {
+        existingEnrollment = await strapi.documents('api::enrollment.enrollment').update({
+          documentId: existingEnrollment.documentId,
+          data: {
+            metadata: {
+              ...(objectValue(existingEnrollment.metadata)),
+              lastReservationExpiredAt: now,
+            },
+            reservationExpiresAt: null,
+            status: fallbackStatus,
+            waitingListPosition,
+          } as any,
+          populate: ['class'],
+        } as any);
+      }
+
+      await (strapi.service('api::audit-event.audit-event') as any).record({
+        actorEmail: existingCandidate.email,
+        actorId: auth.subject,
+        actorType: 'candidate',
+        eventCategory: 'payment',
+        eventType: 'candidate.reservation_expired',
+        ipAddress: requestContext.ipAddress,
+        metadata: {
+          class: sanitizeClass(targetClass),
+          reservation: sanitizeReservation(existingReservation),
+        },
+        newState: {
+          enrollment: sanitizeEnrollment(existingEnrollment),
+          reservation: sanitizeReservation(existingReservation),
+        },
+        occurredAt: now,
+        requestId: requestContext.requestId,
+        source: 'candidate_dashboard',
+        subjectDisplayName: existingCandidate.email,
+        subjectId: existingCandidate.documentId,
+        subjectType: 'candidate',
+        userAgent: requestContext.userAgent,
+      });
+    }
+
+    const currentState = deriveClassRelationshipState(existingEnrollment, targetClass);
+
+    if (currentState === 'place_reserved') {
+      const activeReservation = await findActiveReservationForEnrollment(strapi, existingEnrollment);
+
+      if (activeReservation && !isPastDate(activeReservation.expiresAt)) {
+        return {
+          classInterest: await buildCandidateClassInterestForCandidate(strapi, existingCandidate),
+          created: false,
+          reservation: sanitizeReservation(activeReservation),
+          reserved: true,
+        };
+      }
+    }
+
+    if (currentState !== 'enrollment_open') {
+      throw new ValidationError('This class cannot currently be reserved from the current candidate state.');
+    }
+
+    const heldPlaces = await countCapacityHeldPlaces(strapi, targetClass);
+
+    if (heldPlaces >= targetClass.capacity) {
+      const waitingListPosition = await getNextWaitingListPosition(strapi, targetClass, existingCandidate);
+      const metadata = {
+        ...(objectValue(existingEnrollment?.metadata)),
+        joinedWaitingListAt: now,
+        waitingListSource: 'candidate_dashboard',
+      };
+      const enrollment = existingEnrollment?.documentId
+        ? await strapi.documents('api::enrollment.enrollment').update({
+            documentId: existingEnrollment.documentId,
+            data: {
+              metadata,
+              paymentStatus: 'pending',
+              status: 'waiting_list',
+              waitingListPosition,
+            } as any,
+            populate: ['class'],
+          } as any)
+        : await strapi.documents('api::enrollment.enrollment').create({
+            data: {
+              candidate: {
+                connect: [{ documentId: existingCandidate.documentId }],
+              },
+              class: {
+                connect: [{ documentId: targetClass.documentId }],
+              },
+              completionStatus: 'not_started',
+              interestRegisteredAt: now,
+              metadata,
+              passStatus: 'not_assessed',
+              paymentStatus: 'pending',
+              status: 'waiting_list',
+              waitingListPosition,
+            } as any,
+            populate: ['class'],
+          } as any);
+
+      await (strapi.service('api::audit-event.audit-event') as any).record({
+        actorEmail: existingCandidate.email,
+        actorId: auth.subject,
+        actorType: 'candidate',
+        eventCategory: 'payment',
+        eventType: 'candidate.waiting_list_joined',
+        ipAddress: requestContext.ipAddress,
+        metadata: {
+          class: sanitizeClass(targetClass),
+          heldPlaces,
+          waitingListPosition,
+        },
+        newState: {
+          enrollment: sanitizeEnrollment(enrollment),
+        },
+        occurredAt: now,
+        previousState: sanitizeEnrollment(existingEnrollment),
+        requestId: requestContext.requestId,
+        source: 'candidate_dashboard',
+        subjectDisplayName: existingCandidate.email,
+        subjectId: existingCandidate.documentId,
+        subjectType: 'candidate',
+        userAgent: requestContext.userAgent,
+      });
+
+      return {
+        classInterest: await buildCandidateClassInterestForCandidate(strapi, existingCandidate),
+        created: !existingEnrollment?.documentId,
+        reservation: null,
+        reserved: false,
+      };
+    }
+
+    const reservationExpiresAt = getReservationExpiry(nowDate);
+    const enrollmentMetadata = {
+      ...(objectValue(existingEnrollment?.metadata)),
+      lastReservationStartedAt: now,
+      lastReservationSource: 'candidate_dashboard',
+    };
+    const enrollment = existingEnrollment?.documentId
+      ? await strapi.documents('api::enrollment.enrollment').update({
+          documentId: existingEnrollment.documentId,
+          data: {
+            invitedToJoinAt: existingEnrollment.invitedToJoinAt || now,
+            metadata: enrollmentMetadata,
+            paymentStatus: 'pending',
+            reservationExpiresAt,
+            status: 'place_reserved',
+            waitingListPosition: null,
+          } as any,
+          populate: ['class'],
+        } as any)
+      : await strapi.documents('api::enrollment.enrollment').create({
+          data: {
+            candidate: {
+              connect: [{ documentId: existingCandidate.documentId }],
+            },
+            class: {
+              connect: [{ documentId: targetClass.documentId }],
+            },
+            completionStatus: 'not_started',
+            interestRegisteredAt: now,
+            invitedToJoinAt: now,
+            metadata: enrollmentMetadata,
+            passStatus: 'not_assessed',
+            paymentStatus: 'pending',
+            reservationExpiresAt,
+            status: 'place_reserved',
+          } as any,
+          populate: ['class'],
+        } as any);
+
+    const reservation = await strapi.documents('api::reservation.reservation').create({
+      data: {
+        amountPence: classPaymentAmount(targetClass),
+        candidate: {
+          connect: [{ documentId: existingCandidate.documentId }],
+        },
+        class: {
+          connect: [{ documentId: targetClass.documentId }],
+        },
+        currency: targetClass.currency || 'GBP',
+        enrollment: {
+          connect: [{ documentId: enrollment.documentId }],
+        },
+        expiresAt: reservationExpiresAt,
+        metadata: {
+          class: sanitizeClass(targetClass),
+          source: 'candidate_dashboard',
+        },
+        reservationStartedAt: now,
+        source: 'candidate_dashboard',
+        status: 'active',
+      } as any,
+      populate: ['candidate', 'class', 'enrollment'],
+    } as any);
+
+    await (strapi.service('api::audit-event.audit-event') as any).record({
+      actorEmail: existingCandidate.email,
+      actorId: auth.subject,
+      actorType: 'candidate',
+      eventCategory: 'payment',
+      eventType: 'candidate.reservation_created',
+      ipAddress: requestContext.ipAddress,
+      metadata: {
+        class: sanitizeClass(targetClass),
+        heldPlacesBeforeReservation: heldPlaces,
+      },
+      newState: {
+        enrollment: sanitizeEnrollment(enrollment),
+        reservation: sanitizeReservation(reservation),
+      },
+      occurredAt: now,
+      previousState: sanitizeEnrollment(existingEnrollment),
+      requestId: requestContext.requestId,
+      source: 'candidate_dashboard',
+      subjectDisplayName: existingCandidate.email,
+      subjectId: existingCandidate.documentId,
+      subjectType: 'candidate',
+      userAgent: requestContext.userAgent,
+    });
+
+    return {
+      classInterest: await buildCandidateClassInterestForCandidate(strapi, existingCandidate),
+      created: true,
+      reservation: sanitizeReservation(reservation),
+      reserved: true,
+    };
+  },
+
+  async getCurrentCandidateClassReservation(auth: Auth0State | undefined, reservationDocumentId: string) {
+    if (!auth || auth.type !== 'auth0' || !auth.subject) {
+      throw new UnauthorizedError('Auth0 authentication is required.');
+    }
+
+    const existingCandidate = await findCandidateByAuthIdentity(strapi, auth.subject);
+
+    if (!existingCandidate) {
+      throw new ValidationError('Candidate account must be synced before a reservation can be checked.');
+    }
+
+    const reservation = await findCandidateReservation(strapi, existingCandidate, reservationDocumentId);
+
+    if (!reservation) {
+      throw new ValidationError('Reservation could not be found.');
+    }
+
+    return {
+      classInterest: await buildCandidateClassInterestForCandidate(strapi, existingCandidate),
+      paymentAction: {
+        canCreateCheckoutSession: false,
+        kind: 'payment_service_not_connected',
+        label: 'Payment is not available yet while HireFlip finishes setting up checkout.',
+      },
+      reservation: sanitizeReservation(reservation),
+    };
+  },
+
+  async cancelCurrentCandidateClassReservation(
+    auth: Auth0State | undefined,
+    reservationDocumentId: string,
+    requestContext: RequestContext = {}
+  ) {
+    if (!auth || auth.type !== 'auth0' || !auth.subject) {
+      throw new UnauthorizedError('Auth0 authentication is required.');
+    }
+
+    const existingCandidate = await findCandidateByAuthIdentity(strapi, auth.subject);
+
+    if (!existingCandidate) {
+      throw new ValidationError('Candidate account must be synced before a reservation can be cancelled.');
+    }
+
+    const reservation = await findCandidateReservation(strapi, existingCandidate, reservationDocumentId);
+
+    if (!reservation) {
+      throw new ValidationError('Reservation could not be found.');
+    }
+
+    const now = new Date().toISOString();
+    const previousReservation = sanitizeReservation(reservation);
+    const previousEnrollment = sanitizeEnrollment(reservation.enrollment);
+    const classRecord = reservation.class;
+    const fallbackStatus = (await hasWaitingListAhead(strapi, classRecord, existingCandidate))
+      ? 'waiting_list'
+      : 'enrollment_open';
+    const waitingListPosition =
+      fallbackStatus === 'waiting_list'
+        ? await getNextWaitingListPosition(strapi, classRecord, existingCandidate)
+        : null;
+    const updatedReservation =
+      reservation.status === 'active'
+        ? await strapi.documents('api::reservation.reservation').update({
+            documentId: reservation.documentId,
+            data: {
+              cancelledAt: now,
+              status: 'cancelled',
+            } as any,
+            populate: ['candidate', 'class', 'enrollment'],
+          } as any)
+        : reservation;
+    const updatedEnrollment =
+      reservation.enrollment?.documentId &&
+      normalizeEnrollmentStatus(reservation.enrollment.status) === 'place_reserved'
+        ? await strapi.documents('api::enrollment.enrollment').update({
+            documentId: reservation.enrollment.documentId,
+            data: {
+              metadata: {
+                ...(objectValue(reservation.enrollment.metadata)),
+                lastReservationCancelledAt: now,
+              },
+              reservationExpiresAt: null,
+              status: fallbackStatus,
+              waitingListPosition,
+            } as any,
+            populate: ['class'],
+          } as any)
+        : reservation.enrollment;
+
+    await (strapi.service('api::audit-event.audit-event') as any).record({
+      actorEmail: existingCandidate.email,
+      actorId: auth.subject,
+      actorType: 'candidate',
+      eventCategory: 'payment',
+      eventType: 'candidate.reservation_cancelled',
+      ipAddress: requestContext.ipAddress,
+      metadata: {
+        class: sanitizeClass(classRecord),
+      },
+      newState: {
+        enrollment: sanitizeEnrollment(updatedEnrollment),
+        reservation: sanitizeReservation(updatedReservation),
+      },
+      occurredAt: now,
+      previousState: {
+        enrollment: previousEnrollment,
+        reservation: previousReservation,
+      },
+      requestId: requestContext.requestId,
+      source: 'candidate_dashboard',
+      subjectDisplayName: existingCandidate.email,
+      subjectId: existingCandidate.documentId,
+      subjectType: 'candidate',
+      userAgent: requestContext.userAgent,
+    });
+
+    return {
+      classInterest: await buildCandidateClassInterestForCandidate(strapi, existingCandidate),
+      reservation: sanitizeReservation(updatedReservation),
+    };
+  },
+
+  async expireCurrentCandidateClassReservation(
+    auth: Auth0State | undefined,
+    reservationDocumentId: string,
+    requestContext: RequestContext = {}
+  ) {
+    if (!auth || auth.type !== 'auth0' || !auth.subject) {
+      throw new UnauthorizedError('Auth0 authentication is required.');
+    }
+
+    const existingCandidate = await findCandidateByAuthIdentity(strapi, auth.subject);
+
+    if (!existingCandidate) {
+      throw new ValidationError('Candidate account must be synced before a reservation can expire.');
+    }
+
+    const reservation = await findCandidateReservation(strapi, existingCandidate, reservationDocumentId);
+
+    if (!reservation) {
+      throw new ValidationError('Reservation could not be found.');
+    }
+
+    if (reservation.status !== 'active') {
+      return {
+        classInterest: await buildCandidateClassInterestForCandidate(strapi, existingCandidate),
+        reservation: sanitizeReservation(reservation),
+      };
+    }
+
+    if (!isPastDate(reservation.expiresAt)) {
+      return {
+        classInterest: await buildCandidateClassInterestForCandidate(strapi, existingCandidate),
+        reservation: sanitizeReservation(reservation),
+      };
+    }
+
+    const now = new Date().toISOString();
+    const previousReservation = sanitizeReservation(reservation);
+    const previousEnrollment = sanitizeEnrollment(reservation.enrollment);
+    const classRecord = reservation.class;
+    const fallbackStatus = (await hasWaitingListAhead(strapi, classRecord, existingCandidate))
+      ? 'waiting_list'
+      : 'enrollment_open';
+    const waitingListPosition =
+      fallbackStatus === 'waiting_list'
+        ? await getNextWaitingListPosition(strapi, classRecord, existingCandidate)
+        : null;
+    const updatedReservation = await strapi.documents('api::reservation.reservation').update({
+      documentId: reservation.documentId,
+      data: {
+        expiredAt: now,
+        status: 'expired',
+      } as any,
+      populate: ['candidate', 'class', 'enrollment'],
+    } as any);
+    const updatedEnrollment =
+      reservation.enrollment?.documentId &&
+      normalizeEnrollmentStatus(reservation.enrollment.status) === 'place_reserved'
+        ? await strapi.documents('api::enrollment.enrollment').update({
+            documentId: reservation.enrollment.documentId,
+            data: {
+              metadata: {
+                ...(objectValue(reservation.enrollment.metadata)),
+                lastReservationExpiredAt: now,
+              },
+              reservationExpiresAt: null,
+              status: fallbackStatus,
+              waitingListPosition,
+            } as any,
+            populate: ['class'],
+          } as any)
+        : reservation.enrollment;
+
+    await (strapi.service('api::audit-event.audit-event') as any).record({
+      actorEmail: existingCandidate.email,
+      actorId: auth.subject,
+      actorType: 'candidate',
+      eventCategory: 'payment',
+      eventType: 'candidate.reservation_expired',
+      ipAddress: requestContext.ipAddress,
+      metadata: {
+        class: sanitizeClass(classRecord),
+      },
+      newState: {
+        enrollment: sanitizeEnrollment(updatedEnrollment),
+        reservation: sanitizeReservation(updatedReservation),
+      },
+      occurredAt: now,
+      previousState: {
+        enrollment: previousEnrollment,
+        reservation: previousReservation,
+      },
+      requestId: requestContext.requestId,
+      source: 'candidate_dashboard',
+      subjectDisplayName: existingCandidate.email,
+      subjectId: existingCandidate.documentId,
+      subjectType: 'candidate',
+      userAgent: requestContext.userAgent,
+    });
+
+    return {
+      classInterest: await buildCandidateClassInterestForCandidate(strapi, existingCandidate),
+      reservation: sanitizeReservation(updatedReservation),
     };
   },
 

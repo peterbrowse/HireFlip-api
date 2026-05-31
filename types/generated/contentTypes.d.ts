@@ -2219,6 +2219,10 @@ export interface ApiPaymentPayment extends Struct.CollectionTypeSchema {
         maxLength: 255;
       }>;
     publishedAt: Schema.Attribute.DateTime;
+    reservation: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::reservation.reservation'
+    >;
     slotReservationExpiresAt: Schema.Attribute.DateTime;
     status: Schema.Attribute.Enumeration<
       [
@@ -2640,6 +2644,83 @@ export interface ApiRefundRefund extends Struct.CollectionTypeSchema {
     > &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'draft'>;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+  };
+}
+
+export interface ApiReservationReservation extends Struct.CollectionTypeSchema {
+  collectionName: 'reservations';
+  info: {
+    description: 'Timed attempts to reserve a class place before payment is completed.';
+    displayName: 'Reservation';
+    pluralName: 'reservations';
+    singularName: 'reservation';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    amountPence: Schema.Attribute.Integer &
+      Schema.Attribute.Required &
+      Schema.Attribute.SetMinMax<
+        {
+          min: 0;
+        },
+        number
+      >;
+    cancelledAt: Schema.Attribute.DateTime;
+    candidate: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::candidate.candidate'
+    >;
+    class: Schema.Attribute.Relation<'manyToOne', 'api::class.class'>;
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    currency: Schema.Attribute.String &
+      Schema.Attribute.Required &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 3;
+        minLength: 3;
+      }> &
+      Schema.Attribute.DefaultTo<'GBP'>;
+    enrollment: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::enrollment.enrollment'
+    >;
+    expiredAt: Schema.Attribute.DateTime;
+    expiresAt: Schema.Attribute.DateTime & Schema.Attribute.Required;
+    idempotencyKey: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 160;
+      }>;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::reservation.reservation'
+    > &
+      Schema.Attribute.Private;
+    metadata: Schema.Attribute.JSON;
+    paidAt: Schema.Attribute.DateTime;
+    publishedAt: Schema.Attribute.DateTime;
+    reservationStartedAt: Schema.Attribute.DateTime & Schema.Attribute.Required;
+    source: Schema.Attribute.Enumeration<
+      ['candidate_dashboard', 'waiting_list_offer', 'admin']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'candidate_dashboard'>;
+    status: Schema.Attribute.Enumeration<
+      ['active', 'cancelled', 'expired', 'paid', 'released']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'active'>;
+    termsAcceptedAt: Schema.Attribute.DateTime;
+    termsVersion: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 120;
+      }>;
     updatedAt: Schema.Attribute.DateTime;
     updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
@@ -3507,6 +3588,7 @@ declare module '@strapi/strapi' {
       'api::public-interest-lead.public-interest-lead': ApiPublicInterestLeadPublicInterestLead;
       'api::question.question': ApiQuestionQuestion;
       'api::refund.refund': ApiRefundRefund;
+      'api::reservation.reservation': ApiReservationReservation;
       'api::stored-file.stored-file': ApiStoredFileStoredFile;
       'api::test-attempt.test-attempt': ApiTestAttemptTestAttempt;
       'api::test.test': ApiTestTest;

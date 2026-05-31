@@ -1,0 +1,95 @@
+{
+  "kind": "collectionType",
+  "collectionName": "reservations",
+  "info": {
+    "singularName": "reservation",
+    "pluralName": "reservations",
+    "displayName": "Reservation",
+    "description": "Timed attempts to reserve a class place before payment is completed."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "candidate": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::candidate.candidate"
+    },
+    "class": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::class.class"
+    },
+    "enrollment": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::enrollment.enrollment"
+    },
+    "status": {
+      "type": "enumeration",
+      "enum": [
+        "active",
+        "cancelled",
+        "expired",
+        "paid",
+        "released"
+      ],
+      "default": "active",
+      "required": true
+    },
+    "source": {
+      "type": "enumeration",
+      "enum": [
+        "candidate_dashboard",
+        "waiting_list_offer",
+        "admin"
+      ],
+      "default": "candidate_dashboard",
+      "required": true
+    },
+    "amountPence": {
+      "type": "integer",
+      "min": 0,
+      "required": true
+    },
+    "currency": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 3,
+      "default": "GBP",
+      "required": true
+    },
+    "reservationStartedAt": {
+      "type": "datetime",
+      "required": true
+    },
+    "expiresAt": {
+      "type": "datetime",
+      "required": true
+    },
+    "cancelledAt": {
+      "type": "datetime"
+    },
+    "expiredAt": {
+      "type": "datetime"
+    },
+    "paidAt": {
+      "type": "datetime"
+    },
+    "termsAcceptedAt": {
+      "type": "datetime"
+    },
+    "termsVersion": {
+      "type": "string",
+      "maxLength": 120
+    },
+    "idempotencyKey": {
+      "type": "string",
+      "maxLength": 160
+    },
+    "metadata": {
+      "type": "json"
+    }
+  }
+}
