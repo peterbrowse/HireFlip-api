@@ -61,6 +61,8 @@ const registerInterestSchema = z
 
 const validateRegisterInterest = validateZodSchema(registerInterestSchema);
 
+type RegisterInterestPayload = z.infer<typeof registerInterestSchema>;
+
 type TurnstileValidationResponse = {
   success: boolean;
   challenge_ts?: string;
@@ -75,6 +77,63 @@ type RegisterInterestRequestContext = {
   userAgent?: string;
   requestId?: string;
 };
+
+type PublicInterestLeadData = {
+  candidateStatus?: string;
+  company?: string;
+  consentCapturedAt: string;
+  consentState: 'marketing_opted_in' | 'operational_only';
+  consentWordingVersion: string;
+  email: string;
+  employerInterviewCapacity?: number;
+  enquiryLawfulBasis: string;
+  leadType: RegisterInterestPayload['leadType'];
+  marketingChannels: {
+    email: boolean;
+  };
+  marketingLawfulBasis?: 'consent';
+  metadata: {
+    request: {
+      ipAddress?: string;
+      userAgent?: string;
+    };
+    turnstile: {
+      action?: string;
+      challengeTs?: string;
+      hostname?: string;
+    };
+  };
+  name?: string;
+  privacyNoticeVersion: string;
+  region?: string;
+  sector?: string;
+  sourceForm: string;
+  suppressionStatus: 'not_suppressed';
+  syncStatus: 'pending' | 'not_required';
+};
+
+type PublicInterestLeadRecord = {
+  documentId?: string;
+};
+
+type PublicInterestLeadDocuments = {
+  create(input: { data: PublicInterestLeadData }): Promise<PublicInterestLeadRecord>;
+};
+
+type AuditEventService = {
+  record(input: Record<string, unknown>): Promise<unknown>;
+};
+
+type StrapiDocumentService = {
+  documents(uid: 'api::public-interest-lead.public-interest-lead'): unknown;
+  service(uid: 'api::audit-event.audit-event'): unknown;
+};
+
+const publicInterestLeadDocuments = (strapi: StrapiDocumentService) =>
+  strapi.documents('api::public-interest-lead.public-interest-lead') as PublicInterestLeadDocuments;
+
+const auditEvents = (strapi: StrapiDocumentService) =>
+  strapi.service('api::audit-event.audit-event') as AuditEventService;
 
 const turnstileActionByLeadType = {
   candidate_interest: 'candidate_interest',
@@ -151,7 +210,7 @@ async function validateTurnstileToken(token: string, expectedAction: string, rem
 
 export default factories.createCoreService('api::public-interest-lead.public-interest-lead', ({ strapi }) => ({
   async registerInterest(input: unknown, requestContext: RegisterInterestRequestContext = {}) {
-    const payload = validateRegisterInterest(input);
+    const payload: RegisterInterestPayload = validateRegisterInterest(input);
 
     if (payload.website) {
       return { created: false, documentId: undefined };
@@ -169,7 +228,7 @@ export default factories.createCoreService('api::public-interest-lead.public-int
     const privacyNoticeVersion =
       payload.privacyNoticeVersion || process.env.PRIVACY_NOTICE_VERSION || 'privacy-notice-v1';
 
-    const data = {
+    const data: PublicInterestLeadData = {
       email: payload.email,
       leadType: payload.leadType,
       name: payload.name,
@@ -203,9 +262,9 @@ export default factories.createCoreService('api::public-interest-lead.public-int
       },
     };
 
-    const lead = await strapi.documents('api::public-interest-lead.public-interest-lead').create({ data: data as any });
+    const lead = await publicInterestLeadDocuments(strapi).create({ data });
 
-    await (strapi.service('api::audit-event.audit-event') as any).record({
+    await auditEvents(strapi).record({
       eventType: 'public_interest_lead.created',
       eventCategory: 'privacy',
       source: 'core_api',

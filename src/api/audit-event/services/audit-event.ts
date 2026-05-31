@@ -57,10 +57,23 @@ const auditEventSchema = z.object({
 
 const validateAuditEvent = validateZodSchema(auditEventSchema);
 
+type AuditEventInput = z.infer<typeof auditEventSchema>;
+
+type DocumentCollection = {
+  create(input: { data: AuditEventInput }): Promise<unknown>;
+};
+
+type StrapiDocumentService = {
+  documents(uid: 'api::audit-event.audit-event'): unknown;
+};
+
+const auditEventDocuments = (strapi: StrapiDocumentService) =>
+  strapi.documents('api::audit-event.audit-event') as DocumentCollection;
+
 export default factories.createCoreService('api::audit-event.audit-event', ({ strapi }) => ({
   async record(input: unknown) {
-    const data = validateAuditEvent(input);
+    const data: AuditEventInput = validateAuditEvent(input);
 
-    return strapi.documents('api::audit-event.audit-event').create({ data: data as any });
+    return auditEventDocuments(strapi).create({ data });
   },
 }));

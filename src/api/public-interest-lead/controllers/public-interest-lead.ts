@@ -1,5 +1,23 @@
 import { factories } from '@strapi/strapi';
 
+type RequestContext = {
+  ipAddress?: string;
+  requestId?: string;
+  userAgent?: string;
+};
+
+type RegisterInterestResult = {
+  created: boolean;
+  documentId?: string;
+};
+
+type PublicInterestLeadService = {
+  registerInterest(input: unknown, requestContext: RequestContext): Promise<RegisterInterestResult>;
+};
+
+const publicInterestLeadService = (strapi: { service(uid: string): unknown }): PublicInterestLeadService =>
+  strapi.service('api::public-interest-lead.public-interest-lead') as PublicInterestLeadService;
+
 const getForwardedClientIp = (ctx) =>
   ctx.request.get('x-hireflip-client-ip') ||
   ctx.request.get('cf-connecting-ip') ||
@@ -8,7 +26,7 @@ const getForwardedClientIp = (ctx) =>
 
 export default factories.createCoreController('api::public-interest-lead.public-interest-lead', ({ strapi }) => ({
   async registerInterest(ctx) {
-    const result = await (strapi.service('api::public-interest-lead.public-interest-lead') as any).registerInterest(
+    const result = await publicInterestLeadService(strapi).registerInterest(
       ctx.request.body,
       {
         ipAddress: getForwardedClientIp(ctx),
