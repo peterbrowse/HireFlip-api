@@ -21,6 +21,81 @@ type RequestContext = {
   userAgent?: string;
 };
 
+type StrapiDocumentService = {
+  documents(uid: string): unknown;
+  service(uid: string): unknown;
+};
+
+type DocumentRecord = Record<string, unknown> & {
+  accountCreatedAt?: string;
+  accountOnboardingCompletedAt?: string;
+  accountRestrictionStatus?: string;
+  amountPence?: number;
+  authIdentityId?: string;
+  candidate?: DocumentRecord;
+  candidateEmail?: string;
+  capacity?: number;
+  class?: DocumentRecord;
+  classArea?: DocumentRecord;
+  classAreaPreferences?: unknown;
+  completionStatus?: string;
+  currency?: string;
+  displayTitle?: string;
+  documentId?: string;
+  email?: string;
+  enrollment?: DocumentRecord;
+  expiresAt?: string;
+  firstName?: string;
+  id?: number;
+  interestRegisteredAt?: string;
+  interestType?: string;
+  invitedToJoinAt?: string;
+  lastName?: string;
+  marketingConsentCapturedAt?: string;
+  marketingConsentState?: string;
+  marketingConsentWordingVersion?: string;
+  metadata?: unknown;
+  name?: string;
+  notificationPreferences?: unknown;
+  passStatus?: string;
+  paymentStatus?: string;
+  phone?: string;
+  pricePence?: number;
+  discountedPricePence?: number;
+  preferredCommunicationChannel?: (typeof communicationChannels)[number];
+  profileImage?: DocumentRecord;
+  profileSettings?: unknown;
+  providerCheckoutSessionId?: string;
+  registeredInterestAt?: string;
+  region?: string;
+  reservationExpiresAt?: string;
+  sector?: string;
+  slug?: string;
+  startDate?: string;
+  source?: string;
+  state?: string;
+  status?: string;
+  suggestedValue?: string;
+  waitingListPosition?: number;
+  workSector?: DocumentRecord;
+  workSectorPreferences?: unknown;
+};
+
+type DocumentCollection = {
+  create(input: Record<string, unknown>): Promise<DocumentRecord>;
+  findMany(input: Record<string, unknown>): Promise<DocumentRecord[]>;
+  update(input: Record<string, unknown>): Promise<DocumentRecord>;
+};
+
+type AuditEventService = {
+  record(input: Record<string, unknown>): Promise<unknown>;
+};
+
+const documents = (strapi: StrapiDocumentService, uid: string) =>
+  strapi.documents(uid) as unknown as DocumentCollection;
+const auditEvents = (strapi: StrapiDocumentService) =>
+  strapi.service('api::audit-event.audit-event') as unknown as AuditEventService;
+
 const communicationChannels = ['email', 'sms', 'phone'] as const;
 const notListedPreferenceValue = 'not_listed';
 const unlistedInterestTypes = ['class_area', 'work_sector'] as const;
@@ -511,14 +586,14 @@ const buildProfile = (payload, auth: Auth0State) => {
   };
 };
 
-const findCandidateByAuthIdentity = async (strapi, authIdentityId: string) => {
-  const candidates = await strapi.documents('api::candidate.candidate').findMany({
+const findCandidateByAuthIdentity = async (strapi: StrapiDocumentService, authIdentityId: string) => {
+  const candidates = await documents(strapi, 'api::candidate.candidate').findMany({
     filters: {
       authIdentityId,
     },
     limit: 1,
     populate: candidatePopulate,
-  } as any);
+  });
 
   return candidates[0];
 };
@@ -594,17 +669,24 @@ const preferenceLabel = (value?: string) => {
   return value === 'remote_online' ? 'Remote/online' : toTitleCase(value);
 };
 
-const sanitizePreferenceOption = (record) => ({
-  label: record.name,
-  state: visiblePreferenceStates.includes(record.state) ? record.state : 'active',
-  value: normalizePreferenceValue(record.slug || record.name),
-});
+const sanitizePreferenceOption = (record: DocumentRecord) => {
+  const label = record.name || 'Unnamed option';
+  const state = visiblePreferenceStates.includes(record.state as (typeof visiblePreferenceStates)[number])
+    ? record.state
+    : 'active';
+
+  return {
+    label,
+    state,
+    value: normalizePreferenceValue(record.slug || label),
+  };
+};
 
 const getVisiblePreferenceOptions = async (
-  strapi,
+  strapi: StrapiDocumentService,
   uid: string
 ) => {
-  const records = await strapi.documents(uid).findMany({
+  const records = await documents(strapi, uid).findMany({
     filters: {
       state: {
         $in: visiblePreferenceStates,
@@ -612,7 +694,7 @@ const getVisiblePreferenceOptions = async (
     },
     limit: 100,
     sort: ['sortOrder:asc', 'name:asc'],
-  } as any);
+  });
 
   return records.map(sanitizePreferenceOption);
 };
@@ -691,12 +773,12 @@ const classMatchesTarget = (classRecord, candidate?) => {
   );
 };
 
-const findMatchingClasses = async (strapi, candidate?) => {
-  const classes = await strapi.documents('api::class.class').findMany({
+const findMatchingClasses = async (strapi: StrapiDocumentService, candidate?: DocumentRecord) => {
+  const classes = await documents(strapi, 'api::class.class').findMany({
     limit: 100,
     populate: ['classArea', 'workSector'],
     sort: ['startDate:asc', 'createdAt:desc'],
-  } as any);
+  });
 
   return classes
     .filter((classRecord) => classMatchesTarget(classRecord, candidate))
@@ -710,8 +792,8 @@ const findMatchingClasses = async (strapi, candidate?) => {
     });
 };
 
-const findCandidateEnrollments = async (strapi, candidate) =>
-  strapi.documents('api::enrollment.enrollment').findMany({
+const findCandidateEnrollments = async (strapi: StrapiDocumentService, candidate: DocumentRecord) =>
+  documents(strapi, 'api::enrollment.enrollment').findMany({
     filters: {
       candidate: {
         documentId: candidate.documentId,
@@ -720,11 +802,11 @@ const findCandidateEnrollments = async (strapi, candidate) =>
     limit: 100,
     populate: ['class'],
     sort: ['createdAt:desc'],
-  } as any);
+  });
 
 const enrollmentClassDocumentId = (enrollment) => enrollment?.class?.documentId;
 
-const enrollmentsByClassDocumentId = (enrollments = []) =>
+const enrollmentsByClassDocumentId = (enrollments: DocumentRecord[] = []) =>
   enrollments.reduce((map, enrollment) => {
     const classDocumentId = enrollmentClassDocumentId(enrollment);
 
@@ -733,9 +815,9 @@ const enrollmentsByClassDocumentId = (enrollments = []) =>
     }
 
     return map;
-  }, new Map<string, unknown>());
+  }, new Map<string, DocumentRecord>());
 
-const findClassInterestCounts = async (strapi, classes = []) => {
+const findClassInterestCounts = async (strapi: StrapiDocumentService, classes: DocumentRecord[] = []) => {
   const classDocumentIds = classes
     .map((classRecord) => classRecord.documentId)
     .filter((documentId): documentId is string => Boolean(documentId));
@@ -744,7 +826,7 @@ const findClassInterestCounts = async (strapi, classes = []) => {
     return new Map<string, number>();
   }
 
-  const enrollments = await strapi.documents('api::enrollment.enrollment').findMany({
+  const enrollments = await documents(strapi, 'api::enrollment.enrollment').findMany({
     filters: {
       class: {
         documentId: {
@@ -757,7 +839,7 @@ const findClassInterestCounts = async (strapi, classes = []) => {
     },
     limit: 1000,
     populate: ['class'],
-  } as any);
+  });
 
   return enrollments.reduce((map, enrollment) => {
     const classDocumentId = enrollmentClassDocumentId(enrollment);
@@ -774,10 +856,51 @@ const isPastDate = (value?: string) => Boolean(value && Date.parse(value) <= Dat
 
 const getReservationExpiry = (now = new Date()) => new Date(now.getTime() + reservationWindowMs).toISOString();
 
-const classPaymentAmount = (classRecord) => classRecord?.discountedPricePence ?? classRecord?.pricePence ?? 0;
+type PaymentAction = {
+  canCreateCheckoutSession: boolean;
+  checkoutSessionId?: string;
+  checkoutUrl?: string;
+  kind: string;
+  label: string;
+  paymentDocumentId?: string;
+};
+
+type CheckoutSession = {
+  checkoutSessionId: string;
+  checkoutUrl: string;
+  paymentProvider: string;
+  status?: string;
+};
+
+type PaymentServiceCheckoutResponse = {
+  data?: {
+    checkoutSessionId?: unknown;
+    checkoutUrl?: unknown;
+    paymentProvider?: unknown;
+    status?: unknown;
+  };
+};
+
+const classPaymentAmount = (classRecord?: DocumentRecord) =>
+  classRecord?.discountedPricePence ?? classRecord?.pricePence ?? 0;
+
+const trimTrailingSlash = (value: string) => value.replace(/\/+$/, '');
+
+const buildDashboardCheckoutUrl = (reservationDocumentId: string, status: string) => {
+  const baseUrl = trimTrailingSlash(process.env.CANDIDATE_DASHBOARD_BASE_URL || 'http://localhost:3001');
+  const url = new URL(`${baseUrl}/class/checkout/${reservationDocumentId}`);
+
+  url.searchParams.set('payment', status);
+
+  if (status === 'success') {
+    url.searchParams.set('session_id', '{CHECKOUT_SESSION_ID}');
+  }
+
+  return url.toString().replace('%7BCHECKOUT_SESSION_ID%7D', '{CHECKOUT_SESSION_ID}');
+};
 
 const getNextWaitingListPosition = async (strapi, classRecord, candidate?) => {
-  const waitingListEnrollments = await strapi.documents('api::enrollment.enrollment').findMany({
+  const waitingListEnrollments = await documents(strapi, 'api::enrollment.enrollment').findMany({
     filters: {
       class: {
         documentId: classRecord.documentId,
@@ -787,7 +910,7 @@ const getNextWaitingListPosition = async (strapi, classRecord, candidate?) => {
     limit: 1000,
     sort: ['waitingListPosition:desc', 'createdAt:asc'],
     populate: ['candidate'],
-  } as any);
+  });
 
   const existingWaitingEnrollment = waitingListEnrollments.find(
     (enrollment) => enrollment.candidate?.documentId === candidate?.documentId
@@ -806,7 +929,7 @@ const getNextWaitingListPosition = async (strapi, classRecord, candidate?) => {
 };
 
 const hasWaitingListAhead = async (strapi, classRecord, candidate?) => {
-  const waitingListEnrollments = await strapi.documents('api::enrollment.enrollment').findMany({
+  const waitingListEnrollments = await documents(strapi, 'api::enrollment.enrollment').findMany({
     filters: {
       class: {
         documentId: classRecord.documentId,
@@ -815,7 +938,7 @@ const hasWaitingListAhead = async (strapi, classRecord, candidate?) => {
     },
     limit: 1,
     populate: ['candidate'],
-  } as any);
+  });
 
   return waitingListEnrollments.some((enrollment) => enrollment.candidate?.documentId !== candidate?.documentId);
 };
@@ -825,7 +948,7 @@ const findActiveReservationForEnrollment = async (strapi, enrollment) => {
     return undefined;
   }
 
-  const reservations = await strapi.documents('api::reservation.reservation').findMany({
+  const reservations = await documents(strapi, 'api::reservation.reservation').findMany({
     filters: {
       enrollment: {
         documentId: enrollment.documentId,
@@ -835,13 +958,13 @@ const findActiveReservationForEnrollment = async (strapi, enrollment) => {
     limit: 1,
     populate: ['candidate', 'class', 'enrollment'],
     sort: ['createdAt:desc'],
-  } as any);
+  });
 
   return reservations[0];
 };
 
 const findCandidateReservation = async (strapi, candidate, reservationDocumentId: string) => {
-  const reservations = await strapi.documents('api::reservation.reservation').findMany({
+  const reservations = await documents(strapi, 'api::reservation.reservation').findMany({
     filters: {
       candidate: {
         documentId: candidate.documentId,
@@ -850,13 +973,13 @@ const findCandidateReservation = async (strapi, candidate, reservationDocumentId
     },
     limit: 1,
     populate: ['candidate', 'class', 'enrollment'],
-  } as any);
+  });
 
   return reservations[0];
 };
 
 const countCapacityHeldPlaces = async (strapi, classRecord) => {
-  const enrollments = await strapi.documents('api::enrollment.enrollment').findMany({
+  const enrollments = await documents(strapi, 'api::enrollment.enrollment').findMany({
     filters: {
       class: {
         documentId: classRecord.documentId,
@@ -867,7 +990,7 @@ const countCapacityHeldPlaces = async (strapi, classRecord) => {
     },
     limit: 1000,
     populate: ['class'],
-  } as any);
+  });
 
   return enrollments.filter((enrollment) => {
     if (normalizeEnrollmentStatus(enrollment.status) !== 'place_reserved') {
@@ -898,6 +1021,226 @@ const sanitizeReservation = (reservation) => {
     termsAcceptedAt: reservation.termsAcceptedAt,
     termsVersion: reservation.termsVersion,
   };
+};
+
+const disabledPaymentAction = (label: string, kind = 'unavailable'): PaymentAction => ({
+  canCreateCheckoutSession: false,
+  kind,
+  label,
+});
+
+const stripeCheckoutAction = (payment: DocumentRecord, checkoutSession: CheckoutSession): PaymentAction => ({
+  canCreateCheckoutSession: true,
+  checkoutSessionId: checkoutSession.checkoutSessionId,
+  checkoutUrl: checkoutSession.checkoutUrl,
+  kind: 'stripe_checkout',
+  label: 'Pay here',
+  paymentDocumentId: payment.documentId,
+});
+
+const findCheckoutPaymentForReservation = async (
+  strapi: StrapiDocumentService,
+  reservation?: DocumentRecord
+) => {
+  if (!reservation?.documentId) {
+    return undefined;
+  }
+
+  const payments = await documents(strapi, 'api::payment.payment').findMany({
+    filters: {
+      reservation: {
+        documentId: reservation.documentId,
+      },
+      status: {
+        $in: ['checkout_created', 'pending'],
+      },
+    },
+    limit: 1,
+    sort: ['createdAt:desc'],
+  });
+
+  return payments[0];
+};
+
+const checkoutSessionFromPayment = (payment?: DocumentRecord): CheckoutSession | undefined => {
+  const metadata = objectValue(payment?.metadata);
+  const checkoutUrl = typeof metadata.checkoutUrl === 'string' ? metadata.checkoutUrl : undefined;
+  const checkoutSessionId =
+    typeof payment?.providerCheckoutSessionId === 'string' ? payment.providerCheckoutSessionId : undefined;
+
+  if (!checkoutUrl || !checkoutSessionId) {
+    return undefined;
+  }
+
+  return {
+    checkoutSessionId,
+    checkoutUrl,
+    paymentProvider: 'stripe',
+  };
+};
+
+const requestPaymentServiceCheckoutSession = async ({
+  candidate,
+  reservation,
+}: {
+  candidate: DocumentRecord;
+  reservation: DocumentRecord;
+}): Promise<CheckoutSession | undefined> => {
+  const baseUrl = process.env.PAYMENT_SERVICE_URL;
+  const serviceToken = process.env.PAYMENT_SERVICE_TOKEN;
+
+  if (!baseUrl || !serviceToken) {
+    return undefined;
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    getIntegerEnv('PAYMENT_SERVICE_TIMEOUT_MS', 5000)
+  );
+  const classRecord = reservation.class;
+  const className = classRecord?.displayTitle || classRecord?.name || 'HireFlip class';
+
+  try {
+    const response = await fetch(`${trimTrailingSlash(baseUrl)}/internal/checkout-sessions`, {
+      body: JSON.stringify({
+        amountPence: reservation.amountPence,
+        cancelUrl: buildDashboardCheckoutUrl(reservation.documentId, 'cancelled'),
+        candidateDocumentId: candidate.documentId,
+        candidateEmail: candidate.email,
+        classDocumentId: classRecord?.documentId,
+        className,
+        currency: reservation.currency,
+        enrollmentDocumentId: reservation.enrollment?.documentId,
+        expiresAt: reservation.expiresAt,
+        reservationDocumentId: reservation.documentId,
+        successUrl: buildDashboardCheckoutUrl(reservation.documentId, 'success'),
+      }),
+      headers: {
+        'content-type': 'application/json',
+        'x-hireflip-service-name': 'core-api',
+        'x-hireflip-service-token': serviceToken,
+      },
+      method: 'POST',
+      signal: controller.signal,
+    });
+    const payload = (await response.json().catch(() => null)) as PaymentServiceCheckoutResponse | null;
+
+    if (
+      !response.ok ||
+      typeof payload?.data?.checkoutUrl !== 'string' ||
+      typeof payload?.data?.checkoutSessionId !== 'string'
+    ) {
+      return undefined;
+    }
+
+    return {
+      checkoutSessionId: payload.data.checkoutSessionId,
+      checkoutUrl: payload.data.checkoutUrl,
+      paymentProvider: typeof payload.data.paymentProvider === 'string' ? payload.data.paymentProvider : 'stripe',
+      status: typeof payload.data.status === 'string' ? payload.data.status : undefined,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
+const getPaymentActionForReservation = async ({
+  candidate,
+  requestContext,
+  reservation,
+  strapi,
+}: {
+  candidate: DocumentRecord;
+  requestContext: RequestContext;
+  reservation?: DocumentRecord;
+  strapi: StrapiDocumentService;
+}): Promise<PaymentAction> => {
+  if (!reservation) {
+    return disabledPaymentAction('Reservation could not be found.');
+  }
+
+  if (reservation.status !== 'active') {
+    return disabledPaymentAction('This reservation is no longer active.', 'reservation_inactive');
+  }
+
+  if (isPastDate(reservation.expiresAt)) {
+    return disabledPaymentAction('This reservation has expired.', 'reservation_expired');
+  }
+
+  const existingPayment = await findCheckoutPaymentForReservation(strapi, reservation);
+  const existingCheckoutSession = checkoutSessionFromPayment(existingPayment);
+
+  if (existingPayment && existingCheckoutSession) {
+    return stripeCheckoutAction(existingPayment, existingCheckoutSession);
+  }
+
+  const checkoutSession = await requestPaymentServiceCheckoutSession({
+    candidate,
+    reservation,
+  });
+
+  if (!checkoutSession) {
+    return disabledPaymentAction(
+      'Payment is not available yet while HireFlip finishes setting up checkout.',
+      'payment_service_unavailable'
+    );
+  }
+
+  const payment = await documents(strapi, 'api::payment.payment').create({
+    data: {
+      amountPence: reservation.amountPence,
+      candidate: {
+        connect: [{ documentId: candidate.documentId }],
+      },
+      createdByService: 'payment-service',
+      currency: reservation.currency,
+      enrollment: {
+        connect: [{ documentId: reservation.enrollment?.documentId }],
+      },
+      metadata: {
+        checkoutUrl: checkoutSession.checkoutUrl,
+        providerSessionStatus: checkoutSession.status,
+        reservationDocumentId: reservation.documentId,
+      },
+      paymentProvider: 'stripe',
+      paymentType: 'course_payment',
+      providerCheckoutSessionId: checkoutSession.checkoutSessionId,
+      reservation: {
+        connect: [{ documentId: reservation.documentId }],
+      },
+      slotReservationExpiresAt: reservation.expiresAt,
+      status: 'checkout_created',
+    },
+  });
+
+  const now = new Date().toISOString();
+
+  await auditEvents(strapi).record({
+    actorEmail: candidate.email,
+    actorId: candidate.authIdentityId,
+    actorType: 'candidate',
+    eventCategory: 'payment',
+    eventType: 'candidate.checkout_session_created',
+    ipAddress: requestContext.ipAddress,
+    metadata: {
+      checkoutSessionId: checkoutSession.checkoutSessionId,
+      paymentDocumentId: payment.documentId,
+      reservation: sanitizeReservation(reservation),
+    },
+    newState: {
+      payment,
+    },
+    occurredAt: now,
+    requestId: requestContext.requestId,
+    source: 'core_api',
+    subjectDisplayName: candidate.email,
+    subjectId: candidate.documentId,
+    subjectType: 'candidate',
+    userAgent: requestContext.userAgent,
+  });
+
+  return stripeCheckoutAction(payment, checkoutSession);
 };
 
 const slugify = (value?: string) =>
@@ -1244,7 +1587,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
     const existingCandidate = await findCandidateByAuthIdentity(strapi, auth.subject);
 
     if (!existingCandidate) {
-      const candidate = await strapi.documents('api::candidate.candidate').create({
+      const candidate = await documents(strapi, 'api::candidate.candidate').create({
         data: {
           accountCreatedAt: now,
           authIdentityId: auth.subject,
@@ -1261,10 +1604,10 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
           region: profile.region,
           sector: profile.sector,
           status: 'account_created',
-        } as any,
+        },
       });
 
-      await (strapi.service('api::audit-event.audit-event') as any).record({
+      await auditEvents(strapi).record({
         actorEmail: profile.email,
         actorId: auth.subject,
         actorType: 'candidate',
@@ -1301,13 +1644,13 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       return sanitizeCandidate(strapi, existingCandidate);
     }
 
-    const updatedCandidate = await strapi.documents('api::candidate.candidate').update({
+    const updatedCandidate = await documents(strapi, 'api::candidate.candidate').update({
       documentId: existingCandidate.documentId,
-      data: changes as any,
+      data: changes,
       populate: candidatePopulate,
-    } as any);
+    });
 
-    await (strapi.service('api::audit-event.audit-event') as any).record({
+    await auditEvents(strapi).record({
       actorEmail: updatedCandidate.email,
       actorId: auth.subject,
       actorType: 'candidate',
@@ -1433,11 +1776,11 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       return sanitizeCandidate(strapi, existingCandidate);
     }
 
-    const updatedCandidate = await strapi.documents('api::candidate.candidate').update({
+    const updatedCandidate = await documents(strapi, 'api::candidate.candidate').update({
       documentId: existingCandidate.documentId,
-      data: changes as any,
+      data: changes,
       populate: candidatePopulate,
-    } as any);
+    });
 
     const previousState = {
       accountOnboardingCompletedAt: existingCandidate.accountOnboardingCompletedAt,
@@ -1452,7 +1795,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       workSectorPreferences: existingCandidate.workSectorPreferences,
     };
 
-    await (strapi.service('api::audit-event.audit-event') as any).record({
+    await auditEvents(strapi).record({
       actorEmail: updatedCandidate.email,
       actorId: auth.subject,
       actorType: 'candidate',
@@ -1473,7 +1816,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
     });
 
     if (marketingConsentChanged) {
-      await (strapi.service('api::audit-event.audit-event') as any).record({
+      await auditEvents(strapi).record({
         actorEmail: updatedCandidate.email,
         actorId: auth.subject,
         actorType: 'candidate',
@@ -1578,7 +1921,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       status: existingCandidate.status === 'account_created' ? 'interest_registered' : existingCandidate.status,
     };
 
-    enrollment = await strapi.documents('api::enrollment.enrollment').create({
+    enrollment = await documents(strapi, 'api::enrollment.enrollment').create({
       data: {
         candidate: {
           connect: [{ documentId: existingCandidate.documentId }],
@@ -1595,15 +1938,15 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
         passStatus: 'not_assessed',
         paymentStatus: 'not_required',
         status: 'interest_registered',
-      } as any,
+      },
       populate: ['class'],
-    } as any);
+    });
 
-    const updatedCandidate = await strapi.documents('api::candidate.candidate').update({
+    const updatedCandidate = await documents(strapi, 'api::candidate.candidate').update({
       documentId: existingCandidate.documentId,
-      data: candidateUpdates as any,
+      data: candidateUpdates,
       populate: candidatePopulate,
-    } as any);
+    });
 
     const nextEnrollments = [
       enrollment,
@@ -1617,7 +1960,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       matchingClasses,
     });
 
-    await (strapi.service('api::audit-event.audit-event') as any).record({
+    await auditEvents(strapi).record({
       actorEmail: updatedCandidate.email,
       actorId: auth.subject,
       actorType: 'candidate',
@@ -1682,7 +2025,9 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
     const nowDate = new Date();
     const now = nowDate.toISOString();
     const existingEnrollments = await findCandidateEnrollments(strapi, existingCandidate);
-    let existingEnrollment = enrollmentsByClassDocumentId(existingEnrollments).get(targetClass.documentId) as any;
+    let existingEnrollment = enrollmentsByClassDocumentId(existingEnrollments).get(
+      targetClass.documentId
+    ) as DocumentRecord | undefined;
     let existingReservation = await findActiveReservationForEnrollment(strapi, existingEnrollment);
 
     if (existingReservation && isPastDate(existingReservation.expiresAt)) {
@@ -1694,17 +2039,17 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
           ? await getNextWaitingListPosition(strapi, targetClass, existingCandidate)
           : null;
 
-      existingReservation = await strapi.documents('api::reservation.reservation').update({
+      existingReservation = await documents(strapi, 'api::reservation.reservation').update({
         documentId: existingReservation.documentId,
         data: {
           expiredAt: now,
           status: 'expired',
-        } as any,
+        },
         populate: ['candidate', 'class', 'enrollment'],
-      } as any);
+      });
 
       if (existingEnrollment?.documentId && normalizeEnrollmentStatus(existingEnrollment.status) === 'place_reserved') {
-        existingEnrollment = await strapi.documents('api::enrollment.enrollment').update({
+        existingEnrollment = await documents(strapi, 'api::enrollment.enrollment').update({
           documentId: existingEnrollment.documentId,
           data: {
             metadata: {
@@ -1714,12 +2059,12 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
             reservationExpiresAt: null,
             status: fallbackStatus,
             waitingListPosition,
-          } as any,
+          },
           populate: ['class'],
-        } as any);
+        });
       }
 
-      await (strapi.service('api::audit-event.audit-event') as any).record({
+      await auditEvents(strapi).record({
         actorEmail: existingCandidate.email,
         actorId: auth.subject,
         actorType: 'candidate',
@@ -1773,17 +2118,17 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
         waitingListSource: 'candidate_dashboard',
       };
       const enrollment = existingEnrollment?.documentId
-        ? await strapi.documents('api::enrollment.enrollment').update({
+        ? await documents(strapi, 'api::enrollment.enrollment').update({
             documentId: existingEnrollment.documentId,
             data: {
               metadata,
               paymentStatus: 'pending',
               status: 'waiting_list',
               waitingListPosition,
-            } as any,
+            },
             populate: ['class'],
-          } as any)
-        : await strapi.documents('api::enrollment.enrollment').create({
+          })
+        : await documents(strapi, 'api::enrollment.enrollment').create({
             data: {
               candidate: {
                 connect: [{ documentId: existingCandidate.documentId }],
@@ -1798,11 +2143,11 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
               paymentStatus: 'pending',
               status: 'waiting_list',
               waitingListPosition,
-            } as any,
+            },
             populate: ['class'],
-          } as any);
+          });
 
-      await (strapi.service('api::audit-event.audit-event') as any).record({
+      await auditEvents(strapi).record({
         actorEmail: existingCandidate.email,
         actorId: auth.subject,
         actorType: 'candidate',
@@ -1842,7 +2187,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       lastReservationSource: 'candidate_dashboard',
     };
     const enrollment = existingEnrollment?.documentId
-      ? await strapi.documents('api::enrollment.enrollment').update({
+      ? await documents(strapi, 'api::enrollment.enrollment').update({
           documentId: existingEnrollment.documentId,
           data: {
             invitedToJoinAt: existingEnrollment.invitedToJoinAt || now,
@@ -1851,10 +2196,10 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
             reservationExpiresAt,
             status: 'place_reserved',
             waitingListPosition: null,
-          } as any,
+          },
           populate: ['class'],
-        } as any)
-      : await strapi.documents('api::enrollment.enrollment').create({
+        })
+      : await documents(strapi, 'api::enrollment.enrollment').create({
           data: {
             candidate: {
               connect: [{ documentId: existingCandidate.documentId }],
@@ -1870,11 +2215,11 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
             paymentStatus: 'pending',
             reservationExpiresAt,
             status: 'place_reserved',
-          } as any,
+          },
           populate: ['class'],
-        } as any);
+        });
 
-    const reservation = await strapi.documents('api::reservation.reservation').create({
+    const reservation = await documents(strapi, 'api::reservation.reservation').create({
       data: {
         amountPence: classPaymentAmount(targetClass),
         candidate: {
@@ -1895,11 +2240,11 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
         reservationStartedAt: now,
         source: 'candidate_dashboard',
         status: 'active',
-      } as any,
+      },
       populate: ['candidate', 'class', 'enrollment'],
-    } as any);
+    });
 
-    await (strapi.service('api::audit-event.audit-event') as any).record({
+    await auditEvents(strapi).record({
       actorEmail: existingCandidate.email,
       actorId: auth.subject,
       actorType: 'candidate',
@@ -1932,7 +2277,11 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
     };
   },
 
-  async getCurrentCandidateClassReservation(auth: Auth0State | undefined, reservationDocumentId: string) {
+  async getCurrentCandidateClassReservation(
+    auth: Auth0State | undefined,
+    reservationDocumentId: string,
+    requestContext: RequestContext = {}
+  ) {
     if (!auth || auth.type !== 'auth0' || !auth.subject) {
       throw new UnauthorizedError('Auth0 authentication is required.');
     }
@@ -1949,13 +2298,16 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       throw new ValidationError('Reservation could not be found.');
     }
 
+    const paymentAction = await getPaymentActionForReservation({
+      candidate: existingCandidate,
+      requestContext,
+      reservation,
+      strapi,
+    });
+
     return {
       classInterest: await buildCandidateClassInterestForCandidate(strapi, existingCandidate),
-      paymentAction: {
-        canCreateCheckoutSession: false,
-        kind: 'payment_service_not_connected',
-        label: 'Payment is not available yet while HireFlip finishes setting up checkout.',
-      },
+      paymentAction,
       reservation: sanitizeReservation(reservation),
     };
   },
@@ -1994,19 +2346,19 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
         : null;
     const updatedReservation =
       reservation.status === 'active'
-        ? await strapi.documents('api::reservation.reservation').update({
+        ? await documents(strapi, 'api::reservation.reservation').update({
             documentId: reservation.documentId,
             data: {
               cancelledAt: now,
               status: 'cancelled',
-            } as any,
+            },
             populate: ['candidate', 'class', 'enrollment'],
-          } as any)
+          })
         : reservation;
     const updatedEnrollment =
       reservation.enrollment?.documentId &&
       normalizeEnrollmentStatus(reservation.enrollment.status) === 'place_reserved'
-        ? await strapi.documents('api::enrollment.enrollment').update({
+        ? await documents(strapi, 'api::enrollment.enrollment').update({
             documentId: reservation.enrollment.documentId,
             data: {
               metadata: {
@@ -2016,12 +2368,12 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
               reservationExpiresAt: null,
               status: fallbackStatus,
               waitingListPosition,
-            } as any,
+            },
             populate: ['class'],
-          } as any)
+          })
         : reservation.enrollment;
 
-    await (strapi.service('api::audit-event.audit-event') as any).record({
+    await auditEvents(strapi).record({
       actorEmail: existingCandidate.email,
       actorId: auth.subject,
       actorType: 'candidate',
@@ -2100,18 +2452,18 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       fallbackStatus === 'waiting_list'
         ? await getNextWaitingListPosition(strapi, classRecord, existingCandidate)
         : null;
-    const updatedReservation = await strapi.documents('api::reservation.reservation').update({
+    const updatedReservation = await documents(strapi, 'api::reservation.reservation').update({
       documentId: reservation.documentId,
       data: {
         expiredAt: now,
         status: 'expired',
-      } as any,
+      },
       populate: ['candidate', 'class', 'enrollment'],
-    } as any);
+    });
     const updatedEnrollment =
       reservation.enrollment?.documentId &&
       normalizeEnrollmentStatus(reservation.enrollment.status) === 'place_reserved'
-        ? await strapi.documents('api::enrollment.enrollment').update({
+        ? await documents(strapi, 'api::enrollment.enrollment').update({
             documentId: reservation.enrollment.documentId,
             data: {
               metadata: {
@@ -2121,12 +2473,12 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
               reservationExpiresAt: null,
               status: fallbackStatus,
               waitingListPosition,
-            } as any,
+            },
             populate: ['class'],
-          } as any)
+          })
         : reservation.enrollment;
 
-    await (strapi.service('api::audit-event.audit-event') as any).record({
+    await auditEvents(strapi).record({
       actorEmail: existingCandidate.email,
       actorId: auth.subject,
       actorType: 'candidate',
@@ -2177,7 +2529,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
     const payload = validateCreateUnlistedInterest(input ?? {});
     const now = new Date().toISOString();
     const preferenceSnapshot = buildCandidatePreferenceSnapshot(existingCandidate);
-    const unlistedInterest = await strapi.documents('api::unlisted-interest.unlisted-interest').create({
+    const unlistedInterest = await documents(strapi, 'api::unlisted-interest.unlisted-interest').create({
       data: {
         candidate: {
           connect: [{ documentId: existingCandidate.documentId }],
@@ -2194,8 +2546,8 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
         source: payload.source,
         status: 'new',
         suggestedValue: payload.suggestedValue,
-      } as any,
-    } as any);
+      },
+    });
     const response = {
       candidateEmail: unlistedInterest.candidateEmail,
       documentId: unlistedInterest.documentId,
@@ -2205,7 +2557,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       suggestedValue: unlistedInterest.suggestedValue,
     };
 
-    await (strapi.service('api::audit-event.audit-event') as any).record({
+    await auditEvents(strapi).record({
       actorEmail: existingCandidate.email,
       actorId: auth.subject,
       actorType: 'candidate',
@@ -2273,17 +2625,17 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
         throw new ValidationError('Profile image upload did not return a stored file.');
       }
 
-      const updatedCandidate = await strapi.documents('api::candidate.candidate').update({
+      const updatedCandidate = await documents(strapi, 'api::candidate.candidate').update({
         documentId: existingCandidate.documentId,
         data: {
           profileImage: uploadedFile.id,
-        } as any,
+        },
         populate: candidatePopulate,
-      } as any);
+      });
       const sanitizedCandidate = await sanitizeCandidate(strapi, updatedCandidate);
       const now = new Date().toISOString();
 
-      await (strapi.service('api::audit-event.audit-event') as any).record({
+      await auditEvents(strapi).record({
         actorEmail: updatedCandidate.email,
         actorId: auth.subject,
         actorType: 'candidate',

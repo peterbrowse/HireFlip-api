@@ -1,5 +1,45 @@
 import { factories } from '@strapi/strapi';
 
+type RequestContext = {
+  ipAddress?: string;
+  requestId?: string;
+  userAgent?: string;
+};
+
+type CreatedResponse = {
+  created?: boolean;
+  data?: unknown;
+};
+
+type CandidateService = {
+  cancelCurrentCandidateClassReservation(
+    auth: unknown,
+    reservationDocumentId: string,
+    context: RequestContext
+  ): Promise<unknown>;
+  createCurrentCandidateUnlistedInterest(auth: unknown, input: unknown, context: RequestContext): Promise<unknown>;
+  expireCurrentCandidateClassReservation(
+    auth: unknown,
+    reservationDocumentId: string,
+    context: RequestContext
+  ): Promise<unknown>;
+  getCandidatePreferenceOptions(auth: unknown): Promise<unknown>;
+  getCurrentCandidateClassInterest(auth: unknown): Promise<unknown>;
+  getCurrentCandidateClassReservation(
+    auth: unknown,
+    reservationDocumentId: string,
+    context: RequestContext
+  ): Promise<unknown>;
+  registerCurrentCandidateClassInterest(auth: unknown, input: unknown, context: RequestContext): Promise<CreatedResponse>;
+  reserveCurrentCandidateClassPlace(auth: unknown, input: unknown, context: RequestContext): Promise<CreatedResponse>;
+  syncCurrentCandidate(auth: unknown, input: unknown, context: RequestContext): Promise<unknown>;
+  updateCurrentCandidateAccount(auth: unknown, input: unknown, context: RequestContext): Promise<unknown>;
+  updateCurrentCandidateProfileImage(auth: unknown, file: unknown, context: RequestContext): Promise<unknown>;
+};
+
+const candidateService = (strapi: { service(uid: string): unknown }): CandidateService =>
+  strapi.service('api::candidate.candidate') as unknown as CandidateService;
+
 const getForwardedClientIp = (ctx) =>
   ctx.request.get('x-hireflip-client-ip') ||
   ctx.request.get('cf-connecting-ip') ||
@@ -13,7 +53,7 @@ const getUploadedProfileImage = (files) => {
 
 export default factories.createCoreController('api::candidate.candidate', ({ strapi }) => ({
   async me(ctx) {
-    const result = await (strapi.service('api::candidate.candidate') as any).syncCurrentCandidate(
+    const result = await candidateService(strapi).syncCurrentCandidate(
       ctx.state?.hireflipAuth,
       ctx.request.body,
       {
@@ -29,7 +69,7 @@ export default factories.createCoreController('api::candidate.candidate', ({ str
   },
 
   async updateAccount(ctx) {
-    const result = await (strapi.service('api::candidate.candidate') as any).updateCurrentCandidateAccount(
+    const result = await candidateService(strapi).updateCurrentCandidateAccount(
       ctx.state?.hireflipAuth,
       ctx.request.body,
       {
@@ -46,7 +86,7 @@ export default factories.createCoreController('api::candidate.candidate', ({ str
 
   async updateProfileImage(ctx) {
     const file = getUploadedProfileImage(ctx.request.files);
-    const result = await (strapi.service('api::candidate.candidate') as any).updateCurrentCandidateProfileImage(
+    const result = await candidateService(strapi).updateCurrentCandidateProfileImage(
       ctx.state?.hireflipAuth,
       file,
       {
@@ -62,7 +102,7 @@ export default factories.createCoreController('api::candidate.candidate', ({ str
   },
 
   async classInterest(ctx) {
-    const result = await (strapi.service('api::candidate.candidate') as any).getCurrentCandidateClassInterest(
+    const result = await candidateService(strapi).getCurrentCandidateClassInterest(
       ctx.state?.hireflipAuth
     );
 
@@ -72,7 +112,7 @@ export default factories.createCoreController('api::candidate.candidate', ({ str
   },
 
   async preferenceOptions(ctx) {
-    const result = await (strapi.service('api::candidate.candidate') as any).getCandidatePreferenceOptions(
+    const result = await candidateService(strapi).getCandidatePreferenceOptions(
       ctx.state?.hireflipAuth
     );
 
@@ -82,7 +122,7 @@ export default factories.createCoreController('api::candidate.candidate', ({ str
   },
 
   async registerClassInterest(ctx) {
-    const result = await (strapi.service('api::candidate.candidate') as any).registerCurrentCandidateClassInterest(
+    const result = await candidateService(strapi).registerCurrentCandidateClassInterest(
       ctx.state?.hireflipAuth,
       ctx.request.body,
       {
@@ -99,7 +139,7 @@ export default factories.createCoreController('api::candidate.candidate', ({ str
   },
 
   async reserveClassPlace(ctx) {
-    const result = await (strapi.service('api::candidate.candidate') as any).reserveCurrentCandidateClassPlace(
+    const result = await candidateService(strapi).reserveCurrentCandidateClassPlace(
       ctx.state?.hireflipAuth,
       ctx.request.body,
       {
@@ -116,9 +156,14 @@ export default factories.createCoreController('api::candidate.candidate', ({ str
   },
 
   async classReservation(ctx) {
-    const result = await (strapi.service('api::candidate.candidate') as any).getCurrentCandidateClassReservation(
+    const result = await candidateService(strapi).getCurrentCandidateClassReservation(
       ctx.state?.hireflipAuth,
-      ctx.params?.reservationDocumentId
+      ctx.params?.reservationDocumentId,
+      {
+        ipAddress: getForwardedClientIp(ctx),
+        requestId: ctx.state?.requestId,
+        userAgent: ctx.request.get('x-hireflip-client-user-agent') || ctx.request.get('user-agent'),
+      }
     );
 
     ctx.body = {
@@ -127,7 +172,7 @@ export default factories.createCoreController('api::candidate.candidate', ({ str
   },
 
   async cancelClassReservation(ctx) {
-    const result = await (strapi.service('api::candidate.candidate') as any).cancelCurrentCandidateClassReservation(
+    const result = await candidateService(strapi).cancelCurrentCandidateClassReservation(
       ctx.state?.hireflipAuth,
       ctx.params?.reservationDocumentId,
       {
@@ -143,7 +188,7 @@ export default factories.createCoreController('api::candidate.candidate', ({ str
   },
 
   async expireClassReservation(ctx) {
-    const result = await (strapi.service('api::candidate.candidate') as any).expireCurrentCandidateClassReservation(
+    const result = await candidateService(strapi).expireCurrentCandidateClassReservation(
       ctx.state?.hireflipAuth,
       ctx.params?.reservationDocumentId,
       {
@@ -159,7 +204,7 @@ export default factories.createCoreController('api::candidate.candidate', ({ str
   },
 
   async createUnlistedInterest(ctx) {
-    const result = await (strapi.service('api::candidate.candidate') as any).createCurrentCandidateUnlistedInterest(
+    const result = await candidateService(strapi).createCurrentCandidateUnlistedInterest(
       ctx.state?.hireflipAuth,
       ctx.request.body,
       {
