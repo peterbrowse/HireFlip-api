@@ -70,6 +70,7 @@ type DocumentRecord = Record<string, unknown> & {
   registeredInterestAt?: string;
   region?: string;
   reservationExpiresAt?: string;
+  reservationDocumentId?: string;
   sector?: string;
   slug?: string;
   startDate?: string;
@@ -1364,6 +1365,12 @@ const sanitizeEnrollment = (enrollment) => {
     return null;
   }
 
+  const metadata = objectValue(enrollment.metadata);
+  const reservationDocumentId =
+    typeof metadata.activeReservationDocumentId === 'string'
+      ? metadata.activeReservationDocumentId
+      : undefined;
+
   return {
     completionStatus: enrollment.completionStatus,
     documentId: enrollment.documentId,
@@ -1374,6 +1381,7 @@ const sanitizeEnrollment = (enrollment) => {
     paymentStatus: enrollment.paymentStatus,
     status: enrollment.status,
     reservationExpiresAt: enrollment.reservationExpiresAt,
+    reservationDocumentId,
     waitingListPosition: enrollment.waitingListPosition,
   };
 };
@@ -2056,6 +2064,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
           data: {
             metadata: {
               ...(objectValue(existingEnrollment.metadata)),
+              activeReservationDocumentId: null,
               lastReservationExpiredAt: now,
             },
             reservationExpiresAt: null,
@@ -2097,6 +2106,24 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       const activeReservation = await findActiveReservationForEnrollment(strapi, existingEnrollment);
 
       if (activeReservation && !isPastDate(activeReservation.expiresAt)) {
+        const enrollmentMetadata = objectValue(existingEnrollment?.metadata);
+
+        if (
+          existingEnrollment?.documentId &&
+          enrollmentMetadata.activeReservationDocumentId !== activeReservation.documentId
+        ) {
+          existingEnrollment = await documents(strapi, 'api::enrollment.enrollment').update({
+            documentId: existingEnrollment.documentId,
+            data: {
+              metadata: {
+                ...enrollmentMetadata,
+                activeReservationDocumentId: activeReservation.documentId,
+              },
+            },
+            populate: ['class'],
+          });
+        }
+
         return {
           classInterest: await buildCandidateClassInterestForCandidate(strapi, existingCandidate),
           created: false,
@@ -2245,6 +2272,16 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       },
       populate: ['candidate', 'class', 'enrollment'],
     });
+    const reservedEnrollment = await documents(strapi, 'api::enrollment.enrollment').update({
+      documentId: enrollment.documentId,
+      data: {
+        metadata: {
+          ...enrollmentMetadata,
+          activeReservationDocumentId: reservation.documentId,
+        },
+      },
+      populate: ['class'],
+    });
 
     await auditEvents(strapi).record({
       actorEmail: existingCandidate.email,
@@ -2258,7 +2295,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
         heldPlacesBeforeReservation: heldPlaces,
       },
       newState: {
-        enrollment: sanitizeEnrollment(enrollment),
+        enrollment: sanitizeEnrollment(reservedEnrollment),
         reservation: sanitizeReservation(reservation),
       },
       occurredAt: now,
@@ -2365,6 +2402,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
             data: {
               metadata: {
                 ...(objectValue(reservation.enrollment.metadata)),
+                activeReservationDocumentId: null,
                 lastReservationCancelledAt: now,
               },
               reservationExpiresAt: null,
@@ -2470,6 +2508,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
             data: {
               metadata: {
                 ...(objectValue(reservation.enrollment.metadata)),
+                activeReservationDocumentId: null,
                 lastReservationExpiredAt: now,
               },
               reservationExpiresAt: null,
