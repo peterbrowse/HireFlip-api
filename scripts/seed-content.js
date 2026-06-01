@@ -142,7 +142,7 @@ const main = async () => {
         'Two guaranteed first-stage interviews for successful candidates',
       ],
       interviewsGuaranteed: 2,
-      level: 'Beginner',
+      level: 'Entry',
       moduleSummary:
         'The class will cover marketing fundamentals, day-to-day junior marketing tasks, office etiquette, communication expectations, interview preparation, and practical readiness checks.',
       overview:
