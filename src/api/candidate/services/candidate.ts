@@ -1017,9 +1017,9 @@ const buildDashboardCheckoutUrl = (reservationDocumentId: string, status: string
   return url.toString().replace('%7BCHECKOUT_SESSION_ID%7D', '{CHECKOUT_SESSION_ID}');
 };
 
-const buildDashboardOrderConfirmedUrl = (reservationDocumentId: string) => {
+const buildDashboardOrderProcessingUrl = (reservationDocumentId: string) => {
   const baseUrl = trimTrailingSlash(process.env.CANDIDATE_DASHBOARD_BASE_URL || 'http://localhost:3001');
-  const url = new URL(`${baseUrl}/class/order-confirmed/${reservationDocumentId}`);
+  const url = new URL(`${baseUrl}/order-processing/${reservationDocumentId}`);
 
   url.searchParams.set('session_id', '{CHECKOUT_SESSION_ID}');
 
@@ -1321,7 +1321,7 @@ const requestPaymentServiceCheckoutSession = async ({
         enrollmentDocumentId: reservation.enrollment?.documentId,
         expiresAt: reservation.expiresAt,
         reservationDocumentId: reservation.documentId,
-        successUrl: buildDashboardOrderConfirmedUrl(reservation.documentId),
+        successUrl: buildDashboardOrderProcessingUrl(reservation.documentId),
       }),
       headers: {
         'content-type': 'application/json',
