@@ -35,6 +35,7 @@ type CandidateService = {
   syncCurrentCandidate(auth: unknown, input: unknown, context: RequestContext): Promise<unknown>;
   updateCurrentCandidateAccount(auth: unknown, input: unknown, context: RequestContext): Promise<unknown>;
   updateCurrentCandidateProfileImage(auth: unknown, file: unknown, context: RequestContext): Promise<unknown>;
+  withdrawCurrentCandidateClassInterest(auth: unknown, input: unknown, context: RequestContext): Promise<CreatedResponse>;
 };
 
 const candidateService = (strapi: { service(uid: string): unknown }): CandidateService =>
@@ -133,6 +134,22 @@ export default factories.createCoreController('api::candidate.candidate', ({ str
     );
 
     ctx.status = result.created ? 201 : 200;
+    ctx.body = {
+      data: result.data,
+    };
+  },
+
+  async withdrawClassInterest(ctx) {
+    const result = await candidateService(strapi).withdrawCurrentCandidateClassInterest(
+      ctx.state?.hireflipAuth,
+      ctx.request.body,
+      {
+        ipAddress: getForwardedClientIp(ctx),
+        requestId: ctx.state?.requestId,
+        userAgent: ctx.request.get('x-hireflip-client-user-agent') || ctx.request.get('user-agent'),
+      }
+    );
+
     ctx.body = {
       data: result.data,
     };

@@ -1733,6 +1733,7 @@ export interface ApiEnrollmentEnrollment extends Struct.CollectionTypeSchema {
     status: Schema.Attribute.Enumeration<
       [
         'interest_registered',
+        'interest_withdrawn',
         'enrollment_open',
         'place_reserved',
         'waiting_list',

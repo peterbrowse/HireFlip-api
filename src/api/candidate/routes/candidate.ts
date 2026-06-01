@@ -79,6 +79,19 @@ export default {
       },
     },
     {
+      method: 'DELETE',
+      path: '/candidates/me/class-interest',
+      handler: 'candidate.withdrawClassInterest',
+      config: {
+        auth: false,
+        middlewares: [
+          {
+            name: 'global::auth0-jwt',
+          },
+        ],
+      },
+    },
+    {
       method: 'POST',
       path: '/candidates/me/class-reservation',
       handler: 'candidate.reserveClassPlace',

@@ -1454,6 +1454,10 @@ const deriveClassRelationshipState = (enrollment, classRecord?) => {
   if (enrollment) {
     const normalizedStatus = normalizeEnrollmentStatus(enrollment.status);
 
+    if (normalizedStatus === 'interest_withdrawn') {
+      return classHasPaymentAccess(enrollment.class || classRecord) ? 'enrollment_open' : 'not_registered';
+    }
+
     if (
       [
         'waiting_list',
@@ -1548,6 +1552,7 @@ const buildClassRelationship = ({ classRecord, enrollment, registeredInterestCou
 
   return {
     canRegisterInterest: state === 'not_registered',
+    canWithdrawInterest: state === 'interest_registered',
     canJoinClass: state === 'enrollment_open',
     class: sanitizeClass(classRecord),
     enrollment: sanitizeEnrollment(enrollment),
@@ -1997,26 +2002,44 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       status: existingCandidate.status === 'account_created' ? 'interest_registered' : existingCandidate.status,
     };
 
-    enrollment = await documents(strapi, 'api::enrollment.enrollment').create({
-      data: {
-        candidate: {
-          connect: [{ documentId: existingCandidate.documentId }],
-        },
-        class: {
-          connect: [{ documentId: targetClass.documentId }],
-        },
-        completionStatus: 'not_started',
-        interestRegisteredAt: now,
-        metadata: {
-          registeredInterestAt: now,
-          source: 'candidate_dashboard',
-        },
-        passStatus: 'not_assessed',
-        paymentStatus: 'not_required',
-        status: 'interest_registered',
-      },
-      populate: ['class'],
-    });
+    enrollment = existingEnrollment?.documentId
+      ? await documents(strapi, 'api::enrollment.enrollment').update({
+          documentId: existingEnrollment.documentId,
+          data: {
+            completionStatus: existingEnrollment.completionStatus || 'not_started',
+            interestRegisteredAt: now,
+            metadata: {
+              ...(objectValue(existingEnrollment.metadata)),
+              registeredInterestAt: now,
+              registeredInterestSource: 'candidate_dashboard',
+              reRegisteredInterestAt: existingEnrollment.interestRegisteredAt ? now : undefined,
+            },
+            passStatus: existingEnrollment.passStatus || 'not_assessed',
+            paymentStatus: 'not_required',
+            status: 'interest_registered',
+          },
+          populate: ['class'],
+        })
+      : await documents(strapi, 'api::enrollment.enrollment').create({
+          data: {
+            candidate: {
+              connect: [{ documentId: existingCandidate.documentId }],
+            },
+            class: {
+              connect: [{ documentId: targetClass.documentId }],
+            },
+            completionStatus: 'not_started',
+            interestRegisteredAt: now,
+            metadata: {
+              registeredInterestAt: now,
+              source: 'candidate_dashboard',
+            },
+            passStatus: 'not_assessed',
+            paymentStatus: 'not_required',
+            status: 'interest_registered',
+          },
+          populate: ['class'],
+        });
 
     const updatedCandidate = await documents(strapi, 'api::candidate.candidate').update({
       documentId: existingCandidate.documentId,
@@ -2064,6 +2087,98 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
     return {
       created: true,
       data: response,
+    };
+  },
+
+  async withdrawCurrentCandidateClassInterest(
+    auth: Auth0State | undefined,
+    input: unknown = {},
+    requestContext: RequestContext = {}
+  ) {
+    if (!auth || auth.type !== 'auth0' || !auth.subject) {
+      throw new UnauthorizedError('Auth0 authentication is required.');
+    }
+
+    const existingCandidate = await findCandidateByAuthIdentity(strapi, auth.subject);
+
+    if (!existingCandidate) {
+      throw new ValidationError('Candidate account must be synced before class interest can be removed.');
+    }
+
+    if (isCandidateRestricted(existingCandidate)) {
+      throw new ValidationError('This account is currently restricted and cannot update class interest.');
+    }
+
+    const payload = validateRegisterClassInterest(input ?? {});
+
+    if (!payload.classDocumentId) {
+      throw new ValidationError('A class document ID is required to remove class interest.');
+    }
+
+    const existingEnrollments = await findCandidateEnrollments(strapi, existingCandidate);
+    const existingEnrollment = enrollmentsByClassDocumentId(existingEnrollments).get(payload.classDocumentId);
+
+    if (!existingEnrollment) {
+      return {
+        created: false,
+        data: await buildCandidateClassInterestForCandidate(strapi, existingCandidate),
+      };
+    }
+
+    const targetClass = existingEnrollment.class;
+    const currentState = deriveClassRelationshipState(existingEnrollment, targetClass);
+
+    if (currentState === 'not_registered') {
+      return {
+        created: false,
+        data: await buildCandidateClassInterestForCandidate(strapi, existingCandidate),
+      };
+    }
+
+    if (currentState !== 'interest_registered') {
+      throw new ValidationError('Class interest can only be removed before enrollment opens.');
+    }
+
+    const now = new Date().toISOString();
+    const updatedEnrollment = await documents(strapi, 'api::enrollment.enrollment').update({
+      documentId: existingEnrollment.documentId,
+      data: {
+        metadata: {
+          ...(objectValue(existingEnrollment.metadata)),
+          interestWithdrawnAt: now,
+          interestWithdrawnSource: 'candidate_dashboard',
+          previousStatus: existingEnrollment.status,
+        },
+        paymentStatus: 'not_required',
+        status: 'interest_withdrawn',
+      },
+      populate: ['class'],
+    });
+
+    await auditEvents(strapi).record({
+      actorEmail: existingCandidate.email,
+      actorId: auth.subject,
+      actorType: 'candidate',
+      eventCategory: 'candidate',
+      eventType: 'candidate.class_interest_withdrawn',
+      ipAddress: requestContext.ipAddress,
+      metadata: {
+        class: sanitizeClass(targetClass),
+      },
+      newState: sanitizeEnrollment(updatedEnrollment),
+      occurredAt: now,
+      previousState: sanitizeEnrollment(existingEnrollment),
+      requestId: requestContext.requestId,
+      source: 'candidate_dashboard',
+      subjectDisplayName: existingCandidate.email,
+      subjectId: existingCandidate.documentId,
+      subjectType: 'candidate',
+      userAgent: requestContext.userAgent,
+    });
+
+    return {
+      created: false,
+      data: await buildCandidateClassInterestForCandidate(strapi, existingCandidate),
     };
   },
 
