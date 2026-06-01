@@ -1453,9 +1453,10 @@ const classHasPaymentAccess = (classRecord) => classRecord?.state === 'open';
 const deriveClassRelationshipState = (enrollment, classRecord?) => {
   if (enrollment) {
     const normalizedStatus = normalizeEnrollmentStatus(enrollment.status);
+    const hasPaymentAccess = classHasPaymentAccess(enrollment.class || classRecord);
 
     if (normalizedStatus === 'interest_withdrawn') {
-      return classHasPaymentAccess(enrollment.class || classRecord) ? 'enrollment_open' : 'not_registered';
+      return hasPaymentAccess ? 'enrollment_open' : 'not_registered';
     }
 
     if (
@@ -1481,10 +1482,18 @@ const deriveClassRelationshipState = (enrollment, classRecord?) => {
     }
 
     if (normalizedStatus === 'place_reserved') {
+      if (!hasPaymentAccess) {
+        return 'interest_registered';
+      }
+
       return isPastDate(enrollment.reservationExpiresAt) ? 'enrollment_open' : 'place_reserved';
     }
 
-    if (classHasPaymentAccess(enrollment.class || classRecord) || normalizedStatus === 'enrollment_open') {
+    if (normalizedStatus === 'enrollment_open') {
+      return hasPaymentAccess ? 'enrollment_open' : 'interest_registered';
+    }
+
+    if (hasPaymentAccess) {
       return 'enrollment_open';
     }
 
