@@ -17,6 +17,12 @@ type CandidateService = {
     reservationDocumentId: string,
     context: RequestContext
   ): Promise<unknown>;
+  confirmCurrentCandidateClassReservationPayment(
+    auth: unknown,
+    reservationDocumentId: string,
+    input: unknown,
+    context: RequestContext
+  ): Promise<unknown>;
   createCurrentCandidateUnlistedInterest(auth: unknown, input: unknown, context: RequestContext): Promise<unknown>;
   expireCurrentCandidateClassReservation(
     auth: unknown,
@@ -196,6 +202,23 @@ export default factories.createCoreController('api::candidate.candidate', ({ str
     const result = await candidateService(strapi).cancelCurrentCandidateClassReservation(
       ctx.state?.hireflipAuth,
       ctx.params?.reservationDocumentId,
+      {
+        ipAddress: getForwardedClientIp(ctx),
+        requestId: ctx.state?.requestId,
+        userAgent: ctx.request.get('x-hireflip-client-user-agent') || ctx.request.get('user-agent'),
+      }
+    );
+
+    ctx.body = {
+      data: result,
+    };
+  },
+
+  async confirmClassReservationPayment(ctx) {
+    const result = await candidateService(strapi).confirmCurrentCandidateClassReservationPayment(
+      ctx.state?.hireflipAuth,
+      ctx.params?.reservationDocumentId,
+      ctx.request.body,
       {
         ipAddress: getForwardedClientIp(ctx),
         requestId: ctx.state?.requestId,

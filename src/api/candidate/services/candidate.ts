@@ -59,7 +59,9 @@ type DocumentRecord = Record<string, unknown> & {
   name?: string;
   notificationPreferences?: unknown;
   passStatus?: string;
+  paidAt?: string;
   paymentStatus?: string;
+  paymentType?: string;
   phone?: string;
   pricePence?: number;
   discountedPricePence?: number;
@@ -67,6 +69,8 @@ type DocumentRecord = Record<string, unknown> & {
   profileImage?: DocumentRecord;
   profileSettings?: unknown;
   providerCheckoutSessionId?: string;
+  providerCustomerId?: string;
+  providerPaymentIntentId?: string;
   registeredInterestAt?: string;
   region?: string;
   reservationExpiresAt?: string;
@@ -339,6 +343,14 @@ const reserveClassPlaceSchema = z
   .strict();
 
 const validateReserveClassPlace = validateZodSchema(reserveClassPlaceSchema);
+
+const confirmClassReservationPaymentSchema = z
+  .object({
+    checkoutSessionId: z.string().trim().min(1).max(255),
+  })
+  .strict();
+
+const validateConfirmClassReservationPayment = validateZodSchema(confirmClassReservationPaymentSchema);
 
 const createUnlistedInterestSchema = z
   .object({
@@ -945,10 +957,52 @@ type PaymentServiceCheckoutResponse = {
   };
 };
 
+type PaymentServiceCheckoutConfirmation = {
+  amountTotal?: number;
+  checkoutSessionId: string;
+  checkoutUrl?: string | null;
+  clientReferenceId?: string | null;
+  currency?: string | null;
+  customerId?: string;
+  metadata: Record<string, unknown>;
+  paymentIntentId?: string;
+  paymentProvider: string;
+  paymentStatus: string;
+  status: string;
+};
+
+type PaymentServiceCheckoutConfirmationResponse = {
+  data?: {
+    amountTotal?: unknown;
+    checkoutSessionId?: unknown;
+    checkoutUrl?: unknown;
+    clientReferenceId?: unknown;
+    currency?: unknown;
+    customerId?: unknown;
+    metadata?: unknown;
+    paymentIntentId?: unknown;
+    paymentProvider?: unknown;
+    paymentStatus?: unknown;
+    status?: unknown;
+  };
+};
+
 const classPaymentAmount = (classRecord?: DocumentRecord) =>
   classRecord?.discountedPricePence ?? classRecord?.pricePence ?? 0;
 
 const trimTrailingSlash = (value: string) => value.replace(/\/+$/, '');
+
+const optionalStringOrNull = (value: unknown): string | null | undefined => {
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  if (value === null) {
+    return null;
+  }
+
+  return undefined;
+};
 
 const buildDashboardCheckoutUrl = (reservationDocumentId: string, status: string) => {
   const baseUrl = trimTrailingSlash(process.env.CANDIDATE_DASHBOARD_BASE_URL || 'http://localhost:3001');
@@ -959,6 +1013,15 @@ const buildDashboardCheckoutUrl = (reservationDocumentId: string, status: string
   if (status === 'success') {
     url.searchParams.set('session_id', '{CHECKOUT_SESSION_ID}');
   }
+
+  return url.toString().replace('%7BCHECKOUT_SESSION_ID%7D', '{CHECKOUT_SESSION_ID}');
+};
+
+const buildDashboardOrderConfirmedUrl = (reservationDocumentId: string) => {
+  const baseUrl = trimTrailingSlash(process.env.CANDIDATE_DASHBOARD_BASE_URL || 'http://localhost:3001');
+  const url = new URL(`${baseUrl}/class/order-confirmed/${reservationDocumentId}`);
+
+  url.searchParams.set('session_id', '{CHECKOUT_SESSION_ID}');
 
   return url.toString().replace('%7BCHECKOUT_SESSION_ID%7D', '{CHECKOUT_SESSION_ID}');
 };
@@ -1065,6 +1128,53 @@ const countCapacityHeldPlaces = async (strapi, classRecord) => {
   }).length;
 };
 
+const countPaidClassPlaces = async (
+  strapi: StrapiDocumentService,
+  classRecord?: DocumentRecord
+) => {
+  if (!classRecord?.documentId) {
+    return 0;
+  }
+
+  const enrollments = await documents(strapi, 'api::enrollment.enrollment').findMany({
+    filters: {
+      class: {
+        documentId: classRecord.documentId,
+      },
+      status: {
+        $in: Array.from(paidEnrollmentStatuses),
+      },
+    },
+    limit: 1000,
+    populate: ['class'],
+  });
+
+  return enrollments.length;
+};
+
+const closeClassIfCapacityReached = async (
+  strapi: StrapiDocumentService,
+  classRecord?: DocumentRecord
+) => {
+  if (!classRecord?.documentId || classRecord.state !== 'open') {
+    return classRecord;
+  }
+
+  const paidPlaces = await countPaidClassPlaces(strapi, classRecord);
+
+  if (typeof classRecord.capacity !== 'number' || paidPlaces < classRecord.capacity) {
+    return classRecord;
+  }
+
+  return documents(strapi, 'api::class.class').update({
+    documentId: classRecord.documentId,
+    data: {
+      state: 'full',
+    },
+    populate: ['classArea', 'workSector'],
+  });
+};
+
 const sanitizeReservation = (reservation) => {
   if (!reservation) {
     return null;
@@ -1084,6 +1194,24 @@ const sanitizeReservation = (reservation) => {
     status: reservation.status,
     termsAcceptedAt: reservation.termsAcceptedAt,
     termsVersion: reservation.termsVersion,
+  };
+};
+
+const sanitizePayment = (payment) => {
+  if (!payment) {
+    return null;
+  }
+
+  return {
+    amountPence: payment.amountPence,
+    currency: payment.currency,
+    documentId: payment.documentId,
+    paidAt: payment.paidAt,
+    paymentProvider: payment.paymentProvider,
+    paymentType: payment.paymentType,
+    providerCheckoutSessionId: payment.providerCheckoutSessionId,
+    providerPaymentIntentId: payment.providerPaymentIntentId,
+    status: payment.status,
   };
 };
 
@@ -1118,6 +1246,21 @@ const findCheckoutPaymentForReservation = async (
       status: {
         $in: ['checkout_created', 'pending'],
       },
+    },
+    limit: 1,
+    sort: ['createdAt:desc'],
+  });
+
+  return payments[0];
+};
+
+const findPaymentForCheckoutSession = async (
+  strapi: StrapiDocumentService,
+  checkoutSessionId: string
+) => {
+  const payments = await documents(strapi, 'api::payment.payment').findMany({
+    filters: {
+      providerCheckoutSessionId: checkoutSessionId,
     },
     limit: 1,
     sort: ['createdAt:desc'],
@@ -1178,7 +1321,7 @@ const requestPaymentServiceCheckoutSession = async ({
         enrollmentDocumentId: reservation.enrollment?.documentId,
         expiresAt: reservation.expiresAt,
         reservationDocumentId: reservation.documentId,
-        successUrl: buildDashboardCheckoutUrl(reservation.documentId, 'success'),
+        successUrl: buildDashboardOrderConfirmedUrl(reservation.documentId),
       }),
       headers: {
         'content-type': 'application/json',
@@ -1203,6 +1346,66 @@ const requestPaymentServiceCheckoutSession = async ({
       checkoutUrl: payload.data.checkoutUrl,
       paymentProvider: typeof payload.data.paymentProvider === 'string' ? payload.data.paymentProvider : 'stripe',
       status: typeof payload.data.status === 'string' ? payload.data.status : undefined,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
+const requestPaymentServiceCheckoutConfirmation = async (
+  checkoutSessionId: string
+): Promise<PaymentServiceCheckoutConfirmation | undefined> => {
+  const baseUrl = process.env.PAYMENT_SERVICE_URL;
+  const serviceToken = process.env.PAYMENT_SERVICE_TOKEN;
+
+  if (!baseUrl || !serviceToken) {
+    return undefined;
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    getIntegerEnv('PAYMENT_SERVICE_TIMEOUT_MS', 5000)
+  );
+
+  try {
+    const response = await fetch(
+      `${trimTrailingSlash(baseUrl)}/internal/checkout-sessions/${encodeURIComponent(checkoutSessionId)}`,
+      {
+        headers: {
+          'x-hireflip-service-name': 'core-api',
+          'x-hireflip-service-token': serviceToken,
+        },
+        method: 'GET',
+        signal: controller.signal,
+      }
+    );
+    const payload = (await response.json().catch(() => null)) as
+      | PaymentServiceCheckoutConfirmationResponse
+      | null;
+    const data = payload?.data;
+
+    if (
+      !response.ok ||
+      typeof data?.checkoutSessionId !== 'string' ||
+      typeof data?.paymentStatus !== 'string' ||
+      typeof data?.status !== 'string'
+    ) {
+      return undefined;
+    }
+
+    return {
+      amountTotal: typeof data.amountTotal === 'number' ? data.amountTotal : undefined,
+      checkoutSessionId: data.checkoutSessionId,
+      checkoutUrl: optionalStringOrNull(data.checkoutUrl),
+      clientReferenceId: optionalStringOrNull(data.clientReferenceId),
+      currency: optionalStringOrNull(data.currency),
+      customerId: typeof data.customerId === 'string' ? data.customerId : undefined,
+      metadata: objectValue(data.metadata),
+      paymentIntentId: typeof data.paymentIntentId === 'string' ? data.paymentIntentId : undefined,
+      paymentProvider: typeof data.paymentProvider === 'string' ? data.paymentProvider : 'stripe',
+      paymentStatus: data.paymentStatus,
+      status: data.status,
     };
   } finally {
     clearTimeout(timeout);
@@ -2542,6 +2745,203 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       classInterest: await buildCandidateClassInterestForCandidate(strapi, existingCandidate),
       paymentAction,
       reservation: sanitizeReservation(reservation),
+    };
+  },
+
+  async confirmCurrentCandidateClassReservationPayment(
+    auth: Auth0State | undefined,
+    reservationDocumentId: string,
+    input: unknown = {},
+    requestContext: RequestContext = {}
+  ) {
+    if (!auth || auth.type !== 'auth0' || !auth.subject) {
+      throw new UnauthorizedError('Auth0 authentication is required.');
+    }
+
+    const existingCandidate = await findCandidateByAuthIdentity(strapi, auth.subject);
+
+    if (!existingCandidate) {
+      throw new ValidationError('Candidate account must be synced before a payment can be confirmed.');
+    }
+
+    const payload = validateConfirmClassReservationPayment(input ?? {});
+    const reservation = await findCandidateReservation(strapi, existingCandidate, reservationDocumentId);
+
+    if (!reservation) {
+      throw new ValidationError('Reservation could not be found.');
+    }
+
+    const confirmation = await requestPaymentServiceCheckoutConfirmation(payload.checkoutSessionId);
+
+    if (!confirmation) {
+      throw new ValidationError('Payment confirmation is not available yet.');
+    }
+
+    const confirmationMetadata = objectValue(confirmation.metadata);
+    const metadataReservationDocumentId =
+      typeof confirmationMetadata.reservationDocumentId === 'string'
+        ? confirmationMetadata.reservationDocumentId
+        : undefined;
+    const metadataCandidateDocumentId =
+      typeof confirmationMetadata.candidateDocumentId === 'string'
+        ? confirmationMetadata.candidateDocumentId
+        : undefined;
+    const metadataClassDocumentId =
+      typeof confirmationMetadata.classDocumentId === 'string'
+        ? confirmationMetadata.classDocumentId
+        : undefined;
+    const metadataEnrollmentDocumentId =
+      typeof confirmationMetadata.enrollmentDocumentId === 'string'
+        ? confirmationMetadata.enrollmentDocumentId
+        : undefined;
+
+    if (
+      metadataReservationDocumentId !== reservation.documentId ||
+      metadataCandidateDocumentId !== existingCandidate.documentId ||
+      metadataClassDocumentId !== reservation.class?.documentId ||
+      metadataEnrollmentDocumentId !== reservation.enrollment?.documentId ||
+      confirmation.clientReferenceId !== reservation.documentId
+    ) {
+      throw new ValidationError('Payment confirmation does not match this reservation.');
+    }
+
+    if (confirmation.status !== 'complete' || confirmation.paymentStatus !== 'paid') {
+      throw new ValidationError('Stripe has not confirmed this payment as paid yet.');
+    }
+
+    if (
+      typeof confirmation.amountTotal === 'number' &&
+      typeof reservation.amountPence === 'number' &&
+      confirmation.amountTotal !== reservation.amountPence
+    ) {
+      throw new ValidationError('Payment amount does not match this reservation.');
+    }
+
+    if (
+      typeof confirmation.currency === 'string' &&
+      typeof reservation.currency === 'string' &&
+      confirmation.currency.toUpperCase() !== reservation.currency.toUpperCase()
+    ) {
+      throw new ValidationError('Payment currency does not match this reservation.');
+    }
+
+    const now = new Date().toISOString();
+    const previousReservation = sanitizeReservation(reservation);
+    const previousEnrollment = sanitizeEnrollment(reservation.enrollment);
+    const existingPayment =
+      (await findPaymentForCheckoutSession(strapi, confirmation.checkoutSessionId)) ||
+      (await findCheckoutPaymentForReservation(strapi, reservation));
+    const paymentMetadata = {
+      ...(objectValue(existingPayment?.metadata)),
+      amountTotal: confirmation.amountTotal,
+      checkoutUrl: confirmation.checkoutUrl,
+      confirmedAt: now,
+      providerSessionStatus: confirmation.status,
+      providerPaymentStatus: confirmation.paymentStatus,
+      reservationDocumentId: reservation.documentId,
+    };
+    const paymentData = {
+      amountPence: reservation.amountPence,
+      candidate: {
+        connect: [{ documentId: existingCandidate.documentId }],
+      },
+      createdByService: 'payment-service',
+      currency: reservation.currency,
+      enrollment: {
+        connect: [{ documentId: reservation.enrollment?.documentId }],
+      },
+      metadata: paymentMetadata,
+      paidAt: existingPayment?.paidAt || now,
+      paymentProvider: 'stripe',
+      paymentType: 'course_payment',
+      providerCheckoutSessionId: confirmation.checkoutSessionId,
+      ...(confirmation.customerId ? { providerCustomerId: confirmation.customerId } : {}),
+      ...(confirmation.paymentIntentId ? { providerPaymentIntentId: confirmation.paymentIntentId } : {}),
+      reservation: {
+        connect: [{ documentId: reservation.documentId }],
+      },
+      slotReservationExpiresAt: reservation.expiresAt,
+      status: 'paid',
+    };
+    const payment = existingPayment?.documentId
+      ? await documents(strapi, 'api::payment.payment').update({
+          documentId: existingPayment.documentId,
+          data: paymentData,
+        })
+      : await documents(strapi, 'api::payment.payment').create({
+          data: paymentData,
+        });
+    const updatedReservation = await documents(strapi, 'api::reservation.reservation').update({
+      documentId: reservation.documentId,
+      data: {
+        metadata: {
+          ...(objectValue(reservation.metadata)),
+          paymentConfirmedAt: now,
+          providerCheckoutSessionId: confirmation.checkoutSessionId,
+          ...(confirmation.paymentIntentId ? { providerPaymentIntentId: confirmation.paymentIntentId } : {}),
+        },
+        paidAt: reservation.paidAt || now,
+        status: 'paid',
+      },
+      populate: ['candidate', 'class', 'enrollment'],
+    });
+    const updatedEnrollment = reservation.enrollment?.documentId
+      ? await documents(strapi, 'api::enrollment.enrollment').update({
+          documentId: reservation.enrollment.documentId,
+          data: {
+            enrolledAt: reservation.enrollment.enrolledAt || now,
+            metadata: {
+              ...(objectValue(reservation.enrollment.metadata)),
+              activeReservationDocumentId: null,
+              paidReservationDocumentId: reservation.documentId,
+              paymentConfirmedAt: now,
+              providerCheckoutSessionId: confirmation.checkoutSessionId,
+              ...(confirmation.paymentIntentId ? { providerPaymentIntentId: confirmation.paymentIntentId } : {}),
+            },
+            paymentStatus: 'paid',
+            reservationExpiresAt: null,
+            status: 'enrolled',
+            waitingListPosition: null,
+          },
+          populate: ['class'],
+        })
+      : null;
+    const updatedClass = await closeClassIfCapacityReached(strapi, reservation.class);
+
+    await auditEvents(strapi).record({
+      actorEmail: existingCandidate.email,
+      actorId: auth.subject,
+      actorType: 'candidate',
+      eventCategory: 'payment',
+      eventType: 'candidate.payment_confirmed',
+      ipAddress: requestContext.ipAddress,
+      metadata: {
+        checkoutSessionId: confirmation.checkoutSessionId,
+        class: sanitizeClass(updatedClass || reservation.class),
+        payment: sanitizePayment(payment),
+      },
+      newState: {
+        enrollment: sanitizeEnrollment(updatedEnrollment),
+        payment: sanitizePayment(payment),
+        reservation: sanitizeReservation(updatedReservation),
+      },
+      occurredAt: now,
+      previousState: {
+        enrollment: previousEnrollment,
+        reservation: previousReservation,
+      },
+      requestId: requestContext.requestId,
+      source: 'core_api',
+      subjectDisplayName: existingCandidate.email,
+      subjectId: existingCandidate.documentId,
+      subjectType: 'candidate',
+      userAgent: requestContext.userAgent,
+    });
+
+    return {
+      classInterest: await buildCandidateClassInterestForCandidate(strapi, existingCandidate),
+      payment: sanitizePayment(payment),
+      reservation: sanitizeReservation(updatedReservation),
     };
   },
 

@@ -132,6 +132,19 @@ export default {
     },
     {
       method: 'POST',
+      path: '/candidates/me/class-reservation/:reservationDocumentId/confirm-payment',
+      handler: 'candidate.confirmClassReservationPayment',
+      config: {
+        auth: false,
+        middlewares: [
+          {
+            name: 'global::auth0-jwt',
+          },
+        ],
+      },
+    },
+    {
+      method: 'POST',
       path: '/candidates/me/class-reservation/:reservationDocumentId/expire',
       handler: 'candidate.expireClassReservation',
       config: {
