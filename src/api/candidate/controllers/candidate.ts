@@ -140,9 +140,13 @@ export default factories.createCoreController('api::candidate.candidate', ({ str
   },
 
   async withdrawClassInterest(ctx) {
+    const body = typeof ctx.request.body === 'object' && ctx.request.body ? ctx.request.body : {};
+    const queryClassDocumentId =
+      typeof ctx.query?.classDocumentId === 'string' ? ctx.query.classDocumentId : undefined;
+    const input = queryClassDocumentId ? { ...body, classDocumentId: queryClassDocumentId } : body;
     const result = await candidateService(strapi).withdrawCurrentCandidateClassInterest(
       ctx.state?.hireflipAuth,
-      ctx.request.body,
+      input,
       {
         ipAddress: getForwardedClientIp(ctx),
         requestId: ctx.state?.requestId,
