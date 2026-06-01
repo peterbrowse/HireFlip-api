@@ -1460,7 +1460,7 @@ const buildClassTimeline = (classRecord, relationshipState) => {
     },
     {
       key: 'enrollment_open',
-      label: 'Enrollment open',
+      label: 'Enrolled',
       state: completedEnrollmentOpen ? 'complete' : enrollmentOpen ? 'current' : 'upcoming',
     },
     {
