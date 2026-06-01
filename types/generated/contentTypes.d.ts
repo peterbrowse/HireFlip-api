@@ -1086,6 +1086,10 @@ export interface ApiClassClass extends Struct.CollectionTypeSchema {
         },
         number
       >;
+    level: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 80;
+      }>;
     locale: Schema.Attribute.String & Schema.Attribute.Private;
     localizations: Schema.Attribute.Relation<'oneToMany', 'api::class.class'> &
       Schema.Attribute.Private;

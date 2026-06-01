@@ -63,6 +63,10 @@
       "default": "draft",
       "required": true
     },
+    "level": {
+      "type": "string",
+      "maxLength": 80
+    },
     "course": {
       "type": "relation",
       "relation": "manyToOne",

@@ -51,6 +51,7 @@ type DocumentRecord = Record<string, unknown> & {
   interestType?: string;
   invitedToJoinAt?: string;
   lastName?: string;
+  level?: string;
   marketingConsentCapturedAt?: string;
   marketingConsentState?: string;
   marketingConsentWordingVersion?: string;
@@ -1340,6 +1341,7 @@ const sanitizeClass = (classRecord) => {
     faqs: sanitizeFaqs(classRecord.faqs),
     includedItems: sanitizeIncludedItems(classRecord.includedItems),
     interviewsGuaranteed: classRecord.interviewsGuaranteed,
+    level: classRecord.level,
     moduleSummary: classRecord.moduleSummary,
     displayTitle: classRecord.displayTitle || classRecord.name,
     name: classRecord.displayTitle || classRecord.name,
