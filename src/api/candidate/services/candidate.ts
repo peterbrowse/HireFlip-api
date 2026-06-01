@@ -147,7 +147,6 @@ const candidateVisibleClassStates = new Set([
 const paidEnrollmentStatuses = new Set(['enrolled', 'in_class', 'interview_phase', 'completed', 'active']);
 const completedEnrollmentStatuses = new Set(['completed']);
 const capacityHoldingEnrollmentStatuses = new Set(['place_reserved', 'enrolled', 'in_class', 'interview_phase', 'completed']);
-const reservationWindowMs = 10 * 60 * 1000;
 const interestCountEnrollmentStatuses = [
   'interest_registered',
   'enrollment_open',
@@ -189,6 +188,8 @@ const getIntegerEnv = (name: string, fallback: number) => {
   const value = Number.parseInt(process.env[name] || '', 10);
   return Number.isFinite(value) && value > 0 ? value : fallback;
 };
+
+const getReservationWindowMs = () => getIntegerEnv('CLASS_RESERVATION_WINDOW_SECONDS', 10 * 60) * 1000;
 
 const getProfileImageFormat = () => {
   const configuredFormat = (process.env.CANDIDATE_PROFILE_IMAGE_FORMAT || 'webp').toLowerCase();
@@ -856,7 +857,7 @@ const findClassInterestCounts = async (strapi: StrapiDocumentService, classes: D
 
 const isPastDate = (value?: string) => Boolean(value && Date.parse(value) <= Date.now());
 
-const getReservationExpiry = (now = new Date()) => new Date(now.getTime() + reservationWindowMs).toISOString();
+const getReservationExpiry = (now = new Date()) => new Date(now.getTime() + getReservationWindowMs()).toISOString();
 
 type PaymentAction = {
   canCreateCheckoutSession: boolean;
