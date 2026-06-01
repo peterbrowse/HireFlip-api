@@ -147,6 +147,14 @@ const candidateVisibleClassStates = new Set([
 const paidEnrollmentStatuses = new Set(['enrolled', 'in_class', 'interview_phase', 'completed', 'active']);
 const completedEnrollmentStatuses = new Set(['completed']);
 const capacityHoldingEnrollmentStatuses = new Set(['place_reserved', 'enrolled', 'in_class', 'interview_phase', 'completed']);
+const candidateRelationshipClassStates = new Set(['coming_soon', 'waitlist_open', 'open']);
+const candidateRelationshipEnrollmentStatuses = new Set([
+  'interest_registered',
+  'enrollment_open',
+  'place_reserved',
+  'waiting_list',
+  'waitlisted',
+]);
 const interestCountEnrollmentStatuses = [
   'interest_registered',
   'enrollment_open',
@@ -795,6 +803,28 @@ const findMatchingClasses = async (strapi: StrapiDocumentService, candidate?: Do
     });
 };
 
+const sortClassesByStartDate = (classes: DocumentRecord[] = []) =>
+  [...classes].sort((firstClass, secondClass) => {
+    const firstTime = firstClass.startDate ? Date.parse(firstClass.startDate) : Number.MAX_SAFE_INTEGER;
+    const secondTime = secondClass.startDate ? Date.parse(secondClass.startDate) : Number.MAX_SAFE_INTEGER;
+
+    return firstTime - secondTime;
+  });
+
+const mergeClassesByDocumentId = (...classGroups: DocumentRecord[][]) => {
+  const classMap = new Map<string, DocumentRecord>();
+
+  for (const classGroup of classGroups) {
+    for (const classRecord of classGroup) {
+      if (classRecord.documentId && !classMap.has(classRecord.documentId)) {
+        classMap.set(classRecord.documentId, classRecord);
+      }
+    }
+  }
+
+  return sortClassesByStartDate([...classMap.values()]);
+};
+
 const findCandidateEnrollments = async (strapi: StrapiDocumentService, candidate: DocumentRecord) =>
   documents(strapi, 'api::enrollment.enrollment').findMany({
     filters: {
@@ -808,6 +838,37 @@ const findCandidateEnrollments = async (strapi: StrapiDocumentService, candidate
   });
 
 const enrollmentClassDocumentId = (enrollment) => enrollment?.class?.documentId;
+
+const relationshipClassDocumentIds = (enrollments: DocumentRecord[] = []) =>
+  enrollments
+    .filter((enrollment) => candidateRelationshipEnrollmentStatuses.has(normalizeEnrollmentStatus(enrollment.status)))
+    .map(enrollmentClassDocumentId)
+    .filter((documentId): documentId is string => Boolean(documentId));
+
+const findRelationshipClasses = async (strapi: StrapiDocumentService, enrollments: DocumentRecord[] = []) => {
+  const classDocumentIds = [...new Set(relationshipClassDocumentIds(enrollments))];
+
+  if (classDocumentIds.length === 0) {
+    return [];
+  }
+
+  const classes = await documents(strapi, 'api::class.class').findMany({
+    filters: {
+      documentId: {
+        $in: classDocumentIds,
+      },
+    },
+    limit: 100,
+    populate: ['classArea', 'workSector'],
+    sort: ['startDate:asc', 'createdAt:desc'],
+  });
+
+  return sortClassesByStartDate(
+    classes
+      .filter((classRecord) => !terminalClassStatuses.has(classRecord.state))
+      .filter((classRecord) => candidateRelationshipClassStates.has(classRecord.state))
+  );
+};
 
 const enrollmentsByClassDocumentId = (enrollments: DocumentRecord[] = []) =>
   enrollments.reduce((map, enrollment) => {
@@ -1567,17 +1628,21 @@ const buildClassInterestResponse = ({ candidate, enrollments, interestCounts, ma
 };
 
 const buildCandidateClassInterestForCandidate = async (strapi, candidate) => {
-  const matchingClasses = isCandidateRestricted(candidate) ? [] : await findMatchingClasses(strapi, candidate);
-  const [enrollments, interestCounts] = await Promise.all([
-    findCandidateEnrollments(strapi, candidate),
-    findClassInterestCounts(strapi, matchingClasses),
-  ]);
+  const enrollments = await findCandidateEnrollments(strapi, candidate);
+  const [matchingClasses, relationshipClasses] = isCandidateRestricted(candidate)
+    ? [[], []]
+    : await Promise.all([
+        findMatchingClasses(strapi, candidate),
+        findRelationshipClasses(strapi, enrollments),
+      ]);
+  const visibleClasses = mergeClassesByDocumentId(matchingClasses, relationshipClasses);
+  const interestCounts = await findClassInterestCounts(strapi, visibleClasses);
 
   return buildClassInterestResponse({
     candidate,
     enrollments,
     interestCounts,
-    matchingClasses,
+    matchingClasses: visibleClasses,
   });
 };
 
@@ -2022,8 +2087,13 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
     }
 
     const payload = validateReserveClassPlace(input ?? {});
-    const matchingClasses = await findMatchingClasses(strapi, existingCandidate);
-    const targetClass = matchingClasses.find((classRecord) => classRecord.documentId === payload.classDocumentId);
+    const existingEnrollments = await findCandidateEnrollments(strapi, existingCandidate);
+    const [matchingClasses, relationshipClasses] = await Promise.all([
+      findMatchingClasses(strapi, existingCandidate),
+      findRelationshipClasses(strapi, existingEnrollments),
+    ]);
+    const reservableClasses = mergeClassesByDocumentId(matchingClasses, relationshipClasses);
+    const targetClass = reservableClasses.find((classRecord) => classRecord.documentId === payload.classDocumentId);
 
     if (!targetClass) {
       throw new ValidationError('No matching class is currently available for the selected preferences.');
@@ -2035,7 +2105,6 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
 
     const nowDate = new Date();
     const now = nowDate.toISOString();
-    const existingEnrollments = await findCandidateEnrollments(strapi, existingCandidate);
     let existingEnrollment = enrollmentsByClassDocumentId(existingEnrollments).get(
       targetClass.documentId
     ) as DocumentRecord | undefined;
