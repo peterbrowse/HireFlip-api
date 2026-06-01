@@ -1521,7 +1521,7 @@ const buildClassTimeline = (classRecord, relationshipState) => {
   return [
     {
       key: 'interest',
-      label: 'Register Interest',
+      label: 'Interest Registered',
       state: completedInterest ? 'complete' : 'current',
     },
     {
