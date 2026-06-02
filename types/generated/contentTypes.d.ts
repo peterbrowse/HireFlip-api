@@ -1704,6 +1704,7 @@ export interface ApiEnrollmentEnrollment extends Struct.CollectionTypeSchema {
         'not_required',
         'pending',
         'paid',
+        'requires_review',
         'failed',
         'partially_refunded',
         'refunded',
@@ -1739,6 +1740,7 @@ export interface ApiEnrollmentEnrollment extends Struct.CollectionTypeSchema {
         'waiting_list',
         'missed_out',
         'enrolled',
+        'payment_exception',
         'in_class',
         'interview_phase',
         'completed',
@@ -2192,6 +2194,7 @@ export interface ApiPaymentPayment extends Struct.CollectionTypeSchema {
       'manyToOne',
       'api::enrollment.enrollment'
     >;
+    expiredAt: Schema.Attribute.DateTime;
     failedAt: Schema.Attribute.DateTime;
     locale: Schema.Attribute.String & Schema.Attribute.Private;
     localizations: Schema.Attribute.Relation<
@@ -2235,6 +2238,7 @@ export interface ApiPaymentPayment extends Struct.CollectionTypeSchema {
         'checkout_created',
         'pending',
         'paid',
+        'requires_review',
         'failed',
         'cancelled',
         'expired',
@@ -2717,7 +2721,14 @@ export interface ApiReservationReservation extends Struct.CollectionTypeSchema {
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'candidate_dashboard'>;
     status: Schema.Attribute.Enumeration<
-      ['active', 'cancelled', 'expired', 'paid', 'released']
+      [
+        'active',
+        'cancelled',
+        'expired',
+        'payment_exception',
+        'paid',
+        'released',
+      ]
     > &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'active'>;

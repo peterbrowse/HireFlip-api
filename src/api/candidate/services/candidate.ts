@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -5,8 +6,17 @@ import { factories } from '@strapi/strapi';
 import { errors, validateZodSchema, z } from '@strapi/utils';
 import { parsePhoneNumberFromString } from 'libphonenumber-js/max';
 import sharp from 'sharp';
+import {
+  allocateClassPlace,
+  isClassAllocationReady,
+  markClassPlaceAllocationPaid,
+  releaseClassPlaceAllocation,
+  replaceClassAllocationSnapshot,
+  tryAcquireClassAllocationSyncLock,
+  waitForClassAllocationReady,
+} from '../../../utils/class-allocation-redis';
 
-const { UnauthorizedError, ValidationError } = errors;
+const { ApplicationError, UnauthorizedError, ValidationError } = errors;
 
 type Auth0State = {
   type: 'auth0';
@@ -18,6 +28,7 @@ type Auth0State = {
 type RequestContext = {
   ipAddress?: string;
   requestId?: string;
+  serviceName?: string;
   userAgent?: string;
 };
 
@@ -72,6 +83,7 @@ type DocumentRecord = Record<string, unknown> & {
   providerCustomerId?: string;
   providerPaymentIntentId?: string;
   registeredInterestAt?: string;
+  reservation?: DocumentRecord;
   region?: string;
   reservationExpiresAt?: string;
   reservationDocumentId?: string;
@@ -202,6 +214,7 @@ const getIntegerEnv = (name: string, fallback: number) => {
 };
 
 const getReservationWindowMs = () => getIntegerEnv('CLASS_RESERVATION_WINDOW_SECONDS', 10 * 60) * 1000;
+const getClassTermsVersion = () => process.env.CLASS_TERMS_VERSION || 'class-terms-v1';
 
 const getProfileImageFormat = () => {
   const configuredFormat = (process.env.CANDIDATE_PROFILE_IMAGE_FORMAT || 'webp').toLowerCase();
@@ -344,13 +357,14 @@ const reserveClassPlaceSchema = z
 
 const validateReserveClassPlace = validateZodSchema(reserveClassPlaceSchema);
 
-const confirmClassReservationPaymentSchema = z
+const acceptReservationTermsSchema = z
   .object({
-    checkoutSessionId: z.string().trim().min(1).max(255),
+    termsVersion: optionalString(120),
   })
-  .strict();
+  .strict()
+  .default({});
 
-const validateConfirmClassReservationPayment = validateZodSchema(confirmClassReservationPaymentSchema);
+const validateAcceptReservationTerms = validateZodSchema(acceptReservationTermsSchema);
 
 const createUnlistedInterestSchema = z
   .object({
@@ -651,6 +665,28 @@ const objectValue = (value: unknown) => {
   return {};
 };
 
+const providerCheckoutConfirmationSchema = z
+  .object({
+    amountTotal: z.number().int().nonnegative().optional(),
+    checkoutSessionId: z.string().trim().min(1).max(255),
+    checkoutUrl: z.string().trim().url().nullable().optional(),
+    clientReferenceId: z.string().trim().max(255).nullable().optional(),
+    currency: z.string().trim().min(3).max(3).nullable().optional(),
+    customerId: z.string().trim().max(255).optional(),
+    metadata: z.unknown().optional(),
+    paymentIntentId: z.string().trim().max(255).optional(),
+    paymentProvider: z.string().trim().min(1).max(80).default('stripe'),
+    paymentStatus: z.string().trim().min(1).max(80),
+    status: z.string().trim().min(1).max(80),
+  })
+  .strict()
+  .transform((value) => ({
+    ...value,
+    metadata: objectValue(value.metadata),
+  }));
+
+const validateProviderCheckoutConfirmation = validateZodSchema(providerCheckoutConfirmationSchema);
+
 const normalizeCommunicationChannels = (
   channels?: readonly (typeof communicationChannels)[number][],
   preferredChannel?: (typeof communicationChannels)[number]
@@ -849,6 +885,47 @@ const findCandidateEnrollments = async (strapi: StrapiDocumentService, candidate
     sort: ['createdAt:desc'],
   });
 
+const findCandidateEnrollmentForClass = async (
+  strapi: StrapiDocumentService,
+  candidate: DocumentRecord,
+  classRecord: DocumentRecord
+) => {
+  if (!candidate.documentId || !classRecord.documentId) {
+    return undefined;
+  }
+
+  const enrollments = await documents(strapi, 'api::enrollment.enrollment').findMany({
+    filters: {
+      candidate: {
+        documentId: candidate.documentId,
+      },
+      class: {
+        documentId: classRecord.documentId,
+      },
+    },
+    limit: 1,
+    populate: ['class'],
+    sort: ['createdAt:desc'],
+  });
+
+  return enrollments[0];
+};
+
+const findClassByDocumentId = async (
+  strapi: StrapiDocumentService,
+  classDocumentId: string
+) => {
+  const classes = await documents(strapi, 'api::class.class').findMany({
+    filters: {
+      documentId: classDocumentId,
+    },
+    limit: 1,
+    populate: ['classArea', 'workSector'],
+  });
+
+  return classes[0];
+};
+
 const enrollmentClassDocumentId = (enrollment) => enrollment?.class?.documentId;
 
 const relationshipClassDocumentIds = (enrollments: DocumentRecord[] = []) =>
@@ -957,6 +1034,10 @@ type PaymentServiceCheckoutResponse = {
   };
 };
 
+type PaymentServiceCheckoutLookupResponse = {
+  data?: unknown;
+};
+
 type PaymentServiceCheckoutConfirmation = {
   amountTotal?: number;
   checkoutSessionId: string;
@@ -971,38 +1052,25 @@ type PaymentServiceCheckoutConfirmation = {
   status: string;
 };
 
-type PaymentServiceCheckoutConfirmationResponse = {
-  data?: {
-    amountTotal?: unknown;
-    checkoutSessionId?: unknown;
-    checkoutUrl?: unknown;
-    clientReferenceId?: unknown;
-    currency?: unknown;
-    customerId?: unknown;
-    metadata?: unknown;
-    paymentIntentId?: unknown;
-    paymentProvider?: unknown;
-    paymentStatus?: unknown;
-    status?: unknown;
-  };
+type PaymentConfirmationActor = {
+  actorEmail?: string;
+  actorId?: string;
+  actorType: 'candidate' | 'service';
+  eventType: string;
+  source: 'core_api' | 'payment_service';
 };
+
+type PaymentExceptionReason =
+  | 'class_capacity_conflict'
+  | 'reservation_cancelled'
+  | 'reservation_released';
+
+type ProviderPaymentOutcome = 'expired' | 'failed';
 
 const classPaymentAmount = (classRecord?: DocumentRecord) =>
   classRecord?.discountedPricePence ?? classRecord?.pricePence ?? 0;
 
 const trimTrailingSlash = (value: string) => value.replace(/\/+$/, '');
-
-const optionalStringOrNull = (value: unknown): string | null | undefined => {
-  if (typeof value === 'string') {
-    return value;
-  }
-
-  if (value === null) {
-    return null;
-  }
-
-  return undefined;
-};
 
 const buildDashboardCheckoutUrl = (reservationDocumentId: string, status: string) => {
   const baseUrl = trimTrailingSlash(process.env.CANDIDATE_DASHBOARD_BASE_URL || 'http://localhost:3001');
@@ -1063,11 +1131,45 @@ const hasWaitingListAhead = async (strapi, classRecord, candidate?) => {
       },
       status: 'waiting_list',
     },
-    limit: 1,
+    limit: 1000,
     populate: ['candidate'],
+    sort: ['waitingListPosition:asc', 'createdAt:asc'],
   });
 
-  return waitingListEnrollments.some((enrollment) => enrollment.candidate?.documentId !== candidate?.documentId);
+  const candidateIndex = waitingListEnrollments.findIndex(
+    (enrollment) => enrollment.candidate?.documentId === candidate?.documentId
+  );
+
+  if (candidateIndex === -1) {
+    return waitingListEnrollments.length > 0;
+  }
+
+  return waitingListEnrollments
+    .slice(0, candidateIndex)
+    .some((enrollment) => enrollment.candidate?.documentId !== candidate?.documentId);
+};
+
+const canCandidateClaimWaitingListPlace = async (strapi, classRecord, enrollment, candidate?) => {
+  if (
+    normalizeEnrollmentStatus(enrollment?.status) !== 'waiting_list' ||
+    !classHasPaymentAccess(classRecord)
+  ) {
+    return false;
+  }
+
+  const classCapacity = Number(classRecord?.capacity || 0);
+
+  if (classCapacity <= 0) {
+    return false;
+  }
+
+  const heldPlaces = await countCapacityHeldPlaces(strapi, classRecord);
+
+  if (heldPlaces >= classCapacity) {
+    return false;
+  }
+
+  return !(await hasWaitingListAhead(strapi, classRecord, candidate));
 };
 
 const findActiveReservationForEnrollment = async (strapi, enrollment) => {
@@ -1096,6 +1198,21 @@ const findCandidateReservation = async (strapi, candidate, reservationDocumentId
       candidate: {
         documentId: candidate.documentId,
       },
+      documentId: reservationDocumentId,
+    },
+    limit: 1,
+    populate: ['candidate', 'class', 'enrollment'],
+  });
+
+  return reservations[0];
+};
+
+const findReservationByDocumentId = async (
+  strapi: StrapiDocumentService,
+  reservationDocumentId: string
+) => {
+  const reservations = await documents(strapi, 'api::reservation.reservation').findMany({
+    filters: {
       documentId: reservationDocumentId,
     },
     limit: 1,
@@ -1152,6 +1269,203 @@ const countPaidClassPlaces = async (
   return enrollments.length;
 };
 
+const findActiveClassReservationsForAllocation = async (
+  strapi: StrapiDocumentService,
+  classRecord: DocumentRecord
+) => {
+  const now = new Date().toISOString();
+
+  return documents(strapi, 'api::reservation.reservation').findMany({
+    filters: {
+      class: {
+        documentId: classRecord.documentId,
+      },
+      expiresAt: {
+        $gt: now,
+      },
+      status: 'active',
+    },
+    limit: 1000,
+    populate: ['candidate'],
+  });
+};
+
+const findPaidClassEnrollmentsForAllocation = async (
+  strapi: StrapiDocumentService,
+  classRecord: DocumentRecord
+) =>
+  documents(strapi, 'api::enrollment.enrollment').findMany({
+    filters: {
+      class: {
+        documentId: classRecord.documentId,
+      },
+      status: {
+        $in: Array.from(paidEnrollmentStatuses),
+      },
+    },
+    limit: 1000,
+    populate: ['candidate'],
+  });
+
+const findWaitingListClassEnrollmentsForAllocation = async (
+  strapi: StrapiDocumentService,
+  classRecord: DocumentRecord
+) =>
+  documents(strapi, 'api::enrollment.enrollment').findMany({
+    filters: {
+      class: {
+        documentId: classRecord.documentId,
+      },
+      status: 'waiting_list',
+    },
+    limit: 1000,
+    populate: ['candidate'],
+    sort: ['waitingListPosition:asc', 'createdAt:asc'],
+  });
+
+const ensureClassAllocationSnapshot = async (
+  strapi: StrapiDocumentService,
+  classRecord: DocumentRecord
+) => {
+  if (!classRecord.documentId) {
+    throw new ValidationError('Class document ID is required before reserving a place.');
+  }
+
+  try {
+    if (await isClassAllocationReady(classRecord.documentId)) {
+      return;
+    }
+
+    if (!(await tryAcquireClassAllocationSyncLock(classRecord.documentId))) {
+      if (await waitForClassAllocationReady(classRecord.documentId)) {
+        return;
+      }
+
+      throw new Error('Timed out waiting for class allocation Redis snapshot.');
+    }
+
+    const [activeReservations, paidEnrollments, waitingListEnrollments] = await Promise.all([
+      findActiveClassReservationsForAllocation(strapi, classRecord),
+      findPaidClassEnrollmentsForAllocation(strapi, classRecord),
+      findWaitingListClassEnrollmentsForAllocation(strapi, classRecord),
+    ]);
+
+    await replaceClassAllocationSnapshot(classRecord.documentId, {
+      holds: activeReservations
+        .filter((reservation) => reservation.candidate?.documentId && reservation.expiresAt)
+        .map((reservation) => {
+          const metadata = objectValue(reservation.metadata);
+          const allocationId =
+            typeof metadata.allocationId === 'string'
+              ? metadata.allocationId
+              : reservation.documentId || randomUUID();
+
+          return {
+            allocationId,
+            candidateDocumentId: reservation.candidate!.documentId!,
+            expiresAt: reservation.expiresAt!,
+            reservationDocumentId: reservation.documentId,
+          };
+        }),
+      paidCandidateDocumentIds: paidEnrollments
+        .map((enrollment) => enrollment.candidate?.documentId)
+        .filter((documentId): documentId is string => Boolean(documentId)),
+      waitlist: waitingListEnrollments
+        .map((enrollment, index) => ({
+          candidateDocumentId: enrollment.candidate?.documentId,
+          position: enrollment.waitingListPosition || index + 1,
+        }))
+        .filter(
+          (item): item is { candidateDocumentId: string; position: number } =>
+            Boolean(item.candidateDocumentId) && Number.isFinite(item.position)
+        ),
+    });
+  } catch (error) {
+    const logger = (strapi as unknown as { log?: { error?: (message: string, error?: unknown) => void } }).log;
+    logger?.error?.('Class allocation Redis snapshot failed.', error);
+    throw new ApplicationError('Class allocation is temporarily unavailable. Please try again.');
+  }
+};
+
+type LockableClassQuery = {
+  first(): Promise<unknown>;
+  forUpdate?: () => { first(): Promise<unknown> };
+};
+
+type LockableDatabaseConnection = {
+  (tableName: string): {
+    where(input: Record<string, unknown>): LockableClassQuery;
+  };
+  client?: {
+    config?: {
+      client?: string;
+    };
+  };
+  raw?: (query: string, bindings?: unknown[]) => Promise<unknown>;
+};
+
+const databaseClientName = (connection?: LockableDatabaseConnection) =>
+  connection?.client?.config?.client?.toLowerCase() || '';
+
+const acquirePostgresClassAdvisoryLock = async (
+  connection: LockableDatabaseConnection,
+  classDocumentId: string
+) => {
+  const clientName = databaseClientName(connection);
+
+  if (
+    (!clientName.includes('pg') && !clientName.includes('postgres')) ||
+    typeof connection.raw !== 'function'
+  ) {
+    return;
+  }
+
+  await connection.raw('select pg_advisory_xact_lock(hashtext(?))', [
+    `hireflip:class-allocation:${classDocumentId}`,
+  ]);
+};
+
+const lockClassForCapacityCheck = async (
+  strapi: StrapiDocumentService,
+  classRecord?: DocumentRecord,
+  transactionConnection?: unknown
+) => {
+  const connection = (transactionConnection ||
+    (strapi as unknown as { db?: { connection?: unknown } }).db?.connection) as
+    | undefined
+    | LockableDatabaseConnection;
+
+  if (!connection || !classRecord?.documentId) {
+    return;
+  }
+
+  await acquirePostgresClassAdvisoryLock(connection, classRecord.documentId);
+
+  const query = connection('classes').where({ document_id: classRecord.documentId });
+
+  if (typeof query.forUpdate === 'function' && !databaseClientName(connection).includes('sqlite')) {
+    await query.forUpdate().first();
+    return;
+  }
+
+  await query.first();
+};
+
+const withDatabaseTransaction = async <TResult>(
+  strapi: StrapiDocumentService,
+  callback: (context?: { trx?: unknown }) => Promise<TResult>
+) => {
+  const database = (strapi as unknown as {
+    db?: {
+      transaction?: <TCallbackResult>(
+        callback: (context?: { trx?: unknown }) => Promise<TCallbackResult>
+      ) => Promise<TCallbackResult>;
+    };
+  }).db;
+
+  return database?.transaction ? database.transaction(callback) : callback();
+};
+
 const closeClassIfCapacityReached = async (
   strapi: StrapiDocumentService,
   classRecord?: DocumentRecord
@@ -1180,6 +1494,8 @@ const sanitizeReservation = (reservation) => {
     return null;
   }
 
+  const metadata = objectValue(reservation.metadata);
+
   return {
     amountPence: reservation.amountPence,
     cancelledAt: reservation.cancelledAt,
@@ -1190,6 +1506,10 @@ const sanitizeReservation = (reservation) => {
     expiredAt: reservation.expiredAt,
     expiresAt: reservation.expiresAt,
     paidAt: reservation.paidAt,
+    paymentExceptionReason:
+      typeof metadata.paymentExceptionReason === 'string'
+        ? metadata.paymentExceptionReason
+        : undefined,
     reservationStartedAt: reservation.reservationStartedAt,
     status: reservation.status,
     termsAcceptedAt: reservation.termsAcceptedAt,
@@ -1206,6 +1526,8 @@ const sanitizePayment = (payment) => {
     amountPence: payment.amountPence,
     currency: payment.currency,
     documentId: payment.documentId,
+    expiredAt: payment.expiredAt,
+    failedAt: payment.failedAt,
     paidAt: payment.paidAt,
     paymentProvider: payment.paymentProvider,
     paymentType: payment.paymentType,
@@ -1267,6 +1589,53 @@ const findPaymentForCheckoutSession = async (
   });
 
   return payments[0];
+};
+
+const findConfirmedPaymentForReservationOrEnrollment = async (
+  strapi: StrapiDocumentService,
+  reservation?: DocumentRecord
+) => {
+  if (!reservation?.documentId && !reservation?.enrollment?.documentId) {
+    return undefined;
+  }
+
+  if (reservation?.documentId) {
+    const reservationPayments = await documents(strapi, 'api::payment.payment').findMany({
+      filters: {
+        reservation: {
+          documentId: reservation.documentId,
+        },
+        status: {
+          $in: ['paid', 'requires_review'],
+        },
+      },
+      limit: 1,
+      sort: ['paidAt:desc', 'createdAt:desc'],
+    });
+
+    if (reservationPayments[0]) {
+      return reservationPayments[0];
+    }
+  }
+
+  if (reservation?.enrollment?.documentId) {
+    const enrollmentPayments = await documents(strapi, 'api::payment.payment').findMany({
+      filters: {
+        enrollment: {
+          documentId: reservation.enrollment.documentId,
+        },
+        status: {
+          $in: ['paid', 'requires_review'],
+        },
+      },
+      limit: 1,
+      sort: ['paidAt:desc', 'createdAt:desc'],
+    });
+
+    return enrollmentPayments[0];
+  }
+
+  return undefined;
 };
 
 const checkoutSessionFromPayment = (payment?: DocumentRecord): CheckoutSession | undefined => {
@@ -1352,7 +1721,7 @@ const requestPaymentServiceCheckoutSession = async ({
   }
 };
 
-const requestPaymentServiceCheckoutConfirmation = async (
+const requestPaymentServiceCheckoutSessionStatus = async (
   checkoutSessionId: string
 ): Promise<PaymentServiceCheckoutConfirmation | undefined> => {
   const baseUrl = process.env.PAYMENT_SERVICE_URL;
@@ -1380,36 +1749,717 @@ const requestPaymentServiceCheckoutConfirmation = async (
         signal: controller.signal,
       }
     );
-    const payload = (await response.json().catch(() => null)) as
-      | PaymentServiceCheckoutConfirmationResponse
-      | null;
-    const data = payload?.data;
+    const payload = (await response.json().catch(() => null)) as PaymentServiceCheckoutLookupResponse | null;
 
-    if (
-      !response.ok ||
-      typeof data?.checkoutSessionId !== 'string' ||
-      typeof data?.paymentStatus !== 'string' ||
-      typeof data?.status !== 'string'
-    ) {
+    if (!response.ok || !payload?.data) {
       return undefined;
     }
 
-    return {
-      amountTotal: typeof data.amountTotal === 'number' ? data.amountTotal : undefined,
-      checkoutSessionId: data.checkoutSessionId,
-      checkoutUrl: optionalStringOrNull(data.checkoutUrl),
-      clientReferenceId: optionalStringOrNull(data.clientReferenceId),
-      currency: optionalStringOrNull(data.currency),
-      customerId: typeof data.customerId === 'string' ? data.customerId : undefined,
-      metadata: objectValue(data.metadata),
-      paymentIntentId: typeof data.paymentIntentId === 'string' ? data.paymentIntentId : undefined,
-      paymentProvider: typeof data.paymentProvider === 'string' ? data.paymentProvider : 'stripe',
-      paymentStatus: data.paymentStatus,
-      status: data.status,
-    };
+    return validateProviderCheckoutConfirmation(payload.data);
   } finally {
     clearTimeout(timeout);
   }
+};
+
+const requestPaymentServiceExpireCheckoutSession = async (
+  checkoutSessionId: string
+): Promise<PaymentServiceCheckoutConfirmation | undefined> => {
+  const baseUrl = process.env.PAYMENT_SERVICE_URL;
+  const serviceToken = process.env.PAYMENT_SERVICE_TOKEN;
+
+  if (!baseUrl || !serviceToken) {
+    return undefined;
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    getIntegerEnv('PAYMENT_SERVICE_TIMEOUT_MS', 5000)
+  );
+
+  try {
+    const response = await fetch(
+      `${trimTrailingSlash(baseUrl)}/internal/checkout-sessions/${encodeURIComponent(checkoutSessionId)}/expire`,
+      {
+        headers: {
+          'content-type': 'application/json',
+          'x-hireflip-service-name': 'core-api',
+          'x-hireflip-service-token': serviceToken,
+        },
+        method: 'POST',
+        signal: controller.signal,
+      }
+    );
+    const payload = (await response.json().catch(() => null)) as PaymentServiceCheckoutLookupResponse | null;
+
+    if (!response.ok || !payload?.data) {
+      return undefined;
+    }
+
+    return validateProviderCheckoutConfirmation(payload.data);
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
+const recordPaymentException = async ({
+  actor,
+  candidate,
+  confirmation,
+  existingPayment,
+  reason,
+  requestContext,
+  reservation,
+  strapi,
+}: {
+  actor: PaymentConfirmationActor;
+  candidate: DocumentRecord;
+  confirmation: PaymentServiceCheckoutConfirmation;
+  existingPayment?: DocumentRecord;
+  reason: PaymentExceptionReason;
+  requestContext: RequestContext;
+  reservation: DocumentRecord;
+  strapi: StrapiDocumentService;
+}) => {
+  const now = new Date().toISOString();
+  const previousReservation = sanitizeReservation(reservation);
+  const previousEnrollment = sanitizeEnrollment(reservation.enrollment);
+  const paymentMetadata = {
+    ...(objectValue(existingPayment?.metadata)),
+    amountTotal: confirmation.amountTotal,
+    checkoutUrl: confirmation.checkoutUrl,
+    exceptionReason: reason,
+    providerPaymentStatus: confirmation.paymentStatus,
+    providerSessionStatus: confirmation.status,
+    recordedAt: now,
+    reservationDocumentId: reservation.documentId,
+  };
+  const paymentData = {
+    amountPence: reservation.amountPence,
+    candidate: {
+      connect: [{ documentId: candidate.documentId }],
+    },
+    createdByService: 'payment-service',
+    currency: reservation.currency,
+    enrollment: {
+      connect: [{ documentId: reservation.enrollment?.documentId }],
+    },
+    metadata: paymentMetadata,
+    paidAt: existingPayment?.paidAt || now,
+    paymentProvider: 'stripe',
+    paymentType: 'course_payment',
+    providerCheckoutSessionId: confirmation.checkoutSessionId,
+    ...(confirmation.customerId ? { providerCustomerId: confirmation.customerId } : {}),
+    ...(confirmation.paymentIntentId ? { providerPaymentIntentId: confirmation.paymentIntentId } : {}),
+    reservation: {
+      connect: [{ documentId: reservation.documentId }],
+    },
+    slotReservationExpiresAt: reservation.expiresAt,
+    status: 'requires_review',
+  };
+  const payment = existingPayment?.documentId
+    ? await documents(strapi, 'api::payment.payment').update({
+        documentId: existingPayment.documentId,
+        data: paymentData,
+      })
+    : await documents(strapi, 'api::payment.payment').create({
+        data: paymentData,
+      });
+  const updatedReservation = await documents(strapi, 'api::reservation.reservation').update({
+    documentId: reservation.documentId,
+    data: {
+      metadata: {
+        ...(objectValue(reservation.metadata)),
+        paymentExceptionAt: now,
+        paymentExceptionReason: reason,
+        providerCheckoutSessionId: confirmation.checkoutSessionId,
+        ...(confirmation.paymentIntentId ? { providerPaymentIntentId: confirmation.paymentIntentId } : {}),
+      },
+      paidAt: reservation.paidAt || now,
+      status: 'payment_exception',
+    },
+    populate: ['candidate', 'class', 'enrollment'],
+  });
+  const updatedEnrollment = reservation.enrollment?.documentId
+    ? await documents(strapi, 'api::enrollment.enrollment').update({
+        documentId: reservation.enrollment.documentId,
+        data: {
+          metadata: {
+            ...(objectValue(reservation.enrollment.metadata)),
+            activeCheckoutSessionId: null,
+            activePaymentDocumentId: null,
+            activeReservationDocumentId: null,
+            paymentExceptionAt: now,
+            paymentExceptionReason: reason,
+            providerCheckoutSessionId: confirmation.checkoutSessionId,
+            ...(confirmation.paymentIntentId ? { providerPaymentIntentId: confirmation.paymentIntentId } : {}),
+          },
+          paymentStatus: 'requires_review',
+          reservationExpiresAt: null,
+          status: 'payment_exception',
+          waitingListPosition: null,
+        },
+        populate: ['class'],
+      })
+    : null;
+
+  await auditEvents(strapi).record({
+    actorEmail: actor.actorEmail,
+    actorId: actor.actorId,
+    actorType: actor.actorType,
+    eventCategory: 'payment',
+    eventType:
+      reason === 'class_capacity_conflict'
+        ? 'candidate.payment_capacity_conflict'
+        : 'candidate.payment_reservation_state_conflict',
+    ipAddress: requestContext.ipAddress,
+    metadata: {
+      checkoutSessionId: confirmation.checkoutSessionId,
+      class: sanitizeClass(reservation.class),
+      payment: sanitizePayment(payment),
+      reason,
+    },
+    newState: {
+      enrollment: sanitizeEnrollment(updatedEnrollment),
+      payment: sanitizePayment(payment),
+      reservation: sanitizeReservation(updatedReservation),
+    },
+    occurredAt: now,
+    previousState: {
+      enrollment: previousEnrollment,
+      reservation: previousReservation,
+    },
+    requestId: requestContext.requestId,
+    serviceName: requestContext.serviceName,
+    severity: 'critical',
+    source: actor.source,
+    subjectDisplayName: candidate.email,
+    subjectId: candidate.documentId,
+    subjectType: 'candidate',
+    userAgent: requestContext.userAgent,
+  });
+
+  return {
+    classInterest: await buildCandidateClassInterestForCandidate(strapi, candidate),
+    payment: sanitizePayment(payment),
+    paymentException: {
+      reason,
+    },
+    reservation: sanitizeReservation(updatedReservation),
+  };
+};
+
+const confirmReservationPaymentWithProvider = async ({
+  actor,
+  candidate,
+  confirmation,
+  requestContext,
+  reservation,
+  strapi,
+}: {
+  actor: PaymentConfirmationActor;
+  candidate: DocumentRecord;
+  confirmation: PaymentServiceCheckoutConfirmation;
+  requestContext: RequestContext;
+  reservation: DocumentRecord;
+  strapi: StrapiDocumentService;
+}) => {
+  const confirmationMetadata = objectValue(confirmation.metadata);
+  const metadataReservationDocumentId =
+    typeof confirmationMetadata.reservationDocumentId === 'string'
+      ? confirmationMetadata.reservationDocumentId
+      : undefined;
+  const metadataCandidateDocumentId =
+    typeof confirmationMetadata.candidateDocumentId === 'string'
+      ? confirmationMetadata.candidateDocumentId
+      : undefined;
+  const metadataClassDocumentId =
+    typeof confirmationMetadata.classDocumentId === 'string'
+      ? confirmationMetadata.classDocumentId
+      : undefined;
+  const metadataEnrollmentDocumentId =
+    typeof confirmationMetadata.enrollmentDocumentId === 'string'
+      ? confirmationMetadata.enrollmentDocumentId
+      : undefined;
+
+  if (
+    metadataReservationDocumentId !== reservation.documentId ||
+    metadataCandidateDocumentId !== candidate.documentId ||
+    metadataClassDocumentId !== reservation.class?.documentId ||
+    metadataEnrollmentDocumentId !== reservation.enrollment?.documentId ||
+    confirmation.clientReferenceId !== reservation.documentId
+  ) {
+    throw new ValidationError('Payment confirmation does not match this reservation.');
+  }
+
+  if (confirmation.status !== 'complete' || confirmation.paymentStatus !== 'paid') {
+    throw new ValidationError('Stripe has not confirmed this payment as paid yet.');
+  }
+
+  if (
+    typeof confirmation.amountTotal === 'number' &&
+    typeof reservation.amountPence === 'number' &&
+    confirmation.amountTotal !== reservation.amountPence
+  ) {
+    throw new ValidationError('Payment amount does not match this reservation.');
+  }
+
+  if (
+    typeof confirmation.currency === 'string' &&
+    typeof reservation.currency === 'string' &&
+    confirmation.currency.toUpperCase() !== reservation.currency.toUpperCase()
+  ) {
+    throw new ValidationError('Payment currency does not match this reservation.');
+  }
+
+  const result = await withDatabaseTransaction(strapi, async (transactionContext) => {
+    await lockClassForCapacityCheck(strapi, reservation.class, transactionContext?.trx);
+
+    const currentReservation =
+      (await findReservationByDocumentId(strapi, reservation.documentId!)) || reservation;
+    const existingPayment =
+      (await findPaymentForCheckoutSession(strapi, confirmation.checkoutSessionId)) ||
+      (await findCheckoutPaymentForReservation(strapi, currentReservation));
+
+    if (
+      currentReservation.status === 'paid' &&
+      normalizeEnrollmentStatus(currentReservation.enrollment?.status) === 'enrolled'
+    ) {
+      return {
+        classInterest: await buildCandidateClassInterestForCandidate(strapi, candidate),
+        payment: sanitizePayment(existingPayment),
+        reservation: sanitizeReservation(currentReservation),
+      };
+    }
+
+    if (currentReservation.status === 'payment_exception') {
+      return {
+        classInterest: await buildCandidateClassInterestForCandidate(strapi, candidate),
+        payment: sanitizePayment(existingPayment),
+        reservation: sanitizeReservation(currentReservation),
+      };
+    }
+
+    if (currentReservation.status === 'cancelled' || currentReservation.status === 'released') {
+      return recordPaymentException({
+        actor,
+        candidate,
+        confirmation,
+        existingPayment,
+        reason:
+          currentReservation.status === 'cancelled'
+            ? 'reservation_cancelled'
+            : 'reservation_released',
+        requestContext,
+        reservation: currentReservation,
+        strapi,
+      });
+    }
+
+    const paidPlaces = await countPaidClassPlaces(strapi, currentReservation.class);
+
+    if (
+      typeof currentReservation.class?.capacity === 'number' &&
+      paidPlaces >= currentReservation.class.capacity
+    ) {
+      return recordPaymentException({
+        actor,
+        candidate,
+        confirmation,
+        existingPayment,
+        reason: 'class_capacity_conflict',
+        requestContext,
+        reservation: currentReservation,
+        strapi,
+      });
+    }
+
+    if (candidate.documentId && currentReservation.class?.documentId) {
+      await markClassPlaceAllocationPaid({
+        candidateDocumentId: candidate.documentId,
+        classDocumentId: currentReservation.class.documentId,
+      });
+    }
+
+    const now = new Date().toISOString();
+    const previousReservation = sanitizeReservation(currentReservation);
+    const previousEnrollment = sanitizeEnrollment(currentReservation.enrollment);
+    const paymentMetadata = {
+      ...(objectValue(existingPayment?.metadata)),
+      amountTotal: confirmation.amountTotal,
+      checkoutUrl: confirmation.checkoutUrl,
+      confirmedAt: now,
+      providerPaymentStatus: confirmation.paymentStatus,
+      providerSessionStatus: confirmation.status,
+      reservationDocumentId: currentReservation.documentId,
+    };
+    const paymentData = {
+      amountPence: currentReservation.amountPence,
+      candidate: {
+        connect: [{ documentId: candidate.documentId }],
+      },
+      createdByService: 'payment-service',
+      currency: currentReservation.currency,
+      enrollment: {
+        connect: [{ documentId: currentReservation.enrollment?.documentId }],
+      },
+      metadata: paymentMetadata,
+      paidAt: existingPayment?.paidAt || now,
+      paymentProvider: 'stripe',
+      paymentType: 'course_payment',
+      providerCheckoutSessionId: confirmation.checkoutSessionId,
+      ...(confirmation.customerId ? { providerCustomerId: confirmation.customerId } : {}),
+      ...(confirmation.paymentIntentId ? { providerPaymentIntentId: confirmation.paymentIntentId } : {}),
+      reservation: {
+        connect: [{ documentId: currentReservation.documentId }],
+      },
+      slotReservationExpiresAt: currentReservation.expiresAt,
+      status: 'paid',
+    };
+    const payment = existingPayment?.documentId
+      ? await documents(strapi, 'api::payment.payment').update({
+          documentId: existingPayment.documentId,
+          data: paymentData,
+        })
+      : await documents(strapi, 'api::payment.payment').create({
+          data: paymentData,
+        });
+    const updatedReservation = await documents(strapi, 'api::reservation.reservation').update({
+      documentId: currentReservation.documentId,
+      data: {
+        metadata: {
+          ...(objectValue(currentReservation.metadata)),
+          paymentConfirmedAt: now,
+          providerCheckoutSessionId: confirmation.checkoutSessionId,
+          ...(confirmation.paymentIntentId ? { providerPaymentIntentId: confirmation.paymentIntentId } : {}),
+        },
+        paidAt: currentReservation.paidAt || now,
+        status: 'paid',
+      },
+      populate: ['candidate', 'class', 'enrollment'],
+    });
+    const updatedEnrollment = currentReservation.enrollment?.documentId
+      ? await documents(strapi, 'api::enrollment.enrollment').update({
+          documentId: currentReservation.enrollment.documentId,
+          data: {
+            enrolledAt: currentReservation.enrollment.enrolledAt || now,
+            metadata: {
+              ...(objectValue(currentReservation.enrollment.metadata)),
+              activeCheckoutSessionId: null,
+              activePaymentDocumentId: null,
+              activeReservationDocumentId: null,
+              paidReservationDocumentId: currentReservation.documentId,
+              paymentConfirmedAt: now,
+              providerCheckoutSessionId: confirmation.checkoutSessionId,
+              ...(confirmation.paymentIntentId ? { providerPaymentIntentId: confirmation.paymentIntentId } : {}),
+            },
+            paymentStatus: 'paid',
+            reservationExpiresAt: null,
+            status: 'enrolled',
+            waitingListPosition: null,
+          },
+          populate: ['class'],
+        })
+      : null;
+    const updatedClass = await closeClassIfCapacityReached(strapi, currentReservation.class);
+
+    await auditEvents(strapi).record({
+      actorEmail: actor.actorEmail,
+      actorId: actor.actorId,
+      actorType: actor.actorType,
+      eventCategory: 'payment',
+      eventType: actor.eventType,
+      ipAddress: requestContext.ipAddress,
+      metadata: {
+        checkoutSessionId: confirmation.checkoutSessionId,
+        class: sanitizeClass(updatedClass || currentReservation.class),
+        payment: sanitizePayment(payment),
+      },
+      newState: {
+        enrollment: sanitizeEnrollment(updatedEnrollment),
+        payment: sanitizePayment(payment),
+        reservation: sanitizeReservation(updatedReservation),
+      },
+      occurredAt: now,
+      previousState: {
+        enrollment: previousEnrollment,
+        reservation: previousReservation,
+      },
+      requestId: requestContext.requestId,
+      serviceName: requestContext.serviceName,
+      source: actor.source,
+      subjectDisplayName: candidate.email,
+      subjectId: candidate.documentId,
+      subjectType: 'candidate',
+      userAgent: requestContext.userAgent,
+    });
+
+    return {
+      classInterest: await buildCandidateClassInterestForCandidate(strapi, candidate),
+      payment: sanitizePayment(payment),
+      reservation: sanitizeReservation(updatedReservation),
+    };
+  });
+
+  const resultReservation =
+    result.reservation && typeof result.reservation === 'object'
+      ? (result.reservation as { status?: string })
+      : undefined;
+  const resultPayment =
+    result.payment && typeof result.payment === 'object'
+      ? (result.payment as { status?: string })
+      : undefined;
+
+  if (candidate.documentId && reservation.class?.documentId) {
+    if (resultReservation?.status === 'payment_exception') {
+      await releaseClassPlaceAllocation({
+        candidateDocumentId: candidate.documentId,
+        classDocumentId: reservation.class.documentId,
+      }).catch((error) => {
+        const logger = (strapi as unknown as { log?: { error?: (message: string, error?: unknown) => void } }).log;
+        logger?.error?.('Class allocation Redis exception release failed.', error);
+      });
+    }
+  }
+
+  return result;
+};
+
+const providerPaymentOutcomeFromEvent = (
+  eventType: string,
+  confirmation: PaymentServiceCheckoutConfirmation
+): ProviderPaymentOutcome | undefined => {
+  if (eventType === 'checkout.session.expired' || confirmation.status === 'expired') {
+    return 'expired';
+  }
+
+  if (eventType === 'checkout.session.async_payment_failed') {
+    return 'failed';
+  }
+
+  return undefined;
+};
+
+const recordProviderPaymentOutcome = async ({
+  actor,
+  candidate,
+  confirmation,
+  eventType,
+  outcome,
+  requestContext,
+  reservation,
+  strapi,
+}: {
+  actor: PaymentConfirmationActor;
+  candidate: DocumentRecord;
+  confirmation: PaymentServiceCheckoutConfirmation;
+  eventType: string;
+  outcome: ProviderPaymentOutcome;
+  requestContext: RequestContext;
+  reservation: DocumentRecord;
+  strapi: StrapiDocumentService;
+}) => {
+  const confirmationMetadata = objectValue(confirmation.metadata);
+  const metadataReservationDocumentId =
+    typeof confirmationMetadata.reservationDocumentId === 'string'
+      ? confirmationMetadata.reservationDocumentId
+      : undefined;
+  const metadataCandidateDocumentId =
+    typeof confirmationMetadata.candidateDocumentId === 'string'
+      ? confirmationMetadata.candidateDocumentId
+      : undefined;
+  const metadataClassDocumentId =
+    typeof confirmationMetadata.classDocumentId === 'string'
+      ? confirmationMetadata.classDocumentId
+      : undefined;
+  const metadataEnrollmentDocumentId =
+    typeof confirmationMetadata.enrollmentDocumentId === 'string'
+      ? confirmationMetadata.enrollmentDocumentId
+      : undefined;
+
+  if (
+    metadataReservationDocumentId !== reservation.documentId ||
+    metadataCandidateDocumentId !== candidate.documentId ||
+    metadataClassDocumentId !== reservation.class?.documentId ||
+    metadataEnrollmentDocumentId !== reservation.enrollment?.documentId ||
+    confirmation.clientReferenceId !== reservation.documentId
+  ) {
+    throw new ValidationError('Payment provider outcome does not match this reservation.');
+  }
+
+  const existingPayment =
+    (await findPaymentForCheckoutSession(strapi, confirmation.checkoutSessionId)) ||
+    (await findCheckoutPaymentForReservation(strapi, reservation));
+  const now = new Date().toISOString();
+  const previousReservation = sanitizeReservation(reservation);
+  const previousEnrollment = sanitizeEnrollment(reservation.enrollment);
+  const previousPayment = sanitizePayment(existingPayment);
+  const paymentStatus = outcome === 'expired' ? 'expired' : 'failed';
+  const paymentMetadata = {
+    ...(objectValue(existingPayment?.metadata)),
+    amountTotal: confirmation.amountTotal,
+    checkoutUrl: confirmation.checkoutUrl,
+    eventType,
+    outcome,
+    providerPaymentStatus: confirmation.paymentStatus,
+    providerSessionStatus: confirmation.status,
+    recordedAt: now,
+    reservationDocumentId: reservation.documentId,
+  };
+  const paymentData = {
+    amountPence: reservation.amountPence,
+    candidate: {
+      connect: [{ documentId: candidate.documentId }],
+    },
+    createdByService: 'payment-service',
+    currency: reservation.currency,
+    enrollment: {
+      connect: [{ documentId: reservation.enrollment?.documentId }],
+    },
+    ...(outcome === 'expired' ? { expiredAt: existingPayment?.expiredAt || now } : {}),
+    ...(outcome === 'failed' ? { failedAt: existingPayment?.failedAt || now } : {}),
+    metadata: paymentMetadata,
+    paymentProvider: 'stripe',
+    paymentType: 'course_payment',
+    providerCheckoutSessionId: confirmation.checkoutSessionId,
+    ...(confirmation.customerId ? { providerCustomerId: confirmation.customerId } : {}),
+    ...(confirmation.paymentIntentId ? { providerPaymentIntentId: confirmation.paymentIntentId } : {}),
+    reservation: {
+      connect: [{ documentId: reservation.documentId }],
+    },
+    slotReservationExpiresAt: reservation.expiresAt,
+    status: paymentStatus,
+  };
+  const payment = existingPayment?.documentId
+    ? await documents(strapi, 'api::payment.payment').update({
+        documentId: existingPayment.documentId,
+        data: paymentData,
+      })
+    : await documents(strapi, 'api::payment.payment').create({
+        data: paymentData,
+      });
+  const shouldReleaseReservation =
+    outcome === 'expired' ||
+    (outcome === 'failed' && reservation.status === 'active' && isPastDate(reservation.expiresAt));
+  let updatedReservation = reservation;
+  let updatedEnrollment = reservation.enrollment;
+
+  if (shouldReleaseReservation && reservation.status === 'active') {
+    const fallbackStatus = (await hasWaitingListAhead(strapi, reservation.class, candidate))
+      ? 'waiting_list'
+      : 'enrollment_open';
+    const waitingListPosition =
+      fallbackStatus === 'waiting_list'
+        ? await getNextWaitingListPosition(strapi, reservation.class, candidate)
+        : null;
+
+    updatedReservation = await documents(strapi, 'api::reservation.reservation').update({
+      documentId: reservation.documentId,
+      data: {
+        expiredAt: reservation.expiredAt || now,
+        metadata: {
+          ...(objectValue(reservation.metadata)),
+          providerCheckoutSessionExpiredAt: outcome === 'expired' ? now : undefined,
+          providerCheckoutSessionFailedAt: outcome === 'failed' ? now : undefined,
+          providerCheckoutSessionId: confirmation.checkoutSessionId,
+          providerPaymentStatus: confirmation.paymentStatus,
+          providerSessionStatus: confirmation.status,
+        },
+        status: 'expired',
+      },
+      populate: ['candidate', 'class', 'enrollment'],
+    });
+
+    updatedEnrollment = reservation.enrollment?.documentId
+      ? await documents(strapi, 'api::enrollment.enrollment').update({
+          documentId: reservation.enrollment.documentId,
+          data: {
+            metadata: {
+              ...(objectValue(reservation.enrollment.metadata)),
+              activeCheckoutSessionId: null,
+              activePaymentDocumentId: null,
+              activeReservationDocumentId: null,
+              lastReservationExpiredAt: now,
+              providerCheckoutSessionId: confirmation.checkoutSessionId,
+            },
+            paymentStatus: 'pending',
+            reservationExpiresAt: null,
+            status: fallbackStatus,
+            waitingListPosition,
+          },
+          populate: ['class'],
+        })
+      : reservation.enrollment;
+
+    if (candidate.documentId && reservation.class?.documentId) {
+      await releaseClassPlaceAllocation({
+        candidateDocumentId: candidate.documentId,
+        classDocumentId: reservation.class.documentId,
+      }).catch((error) => {
+        const logger = (strapi as unknown as { log?: { error?: (message: string, error?: unknown) => void } }).log;
+        logger?.error?.('Class allocation Redis provider outcome release failed.', error);
+      });
+    }
+  } else if (reservation.enrollment?.documentId) {
+    updatedEnrollment = await documents(strapi, 'api::enrollment.enrollment').update({
+      documentId: reservation.enrollment.documentId,
+      data: {
+        metadata: {
+          ...(objectValue(reservation.enrollment.metadata)),
+          activeCheckoutSessionId: null,
+          activePaymentDocumentId: null,
+          lastPaymentFailedAt: outcome === 'failed' ? now : undefined,
+          providerCheckoutSessionId: confirmation.checkoutSessionId,
+        },
+        paymentStatus: reservation.enrollment.paymentStatus || 'pending',
+      },
+      populate: ['class'],
+    });
+  }
+
+  await auditEvents(strapi).record({
+    actorEmail: actor.actorEmail,
+    actorId: actor.actorId,
+    actorType: actor.actorType,
+    eventCategory: 'payment',
+    eventType: outcome === 'expired' || shouldReleaseReservation
+      ? 'candidate.reservation_expired'
+      : 'candidate.payment_failed',
+    ipAddress: requestContext.ipAddress,
+    metadata: {
+      checkoutSessionId: confirmation.checkoutSessionId,
+      class: sanitizeClass(reservation.class),
+      eventType,
+      outcome,
+      payment: sanitizePayment(payment),
+      providerPaymentStatus: confirmation.paymentStatus,
+      providerSessionStatus: confirmation.status,
+    },
+    newState: {
+      enrollment: sanitizeEnrollment(updatedEnrollment),
+      payment: sanitizePayment(payment),
+      reservation: sanitizeReservation(updatedReservation),
+    },
+    occurredAt: now,
+    previousState: {
+      enrollment: previousEnrollment,
+      payment: previousPayment,
+      reservation: previousReservation,
+    },
+    requestId: requestContext.requestId,
+    serviceName: requestContext.serviceName,
+    source: actor.source,
+    subjectDisplayName: candidate.email,
+    subjectId: candidate.documentId,
+    subjectType: 'candidate',
+    userAgent: requestContext.userAgent,
+  });
+
+  return {
+    classInterest: await buildCandidateClassInterestForCandidate(strapi, candidate),
+    payment: sanitizePayment(payment),
+    reservation: sanitizeReservation(updatedReservation),
+  };
 };
 
 const getPaymentActionForReservation = async ({
@@ -1431,15 +2481,22 @@ const getPaymentActionForReservation = async ({
     return disabledPaymentAction('This reservation is no longer active.', 'reservation_inactive');
   }
 
-  if (isPastDate(reservation.expiresAt)) {
-    return disabledPaymentAction('This reservation has expired.', 'reservation_expired');
-  }
-
   const existingPayment = await findCheckoutPaymentForReservation(strapi, reservation);
   const existingCheckoutSession = checkoutSessionFromPayment(existingPayment);
 
   if (existingPayment && existingCheckoutSession) {
     return stripeCheckoutAction(existingPayment, existingCheckoutSession);
+  }
+
+  if (isPastDate(reservation.expiresAt)) {
+    return disabledPaymentAction('This reservation has expired.', 'reservation_expired');
+  }
+
+  if (
+    !reservation.termsAcceptedAt ||
+    reservation.termsVersion !== getClassTermsVersion()
+  ) {
+    return disabledPaymentAction('Accept terms to unlock payment.', 'terms_not_accepted');
   }
 
   const checkoutSession = await requestPaymentServiceCheckoutSession({
@@ -1480,6 +2537,19 @@ const getPaymentActionForReservation = async ({
       status: 'checkout_created',
     },
   });
+  const updatedEnrollment =
+    reservation.enrollment?.documentId
+      ? await documents(strapi, 'api::enrollment.enrollment').update({
+          documentId: reservation.enrollment.documentId,
+          data: {
+            metadata: {
+              ...(objectValue(reservation.enrollment.metadata)),
+              activeCheckoutSessionId: checkoutSession.checkoutSessionId,
+              activePaymentDocumentId: payment.documentId,
+            },
+          },
+        })
+      : undefined;
 
   const now = new Date().toISOString();
 
@@ -1496,6 +2566,7 @@ const getPaymentActionForReservation = async ({
       reservation: sanitizeReservation(reservation),
     },
     newState: {
+      enrollment: sanitizeEnrollment(updatedEnrollment || reservation.enrollment),
       payment,
     },
     occurredAt: now,
@@ -1635,11 +2706,15 @@ const sanitizeEnrollment = (enrollment) => {
     typeof metadata.activeReservationDocumentId === 'string'
       ? metadata.activeReservationDocumentId
       : undefined;
+  const hasProviderCheckoutSession =
+    typeof metadata.activeCheckoutSessionId === 'string' ||
+    typeof metadata.activePaymentDocumentId === 'string';
 
   return {
     completionStatus: enrollment.completionStatus,
     documentId: enrollment.documentId,
     enrolledAt: enrollment.enrolledAt,
+    hasProviderCheckoutSession,
     interestRegisteredAt: enrollment.interestRegisteredAt || enrollment.metadata?.registeredInterestAt,
     invitedToJoinAt: enrollment.invitedToJoinAt,
     passStatus: enrollment.passStatus,
@@ -1652,14 +2727,17 @@ const sanitizeEnrollment = (enrollment) => {
 };
 
 const classHasPaymentAccess = (classRecord) => classRecord?.state === 'open';
+const classHasJoinOrWaitlistAccess = (classRecord) =>
+  classRecord?.state === 'open' || classRecord?.state === 'full';
 
 const deriveClassRelationshipState = (enrollment, classRecord?) => {
   if (enrollment) {
     const normalizedStatus = normalizeEnrollmentStatus(enrollment.status);
     const hasPaymentAccess = classHasPaymentAccess(enrollment.class || classRecord);
+    const hasJoinOrWaitlistAccess = classHasJoinOrWaitlistAccess(enrollment.class || classRecord);
 
     if (normalizedStatus === 'interest_withdrawn') {
-      return hasPaymentAccess ? 'enrollment_open' : 'not_registered';
+      return hasJoinOrWaitlistAccess ? 'enrollment_open' : 'not_registered';
     }
 
     if (
@@ -1685,7 +2763,7 @@ const deriveClassRelationshipState = (enrollment, classRecord?) => {
     }
 
     if (normalizedStatus === 'place_reserved') {
-      if (!hasPaymentAccess) {
+      if (!hasJoinOrWaitlistAccess) {
         return 'interest_registered';
       }
 
@@ -1693,17 +2771,17 @@ const deriveClassRelationshipState = (enrollment, classRecord?) => {
     }
 
     if (normalizedStatus === 'enrollment_open') {
-      return hasPaymentAccess ? 'enrollment_open' : 'interest_registered';
+      return hasJoinOrWaitlistAccess ? 'enrollment_open' : 'interest_registered';
     }
 
-    if (hasPaymentAccess) {
+    if (hasJoinOrWaitlistAccess) {
       return 'enrollment_open';
     }
 
     return 'interest_registered';
   }
 
-  if (classHasPaymentAccess(classRecord)) {
+  if (classHasJoinOrWaitlistAccess(classRecord)) {
     return 'enrollment_open';
   }
 
@@ -1759,8 +2837,13 @@ const buildClassTimeline = (classRecord, relationshipState) => {
   ];
 };
 
-const buildClassRelationship = ({ classRecord, enrollment, registeredInterestCount = 0 }) => {
-  const state = deriveClassRelationshipState(enrollment, classRecord);
+const buildClassRelationship = async ({ candidate, classRecord, enrollment, registeredInterestCount = 0, strapi }) => {
+  const derivedState = deriveClassRelationshipState(enrollment, classRecord);
+  const state =
+    derivedState === 'waiting_list' &&
+    (await canCandidateClaimWaitingListPlace(strapi, classRecord, enrollment, candidate))
+      ? 'enrollment_open'
+      : derivedState;
 
   return {
     canRegisterInterest: state === 'not_registered',
@@ -1798,14 +2881,18 @@ const summarizeClassInterestState = (classRelationships = [], activeEnrollment?)
   return 'not_registered';
 };
 
-const buildClassInterestResponse = ({ candidate, enrollments, interestCounts, matchingClasses }) => {
+const buildClassInterestResponse = async ({ candidate, enrollments, interestCounts, matchingClasses, strapi }) => {
   const enrollmentMap = enrollmentsByClassDocumentId(enrollments);
-  const classRelationships = matchingClasses.map((classRecord) =>
-    buildClassRelationship({
-      classRecord,
-      enrollment: enrollmentMap.get(classRecord.documentId),
-      registeredInterestCount: interestCounts?.get(classRecord.documentId) || 0,
-    })
+  const classRelationships = await Promise.all(
+    matchingClasses.map((classRecord) =>
+      buildClassRelationship({
+        candidate,
+        classRecord,
+        enrollment: enrollmentMap.get(classRecord.documentId),
+        registeredInterestCount: interestCounts?.get(classRecord.documentId) || 0,
+        strapi,
+      })
+    )
   );
   const activeEnrollment = findActiveEnrollment(enrollments);
   const activeClass =
@@ -1860,6 +2947,7 @@ const buildCandidateClassInterestForCandidate = async (strapi, candidate) => {
     enrollments,
     interestCounts,
     matchingClasses: visibleClasses,
+    strapi,
   });
 };
 
@@ -2195,11 +3283,12 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
 
       return {
         created: false,
-        data: buildClassInterestResponse({
+        data: await buildClassInterestResponse({
           candidate: existingCandidate,
           enrollments: existingEnrollments,
           interestCounts,
           matchingClasses,
+          strapi,
         }),
       };
     }
@@ -2264,11 +3353,12 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       ...existingEnrollments.filter((item) => item.documentId !== enrollment.documentId),
     ];
     const interestCounts = await findClassInterestCounts(strapi, matchingClasses);
-    const response = buildClassInterestResponse({
+    const response = await buildClassInterestResponse({
       candidate: updatedCandidate,
       enrollments: nextEnrollments,
       interestCounts,
       matchingClasses,
+      strapi,
     });
 
     await auditEvents(strapi).record({
@@ -2426,131 +3516,290 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       throw new ValidationError('No matching class is currently available for the selected preferences.');
     }
 
-    if (!classHasPaymentAccess(targetClass)) {
+    if (!classHasJoinOrWaitlistAccess(targetClass)) {
       throw new ValidationError('Enrollment is not open for this class yet.');
     }
 
-    const nowDate = new Date();
-    const now = nowDate.toISOString();
-    let existingEnrollment = enrollmentsByClassDocumentId(existingEnrollments).get(
-      targetClass.documentId
-    ) as DocumentRecord | undefined;
-    let existingReservation = await findActiveReservationForEnrollment(strapi, existingEnrollment);
+    await ensureClassAllocationSnapshot(strapi, targetClass);
 
-    if (existingReservation && isPastDate(existingReservation.expiresAt)) {
-      const fallbackStatus = (await hasWaitingListAhead(strapi, targetClass, existingCandidate))
-        ? 'waiting_list'
-        : 'enrollment_open';
-      const waitingListPosition =
-        fallbackStatus === 'waiting_list'
-          ? await getNextWaitingListPosition(strapi, targetClass, existingCandidate)
-          : null;
+    let redisCleanup:
+      | {
+          classDocumentId: string;
+          removeWaitlist: boolean;
+        }
+      | undefined;
 
-      existingReservation = await documents(strapi, 'api::reservation.reservation').update({
-        documentId: existingReservation.documentId,
-        data: {
-          expiredAt: now,
-          status: 'expired',
-        },
-        populate: ['candidate', 'class', 'enrollment'],
-      });
+    try {
+      const allocationResult = await withDatabaseTransaction(strapi, async (transactionContext) => {
+      await lockClassForCapacityCheck(strapi, targetClass, transactionContext?.trx);
 
-      if (existingEnrollment?.documentId && normalizeEnrollmentStatus(existingEnrollment.status) === 'place_reserved') {
-        existingEnrollment = await documents(strapi, 'api::enrollment.enrollment').update({
-          documentId: existingEnrollment.documentId,
-          data: {
-            metadata: {
-              ...(objectValue(existingEnrollment.metadata)),
-              activeReservationDocumentId: null,
-              lastReservationExpiredAt: now,
-            },
-            reservationExpiresAt: null,
-            status: fallbackStatus,
-            waitingListPosition,
-          },
-          populate: ['class'],
-        });
+      const lockedTargetClass = await findClassByDocumentId(strapi, payload.classDocumentId);
+
+      if (!lockedTargetClass) {
+        throw new ValidationError('Class could not be found.');
       }
 
-      await auditEvents(strapi).record({
-        actorEmail: existingCandidate.email,
-        actorId: auth.subject,
-        actorType: 'candidate',
-        eventCategory: 'payment',
-        eventType: 'candidate.reservation_expired',
-        ipAddress: requestContext.ipAddress,
-        metadata: {
-          class: sanitizeClass(targetClass),
-          reservation: sanitizeReservation(existingReservation),
-        },
-        newState: {
-          enrollment: sanitizeEnrollment(existingEnrollment),
-          reservation: sanitizeReservation(existingReservation),
-        },
-        occurredAt: now,
-        requestId: requestContext.requestId,
-        source: 'candidate_dashboard',
-        subjectDisplayName: existingCandidate.email,
-        subjectId: existingCandidate.documentId,
-        subjectType: 'candidate',
-        userAgent: requestContext.userAgent,
-      });
-    }
+      if (!classHasJoinOrWaitlistAccess(lockedTargetClass)) {
+        throw new ValidationError('Enrollment is not open for this class yet.');
+      }
 
-    const currentState = deriveClassRelationshipState(existingEnrollment, targetClass);
+      const nowDate = new Date();
+      const now = nowDate.toISOString();
+      let existingEnrollment = await findCandidateEnrollmentForClass(
+        strapi,
+        existingCandidate,
+        lockedTargetClass
+      );
+      let existingReservation = await findActiveReservationForEnrollment(strapi, existingEnrollment);
 
-    if (currentState === 'place_reserved') {
-      const activeReservation = await findActiveReservationForEnrollment(strapi, existingEnrollment);
+      if (existingReservation && isPastDate(existingReservation.expiresAt)) {
+        const fallbackStatus = (await hasWaitingListAhead(strapi, lockedTargetClass, existingCandidate))
+          ? 'waiting_list'
+          : 'enrollment_open';
+        const waitingListPosition =
+          fallbackStatus === 'waiting_list'
+            ? await getNextWaitingListPosition(strapi, lockedTargetClass, existingCandidate)
+            : null;
 
-      if (activeReservation && !isPastDate(activeReservation.expiresAt)) {
-        const enrollmentMetadata = objectValue(existingEnrollment?.metadata);
+        existingReservation = await documents(strapi, 'api::reservation.reservation').update({
+          documentId: existingReservation.documentId,
+          data: {
+            expiredAt: now,
+            status: 'expired',
+          },
+          populate: ['candidate', 'class', 'enrollment'],
+        });
 
         if (
           existingEnrollment?.documentId &&
-          enrollmentMetadata.activeReservationDocumentId !== activeReservation.documentId
+          normalizeEnrollmentStatus(existingEnrollment.status) === 'place_reserved'
         ) {
           existingEnrollment = await documents(strapi, 'api::enrollment.enrollment').update({
             documentId: existingEnrollment.documentId,
             data: {
               metadata: {
-                ...enrollmentMetadata,
-                activeReservationDocumentId: activeReservation.documentId,
+                ...(objectValue(existingEnrollment.metadata)),
+                activeReservationDocumentId: null,
+                lastReservationExpiredAt: now,
               },
+              reservationExpiresAt: null,
+              status: fallbackStatus,
+              waitingListPosition,
             },
             populate: ['class'],
           });
         }
 
+        await auditEvents(strapi).record({
+          actorEmail: existingCandidate.email,
+          actorId: auth.subject,
+          actorType: 'candidate',
+          eventCategory: 'payment',
+          eventType: 'candidate.reservation_expired',
+          ipAddress: requestContext.ipAddress,
+          metadata: {
+            class: sanitizeClass(lockedTargetClass),
+            reservation: sanitizeReservation(existingReservation),
+          },
+          newState: {
+            enrollment: sanitizeEnrollment(existingEnrollment),
+            reservation: sanitizeReservation(existingReservation),
+          },
+          occurredAt: now,
+          requestId: requestContext.requestId,
+          source: 'candidate_dashboard',
+          subjectDisplayName: existingCandidate.email,
+          subjectId: existingCandidate.documentId,
+          subjectType: 'candidate',
+          userAgent: requestContext.userAgent,
+        });
+      }
+
+      const currentState = deriveClassRelationshipState(existingEnrollment, lockedTargetClass);
+      const canClaimWaitingListPlace = await canCandidateClaimWaitingListPlace(
+        strapi,
+        lockedTargetClass,
+        existingEnrollment,
+        existingCandidate
+      );
+      const reservableState =
+        currentState === 'waiting_list' && canClaimWaitingListPlace ? 'enrollment_open' : currentState;
+
+      if (reservableState === 'place_reserved') {
+        const activeReservation = await findActiveReservationForEnrollment(strapi, existingEnrollment);
+
+        if (activeReservation && !isPastDate(activeReservation.expiresAt)) {
+          const enrollmentMetadata = objectValue(existingEnrollment?.metadata);
+
+          if (
+            existingEnrollment?.documentId &&
+            enrollmentMetadata.activeReservationDocumentId !== activeReservation.documentId
+          ) {
+            existingEnrollment = await documents(strapi, 'api::enrollment.enrollment').update({
+              documentId: existingEnrollment.documentId,
+              data: {
+                metadata: {
+                  ...enrollmentMetadata,
+                  activeReservationDocumentId: activeReservation.documentId,
+                },
+              },
+              populate: ['class'],
+            });
+          }
+
+          return {
+            created: false,
+            reservation: sanitizeReservation(activeReservation),
+            reserved: true,
+          };
+        }
+      }
+
+      if (reservableState !== 'enrollment_open') {
+        throw new ValidationError('This class cannot currently be reserved from the current candidate state.');
+      }
+
+      const heldPlaces = await countCapacityHeldPlaces(strapi, lockedTargetClass);
+      const reservationExpiresAt = getReservationExpiry(nowDate);
+      const allocationId = randomUUID();
+      const allocationCapacity =
+        lockedTargetClass.state === 'full' || heldPlaces >= lockedTargetClass.capacity
+          ? 0
+          : lockedTargetClass.capacity || 0;
+      const allocation = await allocateClassPlace({
+        allocationId,
+        candidateDocumentId: existingCandidate.documentId!,
+        capacity: allocationCapacity,
+        classDocumentId: lockedTargetClass.documentId!,
+        expiresAt: reservationExpiresAt,
+      });
+      const allocationWaitlisted =
+        allocation.status === 'waitlisted_new' || allocation.status === 'waitlisted_existing';
+
+      if (allocation.status === 'paid') {
+        throw new ValidationError('This class place has already been paid for.');
+      }
+
+      if (allocation.status === 'reserved_existing') {
+        const activeReservation = await findActiveReservationForEnrollment(strapi, existingEnrollment);
+
+        if (activeReservation && !isPastDate(activeReservation.expiresAt)) {
+          return {
+            created: false,
+            reservation: sanitizeReservation(activeReservation),
+            reserved: true,
+          };
+        }
+
+        redisCleanup = {
+          classDocumentId: lockedTargetClass.documentId!,
+          removeWaitlist: false,
+        };
+        throw new ApplicationError('Class allocation state was stale. Please try again.');
+      }
+
+      if (allocationWaitlisted) {
+        if (allocation.waitlistCreated) {
+          redisCleanup = {
+            classDocumentId: lockedTargetClass.documentId!,
+            removeWaitlist: true,
+          };
+        }
+
+        const waitingListPosition =
+          allocation.waitlistPosition ||
+          (await getNextWaitingListPosition(strapi, lockedTargetClass, existingCandidate));
+        const metadata = {
+          ...(objectValue(existingEnrollment?.metadata)),
+          joinedWaitingListAt: now,
+          waitingListSource: 'candidate_dashboard',
+          waitingListSourceSystem: 'redis_allocation',
+        };
+        const enrollment = existingEnrollment?.documentId
+          ? await documents(strapi, 'api::enrollment.enrollment').update({
+              documentId: existingEnrollment.documentId,
+              data: {
+                metadata,
+                paymentStatus: 'pending',
+                status: 'waiting_list',
+                waitingListPosition,
+              },
+              populate: ['class'],
+            })
+          : await documents(strapi, 'api::enrollment.enrollment').create({
+              data: {
+                candidate: {
+                  connect: [{ documentId: existingCandidate.documentId }],
+                },
+                class: {
+                  connect: [{ documentId: lockedTargetClass.documentId }],
+                },
+                completionStatus: 'not_started',
+                interestRegisteredAt: now,
+                metadata,
+                passStatus: 'not_assessed',
+                paymentStatus: 'pending',
+                status: 'waiting_list',
+                waitingListPosition,
+            },
+            populate: ['class'],
+          });
+
+        await auditEvents(strapi).record({
+          actorEmail: existingCandidate.email,
+          actorId: auth.subject,
+          actorType: 'candidate',
+          eventCategory: 'payment',
+          eventType: 'candidate.waiting_list_joined',
+          ipAddress: requestContext.ipAddress,
+          metadata: {
+            class: sanitizeClass(lockedTargetClass),
+            heldPlaces,
+            redisHeldPlaces: allocation.heldPlaces,
+            waitingListPosition,
+          },
+          newState: {
+            enrollment: sanitizeEnrollment(enrollment),
+          },
+          occurredAt: now,
+          previousState: sanitizeEnrollment(existingEnrollment),
+          requestId: requestContext.requestId,
+          source: 'candidate_dashboard',
+          subjectDisplayName: existingCandidate.email,
+          subjectId: existingCandidate.documentId,
+          subjectType: 'candidate',
+          userAgent: requestContext.userAgent,
+        });
+
+        redisCleanup = undefined;
+
         return {
-          classInterest: await buildCandidateClassInterestForCandidate(strapi, existingCandidate),
-          created: false,
-          reservation: sanitizeReservation(activeReservation),
-          reserved: true,
+          created: !existingEnrollment?.documentId,
+          reservation: null,
+          reserved: false,
         };
       }
-    }
 
-    if (currentState !== 'enrollment_open') {
-      throw new ValidationError('This class cannot currently be reserved from the current candidate state.');
-    }
-
-    const heldPlaces = await countCapacityHeldPlaces(strapi, targetClass);
-
-    if (heldPlaces >= targetClass.capacity) {
-      const waitingListPosition = await getNextWaitingListPosition(strapi, targetClass, existingCandidate);
-      const metadata = {
+      redisCleanup = {
+        classDocumentId: lockedTargetClass.documentId!,
+        removeWaitlist: false,
+      };
+      const enrollmentMetadata = {
         ...(objectValue(existingEnrollment?.metadata)),
-        joinedWaitingListAt: now,
-        waitingListSource: 'candidate_dashboard',
+        allocationId,
+        lastReservationStartedAt: now,
+        lastReservationSource: 'candidate_dashboard',
       };
       const enrollment = existingEnrollment?.documentId
         ? await documents(strapi, 'api::enrollment.enrollment').update({
             documentId: existingEnrollment.documentId,
             data: {
-              metadata,
+              invitedToJoinAt: existingEnrollment.invitedToJoinAt || now,
+              metadata: enrollmentMetadata,
               paymentStatus: 'pending',
-              status: 'waiting_list',
-              waitingListPosition,
+              reservationExpiresAt,
+              status: 'place_reserved',
+              waitingListPosition: null,
             },
             populate: ['class'],
           })
@@ -2560,33 +3809,76 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
                 connect: [{ documentId: existingCandidate.documentId }],
               },
               class: {
-                connect: [{ documentId: targetClass.documentId }],
+                connect: [{ documentId: lockedTargetClass.documentId }],
               },
               completionStatus: 'not_started',
               interestRegisteredAt: now,
-              metadata,
+              invitedToJoinAt: now,
+              metadata: enrollmentMetadata,
               passStatus: 'not_assessed',
               paymentStatus: 'pending',
-              status: 'waiting_list',
-              waitingListPosition,
+              reservationExpiresAt,
+              status: 'place_reserved',
             },
             populate: ['class'],
           });
+
+      const reservation = await documents(strapi, 'api::reservation.reservation').create({
+        data: {
+          amountPence: classPaymentAmount(lockedTargetClass),
+          candidate: {
+            connect: [{ documentId: existingCandidate.documentId }],
+          },
+          class: {
+            connect: [{ documentId: lockedTargetClass.documentId }],
+          },
+          currency: lockedTargetClass.currency || 'GBP',
+          enrollment: {
+            connect: [{ documentId: enrollment.documentId }],
+          },
+          expiresAt: reservationExpiresAt,
+          metadata: {
+            allocationId,
+            allocationLockedAt: now,
+            class: sanitizeClass(lockedTargetClass),
+            heldPlacesBeforeReservation: heldPlaces,
+            redisHeldPlacesBeforeReservation: allocation.heldPlaces,
+            source: 'candidate_dashboard',
+          },
+          idempotencyKey: allocationId,
+          reservationStartedAt: now,
+          source: 'candidate_dashboard',
+          status: 'active',
+        },
+        populate: ['candidate', 'class', 'enrollment'],
+      });
+      const reservedEnrollment = await documents(strapi, 'api::enrollment.enrollment').update({
+        documentId: enrollment.documentId,
+        data: {
+          metadata: {
+            ...enrollmentMetadata,
+            activeReservationDocumentId: reservation.documentId,
+          },
+        },
+        populate: ['class'],
+      });
 
       await auditEvents(strapi).record({
         actorEmail: existingCandidate.email,
         actorId: auth.subject,
         actorType: 'candidate',
         eventCategory: 'payment',
-        eventType: 'candidate.waiting_list_joined',
+        eventType: 'candidate.reservation_created',
         ipAddress: requestContext.ipAddress,
         metadata: {
-          class: sanitizeClass(targetClass),
-          heldPlaces,
-          waitingListPosition,
+          allocationId,
+          class: sanitizeClass(lockedTargetClass),
+          heldPlacesBeforeReservation: heldPlaces,
+          redisHeldPlacesBeforeReservation: allocation.heldPlaces,
         },
         newState: {
-          enrollment: sanitizeEnrollment(enrollment),
+          enrollment: sanitizeEnrollment(reservedEnrollment),
+          reservation: sanitizeReservation(reservation),
         },
         occurredAt: now,
         previousState: sanitizeEnrollment(existingEnrollment),
@@ -2595,122 +3887,36 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
         subjectDisplayName: existingCandidate.email,
         subjectId: existingCandidate.documentId,
         subjectType: 'candidate',
-        userAgent: requestContext.userAgent,
+          userAgent: requestContext.userAgent,
+        });
+
+        redisCleanup = undefined;
+
+        return {
+          created: true,
+          reservation: sanitizeReservation(reservation),
+          reserved: true,
+        };
       });
 
       return {
         classInterest: await buildCandidateClassInterestForCandidate(strapi, existingCandidate),
-        created: !existingEnrollment?.documentId,
-        reservation: null,
-        reserved: false,
+        ...allocationResult,
       };
-    }
-
-    const reservationExpiresAt = getReservationExpiry(nowDate);
-    const enrollmentMetadata = {
-      ...(objectValue(existingEnrollment?.metadata)),
-      lastReservationStartedAt: now,
-      lastReservationSource: 'candidate_dashboard',
-    };
-    const enrollment = existingEnrollment?.documentId
-      ? await documents(strapi, 'api::enrollment.enrollment').update({
-          documentId: existingEnrollment.documentId,
-          data: {
-            invitedToJoinAt: existingEnrollment.invitedToJoinAt || now,
-            metadata: enrollmentMetadata,
-            paymentStatus: 'pending',
-            reservationExpiresAt,
-            status: 'place_reserved',
-            waitingListPosition: null,
-          },
-          populate: ['class'],
-        })
-      : await documents(strapi, 'api::enrollment.enrollment').create({
-          data: {
-            candidate: {
-              connect: [{ documentId: existingCandidate.documentId }],
-            },
-            class: {
-              connect: [{ documentId: targetClass.documentId }],
-            },
-            completionStatus: 'not_started',
-            interestRegisteredAt: now,
-            invitedToJoinAt: now,
-            metadata: enrollmentMetadata,
-            passStatus: 'not_assessed',
-            paymentStatus: 'pending',
-            reservationExpiresAt,
-            status: 'place_reserved',
-          },
-          populate: ['class'],
+    } catch (error) {
+      if (redisCleanup) {
+        await releaseClassPlaceAllocation({
+          candidateDocumentId: existingCandidate.documentId!,
+          classDocumentId: redisCleanup.classDocumentId,
+          removeWaitlist: redisCleanup.removeWaitlist,
+        }).catch((cleanupError) => {
+          const logger = (strapi as unknown as { log?: { error?: (message: string, error?: unknown) => void } }).log;
+          logger?.error?.('Class allocation Redis cleanup failed.', cleanupError);
         });
+      }
 
-    const reservation = await documents(strapi, 'api::reservation.reservation').create({
-      data: {
-        amountPence: classPaymentAmount(targetClass),
-        candidate: {
-          connect: [{ documentId: existingCandidate.documentId }],
-        },
-        class: {
-          connect: [{ documentId: targetClass.documentId }],
-        },
-        currency: targetClass.currency || 'GBP',
-        enrollment: {
-          connect: [{ documentId: enrollment.documentId }],
-        },
-        expiresAt: reservationExpiresAt,
-        metadata: {
-          class: sanitizeClass(targetClass),
-          source: 'candidate_dashboard',
-        },
-        reservationStartedAt: now,
-        source: 'candidate_dashboard',
-        status: 'active',
-      },
-      populate: ['candidate', 'class', 'enrollment'],
-    });
-    const reservedEnrollment = await documents(strapi, 'api::enrollment.enrollment').update({
-      documentId: enrollment.documentId,
-      data: {
-        metadata: {
-          ...enrollmentMetadata,
-          activeReservationDocumentId: reservation.documentId,
-        },
-      },
-      populate: ['class'],
-    });
-
-    await auditEvents(strapi).record({
-      actorEmail: existingCandidate.email,
-      actorId: auth.subject,
-      actorType: 'candidate',
-      eventCategory: 'payment',
-      eventType: 'candidate.reservation_created',
-      ipAddress: requestContext.ipAddress,
-      metadata: {
-        class: sanitizeClass(targetClass),
-        heldPlacesBeforeReservation: heldPlaces,
-      },
-      newState: {
-        enrollment: sanitizeEnrollment(reservedEnrollment),
-        reservation: sanitizeReservation(reservation),
-      },
-      occurredAt: now,
-      previousState: sanitizeEnrollment(existingEnrollment),
-      requestId: requestContext.requestId,
-      source: 'candidate_dashboard',
-      subjectDisplayName: existingCandidate.email,
-      subjectId: existingCandidate.documentId,
-      subjectType: 'candidate',
-      userAgent: requestContext.userAgent,
-    });
-
-    return {
-      classInterest: await buildCandidateClassInterestForCandidate(strapi, existingCandidate),
-      created: true,
-      reservation: sanitizeReservation(reservation),
-      reserved: true,
-    };
+      throw error;
+    }
   },
 
   async getCurrentCandidateClassReservation(
@@ -2734,21 +3940,30 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       throw new ValidationError('Reservation could not be found.');
     }
 
-    const paymentAction = await getPaymentActionForReservation({
-      candidate: existingCandidate,
-      requestContext,
-      reservation,
-      strapi,
-    });
+    const confirmedPayment = await findConfirmedPaymentForReservationOrEnrollment(strapi, reservation);
+    const paymentAction = confirmedPayment
+      ? disabledPaymentAction(
+          confirmedPayment.status === 'paid'
+            ? 'Payment has been confirmed.'
+            : 'Payment needs HireFlip review.',
+          confirmedPayment.status === 'paid' ? 'payment_confirmed' : 'payment_requires_review'
+        )
+      : await getPaymentActionForReservation({
+          candidate: existingCandidate,
+          requestContext,
+          reservation,
+          strapi,
+        });
 
     return {
       classInterest: await buildCandidateClassInterestForCandidate(strapi, existingCandidate),
+      payment: sanitizePayment(confirmedPayment),
       paymentAction,
       reservation: sanitizeReservation(reservation),
     };
   },
 
-  async confirmCurrentCandidateClassReservationPayment(
+  async acceptCurrentCandidateClassReservationTerms(
     auth: Auth0State | undefined,
     reservationDocumentId: string,
     input: unknown = {},
@@ -2761,177 +3976,67 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
     const existingCandidate = await findCandidateByAuthIdentity(strapi, auth.subject);
 
     if (!existingCandidate) {
-      throw new ValidationError('Candidate account must be synced before a payment can be confirmed.');
+      throw new ValidationError('Candidate account must be synced before reservation terms can be accepted.');
     }
 
-    const payload = validateConfirmClassReservationPayment(input ?? {});
+    validateAcceptReservationTerms(input ?? {});
     const reservation = await findCandidateReservation(strapi, existingCandidate, reservationDocumentId);
 
     if (!reservation) {
       throw new ValidationError('Reservation could not be found.');
     }
 
-    const confirmation = await requestPaymentServiceCheckoutConfirmation(payload.checkoutSessionId);
-
-    if (!confirmation) {
-      throw new ValidationError('Payment confirmation is not available yet.');
+    if (reservation.status !== 'active') {
+      throw new ValidationError('Only an active reservation can accept terms.');
     }
 
-    const confirmationMetadata = objectValue(confirmation.metadata);
-    const metadataReservationDocumentId =
-      typeof confirmationMetadata.reservationDocumentId === 'string'
-        ? confirmationMetadata.reservationDocumentId
-        : undefined;
-    const metadataCandidateDocumentId =
-      typeof confirmationMetadata.candidateDocumentId === 'string'
-        ? confirmationMetadata.candidateDocumentId
-        : undefined;
-    const metadataClassDocumentId =
-      typeof confirmationMetadata.classDocumentId === 'string'
-        ? confirmationMetadata.classDocumentId
-        : undefined;
-    const metadataEnrollmentDocumentId =
-      typeof confirmationMetadata.enrollmentDocumentId === 'string'
-        ? confirmationMetadata.enrollmentDocumentId
-        : undefined;
-
-    if (
-      metadataReservationDocumentId !== reservation.documentId ||
-      metadataCandidateDocumentId !== existingCandidate.documentId ||
-      metadataClassDocumentId !== reservation.class?.documentId ||
-      metadataEnrollmentDocumentId !== reservation.enrollment?.documentId ||
-      confirmation.clientReferenceId !== reservation.documentId
-    ) {
-      throw new ValidationError('Payment confirmation does not match this reservation.');
-    }
-
-    if (confirmation.status !== 'complete' || confirmation.paymentStatus !== 'paid') {
-      throw new ValidationError('Stripe has not confirmed this payment as paid yet.');
-    }
-
-    if (
-      typeof confirmation.amountTotal === 'number' &&
-      typeof reservation.amountPence === 'number' &&
-      confirmation.amountTotal !== reservation.amountPence
-    ) {
-      throw new ValidationError('Payment amount does not match this reservation.');
-    }
-
-    if (
-      typeof confirmation.currency === 'string' &&
-      typeof reservation.currency === 'string' &&
-      confirmation.currency.toUpperCase() !== reservation.currency.toUpperCase()
-    ) {
-      throw new ValidationError('Payment currency does not match this reservation.');
+    if (isPastDate(reservation.expiresAt)) {
+      throw new ValidationError('This reservation has expired.');
     }
 
     const now = new Date().toISOString();
+    const termsVersion = getClassTermsVersion();
     const previousReservation = sanitizeReservation(reservation);
-    const previousEnrollment = sanitizeEnrollment(reservation.enrollment);
-    const existingPayment =
-      (await findPaymentForCheckoutSession(strapi, confirmation.checkoutSessionId)) ||
-      (await findCheckoutPaymentForReservation(strapi, reservation));
-    const paymentMetadata = {
-      ...(objectValue(existingPayment?.metadata)),
-      amountTotal: confirmation.amountTotal,
-      checkoutUrl: confirmation.checkoutUrl,
-      confirmedAt: now,
-      providerSessionStatus: confirmation.status,
-      providerPaymentStatus: confirmation.paymentStatus,
-      reservationDocumentId: reservation.documentId,
-    };
-    const paymentData = {
-      amountPence: reservation.amountPence,
-      candidate: {
-        connect: [{ documentId: existingCandidate.documentId }],
-      },
-      createdByService: 'payment-service',
-      currency: reservation.currency,
-      enrollment: {
-        connect: [{ documentId: reservation.enrollment?.documentId }],
-      },
-      metadata: paymentMetadata,
-      paidAt: existingPayment?.paidAt || now,
-      paymentProvider: 'stripe',
-      paymentType: 'course_payment',
-      providerCheckoutSessionId: confirmation.checkoutSessionId,
-      ...(confirmation.customerId ? { providerCustomerId: confirmation.customerId } : {}),
-      ...(confirmation.paymentIntentId ? { providerPaymentIntentId: confirmation.paymentIntentId } : {}),
-      reservation: {
-        connect: [{ documentId: reservation.documentId }],
-      },
-      slotReservationExpiresAt: reservation.expiresAt,
-      status: 'paid',
-    };
-    const payment = existingPayment?.documentId
-      ? await documents(strapi, 'api::payment.payment').update({
-          documentId: existingPayment.documentId,
-          data: paymentData,
-        })
-      : await documents(strapi, 'api::payment.payment').create({
-          data: paymentData,
-        });
     const updatedReservation = await documents(strapi, 'api::reservation.reservation').update({
       documentId: reservation.documentId,
       data: {
         metadata: {
           ...(objectValue(reservation.metadata)),
-          paymentConfirmedAt: now,
-          providerCheckoutSessionId: confirmation.checkoutSessionId,
-          ...(confirmation.paymentIntentId ? { providerPaymentIntentId: confirmation.paymentIntentId } : {}),
+          termsAcceptedSource: 'candidate_dashboard',
+          termsScrollConfirmed: true,
         },
-        paidAt: reservation.paidAt || now,
-        status: 'paid',
+        termsAcceptedAt: now,
+        termsVersion,
       },
       populate: ['candidate', 'class', 'enrollment'],
     });
-    const updatedEnrollment = reservation.enrollment?.documentId
-      ? await documents(strapi, 'api::enrollment.enrollment').update({
-          documentId: reservation.enrollment.documentId,
-          data: {
-            enrolledAt: reservation.enrollment.enrolledAt || now,
-            metadata: {
-              ...(objectValue(reservation.enrollment.metadata)),
-              activeReservationDocumentId: null,
-              paidReservationDocumentId: reservation.documentId,
-              paymentConfirmedAt: now,
-              providerCheckoutSessionId: confirmation.checkoutSessionId,
-              ...(confirmation.paymentIntentId ? { providerPaymentIntentId: confirmation.paymentIntentId } : {}),
-            },
-            paymentStatus: 'paid',
-            reservationExpiresAt: null,
-            status: 'enrolled',
-            waitingListPosition: null,
-          },
-          populate: ['class'],
-        })
-      : null;
-    const updatedClass = await closeClassIfCapacityReached(strapi, reservation.class);
+    const paymentAction = await getPaymentActionForReservation({
+      candidate: existingCandidate,
+      requestContext,
+      reservation: updatedReservation,
+      strapi,
+    });
 
     await auditEvents(strapi).record({
       actorEmail: existingCandidate.email,
       actorId: auth.subject,
       actorType: 'candidate',
       eventCategory: 'payment',
-      eventType: 'candidate.payment_confirmed',
+      eventType: 'candidate.reservation_terms_accepted',
       ipAddress: requestContext.ipAddress,
       metadata: {
-        checkoutSessionId: confirmation.checkoutSessionId,
-        class: sanitizeClass(updatedClass || reservation.class),
-        payment: sanitizePayment(payment),
+        reservation: sanitizeReservation(updatedReservation),
+        termsVersion,
       },
       newState: {
-        enrollment: sanitizeEnrollment(updatedEnrollment),
-        payment: sanitizePayment(payment),
         reservation: sanitizeReservation(updatedReservation),
       },
       occurredAt: now,
       previousState: {
-        enrollment: previousEnrollment,
         reservation: previousReservation,
       },
       requestId: requestContext.requestId,
-      source: 'core_api',
+      source: 'candidate_dashboard',
       subjectDisplayName: existingCandidate.email,
       subjectId: existingCandidate.documentId,
       subjectType: 'candidate',
@@ -2940,9 +4045,245 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
 
     return {
       classInterest: await buildCandidateClassInterestForCandidate(strapi, existingCandidate),
-      payment: sanitizePayment(payment),
+      paymentAction,
       reservation: sanitizeReservation(updatedReservation),
     };
+  },
+
+  async confirmClassReservationPaymentFromProvider(
+    input: unknown,
+    requestContext: RequestContext = {}
+  ) {
+    const confirmation = validateProviderCheckoutConfirmation(input ?? {});
+    const confirmationMetadata = objectValue(confirmation.metadata);
+    const reservationDocumentId =
+      typeof confirmationMetadata.reservationDocumentId === 'string'
+        ? confirmationMetadata.reservationDocumentId
+        : undefined;
+
+    if (!reservationDocumentId) {
+      throw new ValidationError('A reservation document ID is required before a payment can be confirmed.');
+    }
+
+    const reservation = await findReservationByDocumentId(strapi, reservationDocumentId);
+
+    if (!reservation) {
+      throw new ValidationError('Reservation could not be found.');
+    }
+
+    if (!reservation.candidate?.documentId) {
+      throw new ValidationError('Reservation is not linked to a candidate.');
+    }
+
+    return confirmReservationPaymentWithProvider({
+      actor: {
+        actorId: requestContext.serviceName || 'payment-service',
+        actorType: 'service',
+        eventType: 'candidate.payment_confirmed_by_webhook',
+        source: 'payment_service',
+      },
+      candidate: reservation.candidate,
+      confirmation,
+      requestContext: {
+        ...requestContext,
+        serviceName: requestContext.serviceName || 'payment-service',
+      },
+      reservation,
+      strapi,
+    });
+  },
+
+  async recordClassReservationPaymentProviderOutcome(
+    input: unknown,
+    eventType: string,
+    requestContext: RequestContext = {}
+  ) {
+    const confirmation = validateProviderCheckoutConfirmation(input ?? {});
+    const outcome = providerPaymentOutcomeFromEvent(eventType, confirmation);
+
+    if (!outcome) {
+      return {
+        ignored: true,
+      };
+    }
+
+    const confirmationMetadata = objectValue(confirmation.metadata);
+    const reservationDocumentId =
+      typeof confirmationMetadata.reservationDocumentId === 'string'
+        ? confirmationMetadata.reservationDocumentId
+        : undefined;
+
+    if (!reservationDocumentId) {
+      throw new ValidationError('A reservation document ID is required before a payment outcome can be recorded.');
+    }
+
+    const reservation = await findReservationByDocumentId(strapi, reservationDocumentId);
+
+    if (!reservation) {
+      throw new ValidationError('Reservation could not be found.');
+    }
+
+    if (!reservation.candidate?.documentId) {
+      throw new ValidationError('Reservation is not linked to a candidate.');
+    }
+
+    return recordProviderPaymentOutcome({
+      actor: {
+        actorId: requestContext.serviceName || 'payment-service',
+        actorType: 'service',
+        eventType: outcome === 'expired' ? 'candidate.reservation_expired' : 'candidate.payment_failed',
+        source: 'payment_service',
+      },
+      candidate: reservation.candidate,
+      confirmation,
+      eventType,
+      outcome,
+      requestContext: {
+        ...requestContext,
+        serviceName: requestContext.serviceName || 'payment-service',
+      },
+      reservation,
+      strapi,
+    });
+  },
+
+  async reconcileProviderCheckoutPayments(limit = 50, requestContext: RequestContext = {}) {
+    const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 200);
+    const payments = await documents(strapi, 'api::payment.payment').findMany({
+      filters: {
+        paymentProvider: 'stripe',
+        status: {
+          $in: ['checkout_created', 'pending'],
+        },
+      },
+      limit: safeLimit,
+      populate: ['reservation'],
+      sort: ['createdAt:asc'],
+    });
+    const summary = {
+      failed: 0,
+      processed: 0,
+      providerUnavailable: 0,
+      skipped: 0,
+      total: payments.length,
+      unpaidSkipped: 0,
+    };
+
+    for (const payment of payments) {
+      const checkoutSessionId = payment.providerCheckoutSessionId;
+
+      if (typeof checkoutSessionId !== 'string') {
+        summary.skipped += 1;
+        continue;
+      }
+
+      const confirmation = await requestPaymentServiceCheckoutSessionStatus(checkoutSessionId);
+
+      if (!confirmation) {
+        summary.providerUnavailable += 1;
+        continue;
+      }
+
+      const confirmationMetadata = objectValue(confirmation.metadata);
+      const reservationDocumentId =
+        (typeof confirmationMetadata.reservationDocumentId === 'string'
+          ? confirmationMetadata.reservationDocumentId
+          : undefined) || payment.reservation?.documentId;
+
+      if (!reservationDocumentId) {
+        summary.failed += 1;
+        continue;
+      }
+
+      const reservation = await findReservationByDocumentId(strapi, reservationDocumentId);
+
+      if (!reservation?.candidate?.documentId) {
+        summary.failed += 1;
+        continue;
+      }
+
+      try {
+        if (confirmation.status === 'complete' && confirmation.paymentStatus === 'paid') {
+          await confirmReservationPaymentWithProvider({
+            actor: {
+              actorId: requestContext.serviceName || 'payment-reconciliation',
+              actorType: 'service',
+              eventType: 'candidate.payment_confirmed_by_reconciliation',
+              source: 'payment_service',
+            },
+            candidate: reservation.candidate,
+            confirmation,
+            requestContext: {
+              ...requestContext,
+              serviceName: requestContext.serviceName || 'payment-reconciliation',
+            },
+            reservation,
+            strapi,
+          });
+          summary.processed += 1;
+          continue;
+        }
+
+        if (confirmation.status === 'expired') {
+          await recordProviderPaymentOutcome({
+            actor: {
+              actorId: requestContext.serviceName || 'payment-reconciliation',
+              actorType: 'service',
+              eventType: 'candidate.reservation_expired',
+              source: 'payment_service',
+            },
+            candidate: reservation.candidate,
+            confirmation,
+            eventType: 'checkout.session.expired',
+            outcome: 'expired',
+            requestContext: {
+              ...requestContext,
+              serviceName: requestContext.serviceName || 'payment-reconciliation',
+            },
+            reservation,
+            strapi,
+          });
+          summary.processed += 1;
+          continue;
+        }
+
+        if (confirmation.status === 'open' && isPastDate(reservation.expiresAt)) {
+          const expiredProviderSession = await requestPaymentServiceExpireCheckoutSession(checkoutSessionId);
+
+          if (!expiredProviderSession) {
+            summary.providerUnavailable += 1;
+            continue;
+          }
+
+          await recordProviderPaymentOutcome({
+            actor: {
+              actorId: requestContext.serviceName || 'payment-reconciliation',
+              actorType: 'service',
+              eventType: 'candidate.reservation_expired',
+              source: 'payment_service',
+            },
+            candidate: reservation.candidate,
+            confirmation: expiredProviderSession,
+            eventType: 'checkout.session.expired',
+            outcome: 'expired',
+            requestContext: {
+              ...requestContext,
+              serviceName: requestContext.serviceName || 'payment-reconciliation',
+            },
+            reservation,
+            strapi,
+          });
+          summary.processed += 1;
+          continue;
+        }
+
+        summary.unpaidSkipped += 1;
+      } catch {
+        summary.failed += 1;
+      }
+    }
+
+    return summary;
   },
 
   async cancelCurrentCandidateClassReservation(
@@ -2964,6 +4305,42 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
 
     if (!reservation) {
       throw new ValidationError('Reservation could not be found.');
+    }
+
+    const confirmedPayment = await findConfirmedPaymentForReservationOrEnrollment(strapi, reservation);
+
+    if (confirmedPayment) {
+      throw new ValidationError('This payment is already being processed and cannot be cancelled.');
+    }
+
+    const existingCheckoutPayment = await findCheckoutPaymentForReservation(strapi, reservation);
+    const existingCheckoutSession = checkoutSessionFromPayment(existingCheckoutPayment);
+
+    if (existingCheckoutSession) {
+      const providerSession = await requestPaymentServiceExpireCheckoutSession(
+        existingCheckoutSession.checkoutSessionId
+      );
+
+      if (!providerSession) {
+        throw new ApplicationError('Checkout could not be cancelled safely because the provider session could not be expired.');
+      }
+
+      return recordProviderPaymentOutcome({
+        actor: {
+          actorEmail: existingCandidate.email,
+          actorId: auth.subject,
+          actorType: 'candidate',
+          eventType: 'candidate.reservation_expired',
+          source: 'core_api',
+        },
+        candidate: existingCandidate,
+        confirmation: providerSession,
+        eventType: 'checkout.session.expired',
+        outcome: 'expired',
+        requestContext,
+        reservation,
+        strapi,
+      });
     }
 
     const now = new Date().toISOString();
@@ -3034,6 +4411,16 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       userAgent: requestContext.userAgent,
     });
 
+    if (existingCandidate.documentId && classRecord?.documentId) {
+      await releaseClassPlaceAllocation({
+        candidateDocumentId: existingCandidate.documentId,
+        classDocumentId: classRecord.documentId,
+      }).catch((error) => {
+        const logger = (strapi as unknown as { log?: { error?: (message: string, error?: unknown) => void } }).log;
+        logger?.error?.('Class allocation Redis cancel release failed.', error);
+      });
+    }
+
     return {
       classInterest: await buildCandidateClassInterestForCandidate(strapi, existingCandidate),
       reservation: sanitizeReservation(updatedReservation),
@@ -3059,6 +4446,32 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
 
     if (!reservation) {
       throw new ValidationError('Reservation could not be found.');
+    }
+
+    const confirmedPayment = await findConfirmedPaymentForReservationOrEnrollment(strapi, reservation);
+
+    if (confirmedPayment) {
+      return {
+        classInterest: await buildCandidateClassInterestForCandidate(strapi, existingCandidate),
+        payment: sanitizePayment(confirmedPayment),
+        reservation: sanitizeReservation(reservation),
+      };
+    }
+
+    const existingCheckoutPayment = await findCheckoutPaymentForReservation(strapi, reservation);
+
+    if (checkoutSessionFromPayment(existingCheckoutPayment)) {
+      return {
+        classInterest: await buildCandidateClassInterestForCandidate(strapi, existingCandidate),
+        payment: sanitizePayment(existingCheckoutPayment),
+        paymentAction: await getPaymentActionForReservation({
+          candidate: existingCandidate,
+          requestContext,
+          reservation,
+          strapi,
+        }),
+        reservation: sanitizeReservation(reservation),
+      };
     }
 
     if (reservation.status !== 'active') {
@@ -3139,6 +4552,16 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       subjectType: 'candidate',
       userAgent: requestContext.userAgent,
     });
+
+    if (existingCandidate.documentId && classRecord?.documentId) {
+      await releaseClassPlaceAllocation({
+        candidateDocumentId: existingCandidate.documentId,
+        classDocumentId: classRecord.documentId,
+      }).catch((error) => {
+        const logger = (strapi as unknown as { log?: { error?: (message: string, error?: unknown) => void } }).log;
+        logger?.error?.('Class allocation Redis expiry release failed.', error);
+      });
+    }
 
     return {
       classInterest: await buildCandidateClassInterestForCandidate(strapi, existingCandidate),

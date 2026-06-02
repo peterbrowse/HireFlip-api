@@ -51,6 +51,7 @@
         "checkout_created",
         "pending",
         "paid",
+        "requires_review",
         "failed",
         "cancelled",
         "expired",
@@ -97,6 +98,9 @@
       "type": "datetime"
     },
     "failedAt": {
+      "type": "datetime"
+    },
+    "expiredAt": {
       "type": "datetime"
     },
     "cancelledAt": {

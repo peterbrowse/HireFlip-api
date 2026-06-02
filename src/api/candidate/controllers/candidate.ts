@@ -12,15 +12,15 @@ type CreatedResponse = {
 };
 
 type CandidateService = {
-  cancelCurrentCandidateClassReservation(
-    auth: unknown,
-    reservationDocumentId: string,
-    context: RequestContext
-  ): Promise<unknown>;
-  confirmCurrentCandidateClassReservationPayment(
+  acceptCurrentCandidateClassReservationTerms(
     auth: unknown,
     reservationDocumentId: string,
     input: unknown,
+    context: RequestContext
+  ): Promise<unknown>;
+  cancelCurrentCandidateClassReservation(
+    auth: unknown,
+    reservationDocumentId: string,
     context: RequestContext
   ): Promise<unknown>;
   createCurrentCandidateUnlistedInterest(auth: unknown, input: unknown, context: RequestContext): Promise<unknown>;
@@ -198,10 +198,11 @@ export default factories.createCoreController('api::candidate.candidate', ({ str
     };
   },
 
-  async cancelClassReservation(ctx) {
-    const result = await candidateService(strapi).cancelCurrentCandidateClassReservation(
+  async acceptClassReservationTerms(ctx) {
+    const result = await candidateService(strapi).acceptCurrentCandidateClassReservationTerms(
       ctx.state?.hireflipAuth,
       ctx.params?.reservationDocumentId,
+      ctx.request.body,
       {
         ipAddress: getForwardedClientIp(ctx),
         requestId: ctx.state?.requestId,
@@ -214,11 +215,10 @@ export default factories.createCoreController('api::candidate.candidate', ({ str
     };
   },
 
-  async confirmClassReservationPayment(ctx) {
-    const result = await candidateService(strapi).confirmCurrentCandidateClassReservationPayment(
+  async cancelClassReservation(ctx) {
+    const result = await candidateService(strapi).cancelCurrentCandidateClassReservation(
       ctx.state?.hireflipAuth,
       ctx.params?.reservationDocumentId,
-      ctx.request.body,
       {
         ipAddress: getForwardedClientIp(ctx),
         requestId: ctx.state?.requestId,

@@ -31,6 +31,7 @@
         "waiting_list",
         "missed_out",
         "enrolled",
+        "payment_exception",
         "in_class",
         "interview_phase",
         "completed",
@@ -50,6 +51,7 @@
         "not_required",
         "pending",
         "paid",
+        "requires_review",
         "failed",
         "partially_refunded",
         "refunded"

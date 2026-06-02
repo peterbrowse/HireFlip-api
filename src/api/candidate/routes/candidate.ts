@@ -119,8 +119,8 @@ export default {
     },
     {
       method: 'POST',
-      path: '/candidates/me/class-reservation/:reservationDocumentId/cancel',
-      handler: 'candidate.cancelClassReservation',
+      path: '/candidates/me/class-reservation/:reservationDocumentId/accept-terms',
+      handler: 'candidate.acceptClassReservationTerms',
       config: {
         auth: false,
         middlewares: [
@@ -132,8 +132,8 @@ export default {
     },
     {
       method: 'POST',
-      path: '/candidates/me/class-reservation/:reservationDocumentId/confirm-payment',
-      handler: 'candidate.confirmClassReservationPayment',
+      path: '/candidates/me/class-reservation/:reservationDocumentId/cancel',
+      handler: 'candidate.cancelClassReservation',
       config: {
         auth: false,
         middlewares: [
