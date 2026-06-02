@@ -1,4 +1,9 @@
+import { PassThrough } from 'node:stream';
 import { factories } from '@strapi/strapi';
+import {
+  createClassRealtimeSubscriber,
+  getClassRealtimeChannelsForInterest,
+} from '../../../utils/class-realtime-events';
 
 type RequestContext = {
   ipAddress?: string;
@@ -121,6 +126,87 @@ export default factories.createCoreController('api::candidate.candidate', ({ str
     ctx.body = {
       data: result,
     };
+  },
+
+  async classEvents(ctx) {
+    const classInterest = await candidateService(strapi).getCurrentCandidateClassInterest(
+      ctx.state?.hireflipAuth
+    );
+    const channels = getClassRealtimeChannelsForInterest(classInterest);
+
+    if (channels.length === 0) {
+      ctx.status = 204;
+      return;
+    }
+
+    const stream = new PassThrough();
+    let isClosed = false;
+    let subscriber: ReturnType<typeof createClassRealtimeSubscriber> | undefined;
+    const writeEvent = (event: string, data: unknown) => {
+      if (isClosed) {
+        return;
+      }
+
+      stream.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    };
+    const heartbeat = setInterval(() => {
+      writeEvent('heartbeat', {
+        sentAt: new Date().toISOString(),
+      });
+    }, 25000);
+    const close = () => {
+      if (isClosed) {
+        return;
+      }
+
+      isClosed = true;
+      clearInterval(heartbeat);
+      subscriber?.disconnect();
+      stream.end();
+    };
+
+    ctx.req.on('close', close);
+    ctx.set('cache-control', 'no-store');
+    ctx.set('content-type', 'text/event-stream');
+    ctx.set('x-accel-buffering', 'no');
+    ctx.status = 200;
+    ctx.body = stream;
+
+    subscriber = createClassRealtimeSubscriber();
+    subscriber.on('message', (channel, rawMessage) => {
+      let payload: unknown = { rawMessage };
+
+      try {
+        payload = JSON.parse(rawMessage) as unknown;
+      } catch {
+        payload = { rawMessage };
+      }
+
+      writeEvent('class-update', {
+        channel,
+        payload,
+        receivedAt: new Date().toISOString(),
+      });
+    });
+
+    void (async () => {
+      try {
+        await subscriber?.connect();
+        await subscriber?.subscribe(...channels);
+        writeEvent('connected', {
+          channels: channels.length,
+          connectedAt: new Date().toISOString(),
+        });
+      } catch (error) {
+        writeEvent('class-update-error', {
+          message:
+            error instanceof Error
+              ? error.message
+              : 'Class realtime subscription failed.',
+        });
+        close();
+      }
+    })();
   },
 
   async preferenceOptions(ctx) {

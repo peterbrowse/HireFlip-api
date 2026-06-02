@@ -66,6 +66,19 @@ export default {
       },
     },
     {
+      method: 'GET',
+      path: '/candidates/me/class-events',
+      handler: 'candidate.classEvents',
+      config: {
+        auth: false,
+        middlewares: [
+          {
+            name: 'global::auth0-jwt',
+          },
+        ],
+      },
+    },
+    {
       method: 'POST',
       path: '/candidates/me/class-interest',
       handler: 'candidate.registerClassInterest',

@@ -63,6 +63,56 @@ export const candidateClassRealtimeChannel = (candidateDocumentId: string) =>
 export const classRealtimeChannel = (classDocumentId: string) =>
   `${redisChannelPrefix()}:class:${classDocumentId}`;
 
+export const createClassRealtimeSubscriber = () => {
+  const url = redisUrl();
+
+  const subscriber = new Redis(url, {
+    commandTimeout: envInt('CLASS_REALTIME_REDIS_COMMAND_TIMEOUT_MS', 2000),
+    enableOfflineQueue: false,
+    lazyConnect: true,
+    maxRetriesPerRequest: 1,
+    retryStrategy: () => null,
+    tls: url.startsWith('rediss://')
+      ? {
+          rejectUnauthorized: envBool('CLASS_REALTIME_REDIS_TLS_REJECT_UNAUTHORIZED', false),
+        }
+      : undefined,
+  });
+
+  subscriber.on('error', () => undefined);
+
+  return subscriber;
+};
+
+const objectValue = (value: unknown): Record<string, unknown> =>
+  value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+
+const stringValue = (value: unknown) => (typeof value === 'string' && value.trim() ? value : undefined);
+
+export const getClassRealtimeChannelsForInterest = (classInterest: unknown) => {
+  const channels = new Set<string>();
+  const payload = objectValue(classInterest);
+  const candidate = objectValue(payload.candidate);
+  const candidateDocumentId = stringValue(candidate.documentId);
+
+  if (candidateDocumentId) {
+    channels.add(candidateClassRealtimeChannel(candidateDocumentId));
+  }
+
+  if (Array.isArray(payload.classes)) {
+    for (const classRelationship of payload.classes) {
+      const classRecord = objectValue(objectValue(classRelationship).class);
+      const classDocumentId = stringValue(classRecord.documentId);
+
+      if (classDocumentId) {
+        channels.add(classRealtimeChannel(classDocumentId));
+      }
+    }
+  }
+
+  return [...channels];
+};
+
 const getPublisher = () => {
   if (!publisher || publisher.status === 'end') {
     const url = redisUrl();
