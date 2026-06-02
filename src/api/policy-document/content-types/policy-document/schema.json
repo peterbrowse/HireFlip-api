@@ -1,0 +1,80 @@
+{
+  "kind": "collectionType",
+  "collectionName": "policy_documents",
+  "info": {
+    "singularName": "policy-document",
+    "pluralName": "policy-documents",
+    "displayName": "Policy Document",
+    "description": "Versioned legal, policy, and terms content used across HireFlip surfaces."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 180,
+      "required": true
+    },
+    "policyKey": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "required": true,
+      "unique": true
+    },
+    "policyType": {
+      "type": "enumeration",
+      "enum": [
+        "class_checkout_terms",
+        "candidate_terms",
+        "website_terms",
+        "privacy_policy",
+        "cookie_policy",
+        "refund_policy",
+        "employer_terms"
+      ],
+      "required": true
+    },
+    "policyState": {
+      "type": "enumeration",
+      "enum": [
+        "draft",
+        "active",
+        "archived"
+      ],
+      "default": "draft",
+      "required": true
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120,
+      "required": true
+    },
+    "effectiveFrom": {
+      "type": "datetime"
+    },
+    "introCopy": {
+      "type": "text"
+    },
+    "body": {
+      "type": "text",
+      "required": true
+    },
+    "acceptanceLabel": {
+      "type": "string",
+      "maxLength": 280
+    },
+    "internalNotes": {
+      "type": "text"
+    },
+    "acceptedReservations": {
+      "type": "relation",
+      "relation": "oneToMany",
+      "target": "api::reservation.reservation",
+      "mappedBy": "acceptedTermsPolicyDocument"
+    }
+  }
+}

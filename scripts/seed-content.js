@@ -46,6 +46,25 @@ const upsertCourse = async (strapi, data) => {
   return strapi.documents('api::course.course').create({ data });
 };
 
+const upsertPolicyDocument = async (strapi, data) => {
+  const existingRecords = await strapi.documents('api::policy-document.policy-document').findMany({
+    filters: {
+      policyKey: data.policyKey,
+    },
+    limit: 1,
+  });
+  const existingRecord = existingRecords[0];
+
+  if (existingRecord) {
+    return strapi.documents('api::policy-document.policy-document').update({
+      documentId: existingRecord.documentId,
+      data,
+    });
+  }
+
+  return strapi.documents('api::policy-document.policy-document').create({ data });
+};
+
 const upsertClass = async (strapi, data) => {
   const existingRecords = await strapi.documents('api::class.class').findMany({
     filters: { name: data.name },
@@ -118,6 +137,30 @@ const main = async () => {
       sourceType: 'internal',
       courseState: 'active',
       version: 'launch-v1',
+    });
+
+    const checkoutTerms = await upsertPolicyDocument(strapi, {
+      acceptanceLabel:
+        'I have read and accept the HireFlip class checkout terms for this reservation.',
+      body: [
+        'Your payment secures one place on the named HireFlip class for the candidate account shown in this checkout. The temporary reservation is only confirmed when HireFlip receives provider-verified payment confirmation.',
+        'The checkout reservation is time-limited. If the reservation expires before payment is confirmed, the place may be released or offered to another candidate. If you cancel or a card payment fails while the reservation is still active, you can retry payment from the checkout page until the reservation expires.',
+        'HireFlip uses Stripe to process payment. HireFlip does not store raw card details. Stripe may run fraud, authentication, and bank checks before confirming payment.',
+        'After payment is confirmed, your dashboard will show the class as enrolled. You are expected to complete the online class work, tests, and interview preparation tasks within the class rules shown in your dashboard.',
+        'The HireFlip interview guarantee depends on you meeting the class completion, conduct, availability, and interview-readiness requirements. The checkout summary may show a held guarantee amount for product clarity, but refund eligibility is determined by the published class, guarantee, and refund rules in force for your accepted terms version.',
+        'If HireFlip cannot safely apply a provider-confirmed payment to your reservation, the payment may be held for manual review. HireFlip will review the record, update your class state, and contact you if a refund or correction is needed.',
+        'HireFlip may update future terms versions. The version accepted for this reservation is recorded with your reservation and audit history. A new reservation or a newer active terms version may require fresh acceptance before payment is unlocked.',
+      ].join('\n\n'),
+      effectiveFrom: '2026-06-02T00:00:00.000Z',
+      internalNotes:
+        'Launch checkout terms copy for product testing and admin-managed versioning. Exact legal wording remains subject to legal review.',
+      introCopy:
+        'Review the class checkout terms before paying. These terms explain how your reservation, payment confirmation, retry window, and interview guarantee handling work.',
+      policyKey: 'class_checkout_terms:class-checkout-terms-launch-v1',
+      policyState: 'active',
+      policyType: 'class_checkout_terms',
+      title: 'HireFlip Class Checkout Terms',
+      version: 'class-checkout-terms-launch-v1',
     });
 
     const sharedClassContent = {
@@ -197,6 +240,7 @@ const main = async () => {
       classAreas: [london.name, manchester.name],
       classes: [londonClass.name, manchesterClass.name],
       course: launchCourse.name,
+      policies: [checkoutTerms.policyKey],
       workSectors: ['Marketing', 'Accounting'],
     };
 

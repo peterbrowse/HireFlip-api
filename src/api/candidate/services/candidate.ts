@@ -56,6 +56,9 @@ type DocumentRecord = Record<string, unknown> & {
   classArea?: DocumentRecord;
   claimedAt?: string;
   classAreaPreferences?: unknown;
+  acceptedTermsPolicyDocument?: DocumentRecord;
+  acceptanceLabel?: string;
+  body?: string;
   completionStatus?: string;
   currency?: string;
   declinedAt?: string;
@@ -72,6 +75,7 @@ type DocumentRecord = Record<string, unknown> & {
   interestRegisteredAt?: string;
   interestType?: string;
   invitedToJoinAt?: string;
+  introCopy?: string;
   lastName?: string;
   level?: string;
   marketingConsentCapturedAt?: string;
@@ -88,6 +92,9 @@ type DocumentRecord = Record<string, unknown> & {
   paymentStatus?: string;
   paymentType?: string;
   phone?: string;
+  policyKey?: string;
+  policyState?: string;
+  policyType?: string;
   pricePence?: number;
   discountedPricePence?: number;
   preferredCommunicationChannel?: (typeof communicationChannels)[number];
@@ -113,6 +120,8 @@ type DocumentRecord = Record<string, unknown> & {
   status?: string;
   suggestedValue?: string;
   supersededAt?: string;
+  title?: string;
+  version?: string;
   waitingListPosition?: number;
   waitingListJoinedAt?: string;
   waitingListOffer?: DocumentRecord;
@@ -246,7 +255,7 @@ const getIntegerEnv = (name: string, fallback: number) => {
 
 const getReservationWindowMs = () => getIntegerEnv('CLASS_RESERVATION_WINDOW_SECONDS', 10 * 60) * 1000;
 const getWaitingListOfferWindowMs = () => getIntegerEnv('WAITING_LIST_OFFER_WINDOW_SECONDS', 15 * 60) * 1000;
-const getClassTermsVersion = () => process.env.CLASS_TERMS_VERSION || 'class-terms-v1';
+const classCheckoutPolicyType = 'class_checkout_terms';
 
 const getProfileImageFormat = () => {
   const configuredFormat = (process.env.CANDIDATE_PROFILE_IMAGE_FORMAT || 'webp').toLowerCase();
@@ -1934,6 +1943,44 @@ const htmlEscape = (value: string) =>
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
 
+const splitPolicyBodyIntoParagraphs = (body?: string) =>
+  (body || '')
+    .split(/\n{2,}/)
+    .map((paragraph) => paragraph.replace(/\s*\n\s*/g, ' ').trim())
+    .filter(Boolean);
+
+const sanitizePolicyDocument = (policyDocument?: DocumentRecord) => {
+  if (!policyDocument) {
+    return null;
+  }
+
+  return {
+    acceptanceLabel: policyDocument.acceptanceLabel,
+    documentId: policyDocument.documentId,
+    introCopy: policyDocument.introCopy,
+    paragraphs: splitPolicyBodyIntoParagraphs(policyDocument.body),
+    policyType: policyDocument.policyType,
+    title: policyDocument.title,
+    version: policyDocument.version,
+  };
+};
+
+const findActivePolicyDocument = async (
+  strapi: StrapiDocumentService,
+  policyType: string
+) => {
+  const policyDocuments = await documents(strapi, 'api::policy-document.policy-document').findMany({
+    filters: {
+      policyState: 'active',
+      policyType,
+    },
+    limit: 1,
+    sort: ['effectiveFrom:desc', 'createdAt:desc'],
+  });
+
+  return policyDocuments[0];
+};
+
 const buildDashboardCheckoutUrl = (reservationDocumentId: string, status: string) => {
   const baseUrl = trimTrailingSlash(process.env.CANDIDATE_DASHBOARD_BASE_URL || 'http://localhost:3001');
   const url = new URL(`${baseUrl}/class/checkout/${reservationDocumentId}`);
@@ -2022,6 +2069,8 @@ const hasWaitingListAhead = async (strapi, classRecord, candidate?) => {
     .some((enrollment) => enrollment.candidate?.documentId !== candidate?.documentId);
 };
 
+const reservationPopulate = ['acceptedTermsPolicyDocument', 'candidate', 'class', 'enrollment'];
+
 const findActiveReservationForEnrollment = async (strapi, enrollment) => {
   if (!enrollment?.documentId) {
     return undefined;
@@ -2035,7 +2084,7 @@ const findActiveReservationForEnrollment = async (strapi, enrollment) => {
       reservationState: 'active',
     },
     limit: 1,
-    populate: ['candidate', 'class', 'enrollment'],
+    populate: reservationPopulate,
     sort: ['createdAt:desc'],
   });
 
@@ -2051,7 +2100,7 @@ const findCandidateReservation = async (strapi, candidate, reservationDocumentId
       documentId: reservationDocumentId,
     },
     limit: 1,
-    populate: ['candidate', 'class', 'enrollment'],
+    populate: reservationPopulate,
   });
 
   return reservations[0];
@@ -2066,7 +2115,7 @@ const findReservationByDocumentId = async (
       documentId: reservationDocumentId,
     },
     limit: 1,
-    populate: ['candidate', 'class', 'enrollment'],
+    populate: reservationPopulate,
   });
 
   return reservations[0];
@@ -2405,6 +2454,7 @@ const sanitizeReservation = (reservation) => {
     reservationStartedAt: reservation.reservationStartedAt,
     status: reservationState(reservation),
     termsAcceptedAt: reservation.termsAcceptedAt,
+    termsPolicyDocumentId: reservation.acceptedTermsPolicyDocument?.documentId,
     termsVersion: reservation.termsVersion,
   };
 };
@@ -3376,11 +3426,13 @@ const recordProviderPaymentOutcome = async ({
 
 const getPaymentActionForReservation = async ({
   candidate,
+  classCheckoutPolicyDocument,
   requestContext,
   reservation,
   strapi,
 }: {
   candidate: DocumentRecord;
+  classCheckoutPolicyDocument?: DocumentRecord;
   requestContext: RequestContext;
   reservation?: DocumentRecord;
   strapi: StrapiDocumentService;
@@ -3393,22 +3445,33 @@ const getPaymentActionForReservation = async ({
     return disabledPaymentAction('This reservation is no longer active.', 'reservation_inactive');
   }
 
+  if (isPastDate(reservation.expiresAt)) {
+    return disabledPaymentAction('This reservation has expired.', 'reservation_expired');
+  }
+
+  const activeClassCheckoutPolicyDocument =
+    classCheckoutPolicyDocument ||
+    (await findActivePolicyDocument(strapi, classCheckoutPolicyType));
+
+  if (!activeClassCheckoutPolicyDocument?.version) {
+    return disabledPaymentAction(
+      'Checkout terms are not available yet. Please try again later.',
+      'checkout_terms_unavailable'
+    );
+  }
+
+  if (
+    !reservation.termsAcceptedAt ||
+    reservation.termsVersion !== activeClassCheckoutPolicyDocument.version
+  ) {
+    return disabledPaymentAction('Accept terms to unlock payment.', 'terms_not_accepted');
+  }
+
   const existingPayment = await findCheckoutPaymentForReservation(strapi, reservation);
   const existingCheckoutSession = checkoutSessionFromPayment(existingPayment);
 
   if (existingPayment && existingCheckoutSession) {
     return stripeCheckoutAction(existingPayment, existingCheckoutSession);
-  }
-
-  if (isPastDate(reservation.expiresAt)) {
-    return disabledPaymentAction('This reservation has expired.', 'reservation_expired');
-  }
-
-  if (
-    !reservation.termsAcceptedAt ||
-    reservation.termsVersion !== getClassTermsVersion()
-  ) {
-    return disabledPaymentAction('Accept terms to unlock payment.', 'terms_not_accepted');
   }
 
   const checkoutSession = await requestPaymentServiceCheckoutSession({
@@ -3436,6 +3499,8 @@ const getPaymentActionForReservation = async ({
       },
       metadata: {
         checkoutUrl: checkoutSession.checkoutUrl,
+        termsPolicyDocumentId: reservation.acceptedTermsPolicyDocument?.documentId,
+        termsVersion: reservation.termsVersion,
         providerSessionStatus: checkoutSession.status,
         reservationDocumentId: reservation.documentId,
       },
@@ -5101,6 +5166,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       throw new ValidationError('Reservation could not be found.');
     }
 
+    const classCheckoutPolicyDocument = await findActivePolicyDocument(strapi, classCheckoutPolicyType);
     const confirmedPayment = await findConfirmedPaymentForReservationOrEnrollment(strapi, reservation);
     const paymentAction = confirmedPayment
       ? disabledPaymentAction(
@@ -5111,6 +5177,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
         )
       : await getPaymentActionForReservation({
           candidate: existingCandidate,
+          classCheckoutPolicyDocument,
           requestContext,
           reservation,
           strapi,
@@ -5121,6 +5188,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       payment: sanitizePayment(confirmedPayment),
       paymentAction,
       reservation: sanitizeReservation(reservation),
+      terms: sanitizePolicyDocument(classCheckoutPolicyDocument),
     };
   },
 
@@ -5140,7 +5208,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       throw new ValidationError('Candidate account must be synced before reservation terms can be accepted.');
     }
 
-    validateAcceptReservationTerms(input ?? {});
+    const payload = validateAcceptReservationTerms(input ?? {});
     const reservation = await findCandidateReservation(strapi, existingCandidate, reservationDocumentId);
 
     if (!reservation) {
@@ -5155,24 +5223,44 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       throw new ValidationError('This reservation has expired.');
     }
 
+    const classCheckoutPolicyDocument = await findActivePolicyDocument(strapi, classCheckoutPolicyType);
+
+    if (!classCheckoutPolicyDocument?.documentId || !classCheckoutPolicyDocument.version) {
+      throw new ValidationError('Checkout terms are not available yet. Please try again later.');
+    }
+
+    if (
+      payload.termsVersion &&
+      payload.termsVersion !== classCheckoutPolicyDocument.version
+    ) {
+      throw new ValidationError('Checkout terms have changed. Refresh this checkout and review the latest terms.');
+    }
+
     const now = new Date().toISOString();
-    const termsVersion = getClassTermsVersion();
+    const termsVersion = classCheckoutPolicyDocument.version;
     const previousReservation = sanitizeReservation(reservation);
     const updatedReservation = await documents(strapi, 'api::reservation.reservation').update({
       documentId: reservation.documentId,
       data: {
+        acceptedTermsPolicyDocument: {
+          connect: [{ documentId: classCheckoutPolicyDocument.documentId }],
+        },
         metadata: {
           ...(objectValue(reservation.metadata)),
+          termsAcceptedPolicyDocumentId: classCheckoutPolicyDocument.documentId,
+          termsAcceptedPolicyKey: classCheckoutPolicyDocument.policyKey,
+          termsAcceptedPolicyType: classCheckoutPolicyDocument.policyType,
           termsAcceptedSource: 'candidate_dashboard',
           termsScrollConfirmed: true,
         },
         termsAcceptedAt: now,
         termsVersion,
       },
-      populate: ['candidate', 'class', 'enrollment'],
+      populate: reservationPopulate,
     });
     const paymentAction = await getPaymentActionForReservation({
       candidate: existingCandidate,
+      classCheckoutPolicyDocument,
       requestContext,
       reservation: updatedReservation,
       strapi,
@@ -5187,6 +5275,9 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       ipAddress: requestContext.ipAddress,
       metadata: {
         reservation: sanitizeReservation(updatedReservation),
+        termsPolicyDocumentId: classCheckoutPolicyDocument.documentId,
+        termsPolicyKey: classCheckoutPolicyDocument.policyKey,
+        termsPolicyType: classCheckoutPolicyDocument.policyType,
         termsVersion,
       },
       newState: {
@@ -5208,6 +5299,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       classInterest: await buildCandidateClassInterestForCandidate(strapi, existingCandidate),
       paymentAction,
       reservation: sanitizeReservation(updatedReservation),
+      terms: sanitizePolicyDocument(classCheckoutPolicyDocument),
     };
   },
 

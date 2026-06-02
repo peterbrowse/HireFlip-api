@@ -312,14 +312,60 @@ const reserveCandidate = async (strapi, classRecord, candidate, requestContext) 
   return findReservation(strapi, result.reservation.documentId);
 };
 
-const markTermsAccepted = async (strapi, reservation) =>
+const findActiveCheckoutTermsPolicy = async (strapi) => {
+  const policies = await documents(strapi, 'api::policy-document.policy-document').findMany({
+    filters: {
+      policyState: 'active',
+      policyType: 'class_checkout_terms',
+    },
+    limit: 1,
+    sort: ['effectiveFrom:desc', 'createdAt:desc'],
+  });
+
+  return policies[0];
+};
+
+const ensureActiveCheckoutTermsPolicy = async (strapi, runId) => {
+  const existingPolicy = await findActiveCheckoutTermsPolicy(strapi);
+
+  if (existingPolicy) {
+    return {
+      created: false,
+      policy: existingPolicy,
+    };
+  }
+
+  const policy = await documents(strapi, 'api::policy-document.policy-document').create({
+    data: {
+      acceptanceLabel: 'I accept the smoke checkout terms.',
+      body: 'Smoke checkout terms for payment edge-case verification.',
+      effectiveFrom: new Date().toISOString(),
+      introCopy: 'Smoke checkout terms.',
+      policyKey: `payment-edge-smoke:${runId}:class-checkout-terms`,
+      policyState: 'active',
+      policyType: 'class_checkout_terms',
+      title: 'Payment Edge Smoke Checkout Terms',
+      version: `payment-edge-smoke-${runId}`,
+    },
+  });
+
+  return {
+    created: true,
+    policy,
+  };
+};
+
+const markTermsAccepted = async (strapi, reservation, policy) =>
   documents(strapi, 'api::reservation.reservation').update({
     documentId: reservation.documentId,
     data: {
+      acceptedTermsPolicyDocument: {
+        connect: [{ documentId: policy.documentId }],
+      },
       termsAcceptedAt: new Date().toISOString(),
-      termsVersion: process.env.CLASS_TERMS_VERSION || 'class-terms-v1',
+      termsVersion: policy.version,
     },
-    populate: ['candidate', 'class', 'enrollment'],
+    populate: ['acceptedTermsPolicyDocument', 'candidate', 'class', 'enrollment'],
   });
 
 const createCheckoutPayment = async (strapi, reservation, checkoutSessionId) => {
@@ -519,6 +565,7 @@ const main = async () => {
   const appContext = await compileStrapi();
   const strapi = await createStrapi(appContext).load();
   const created = await setupSmokeData(strapi, runId);
+  const checkoutTermsPolicy = await ensureActiveCheckoutTermsPolicy(strapi, runId);
   const candidateService = strapi.service('api::candidate.candidate');
   const webhookService = strapi.service('api::payment-webhook-event.payment-webhook-event');
 
@@ -591,7 +638,8 @@ const main = async () => {
       const requestContext = context('failed-payment-retry');
       const reservation = await markTermsAccepted(
         strapi,
-        await reserveCandidate(strapi, created.classRecord, created.candidates[1], requestContext)
+        await reserveCandidate(strapi, created.classRecord, created.candidates[1], requestContext),
+        checkoutTermsPolicy.policy
       );
       const failedCheckoutSessionId = `cs_payment_edge_${runId}_failed`;
       const retryCheckoutSessionId = `cs_payment_edge_${runId}_retry`;
@@ -941,6 +989,14 @@ const main = async () => {
       await deleteDocument(strapi, 'api::course.course', created.course?.documentId);
       await deleteDocument(strapi, 'api::class-area.class-area', created.area?.documentId);
       await deleteDocument(strapi, 'api::work-sector.work-sector', created.sector?.documentId);
+
+      if (checkoutTermsPolicy.created) {
+        await deleteDocument(
+          strapi,
+          'api::policy-document.policy-document',
+          checkoutTermsPolicy.policy?.documentId
+        );
+      }
 
       for (const candidate of created.candidates) {
         await deleteDocument(strapi, 'api::candidate.candidate', candidate.documentId);

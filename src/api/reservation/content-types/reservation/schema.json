@@ -85,6 +85,12 @@
       "type": "string",
       "maxLength": 120
     },
+    "acceptedTermsPolicyDocument": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::policy-document.policy-document",
+      "inversedBy": "acceptedReservations"
+    },
     "idempotencyKey": {
       "type": "string",
       "maxLength": 160
