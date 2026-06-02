@@ -44,7 +44,7 @@
       "default": "settings",
       "required": true
     },
-    "status": {
+    "reviewState": {
       "type": "enumeration",
       "enum": [
         "new",

@@ -158,6 +158,19 @@ export default {
     },
     {
       method: 'POST',
+      path: '/candidates/me/waiting-list-offer/:offerDocumentId/decline',
+      handler: 'candidate.declineWaitingListOffer',
+      config: {
+        auth: false,
+        middlewares: [
+          {
+            name: 'global::auth0-jwt',
+          },
+        ],
+      },
+    },
+    {
+      method: 'POST',
       path: '/candidates/me/unlisted-interest',
       handler: 'candidate.createUnlistedInterest',
       config: {

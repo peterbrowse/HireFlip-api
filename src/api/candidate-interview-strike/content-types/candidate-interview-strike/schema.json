@@ -36,7 +36,7 @@
       ],
       "required": true
     },
-    "status": {
+    "strikeState": {
       "type": "enumeration",
       "enum": [
         "active",

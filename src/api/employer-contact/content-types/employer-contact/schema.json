@@ -53,7 +53,7 @@
       "type": "string",
       "maxLength": 160
     },
-    "status": {
+    "contactState": {
       "type": "enumeration",
       "enum": [
         "invited",

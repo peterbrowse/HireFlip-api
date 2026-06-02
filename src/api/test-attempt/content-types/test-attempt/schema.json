@@ -30,7 +30,7 @@
       "type": "integer",
       "required": true
     },
-    "status": {
+    "attemptState": {
       "type": "enumeration",
       "enum": [
         "in_progress",

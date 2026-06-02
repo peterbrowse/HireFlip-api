@@ -12,6 +12,7 @@ type RequestContext = {
 
 type DocumentRecord = Record<string, unknown> & {
   documentId?: string;
+  processingState?: string;
   status?: string;
 };
 
@@ -61,6 +62,8 @@ const objectValue = (value: unknown) => {
 
   return {};
 };
+
+const webhookEventProcessingState = (event?: DocumentRecord) => event?.processingState || event?.status;
 
 const checkoutSessionSchema = z
   .object({
@@ -119,7 +122,7 @@ export default factories.createCoreService('api::payment-webhook-event.payment-w
     const failedEvents = await documents(strapi, 'api::payment-webhook-event.payment-webhook-event').findMany({
       filters: {
         paymentProvider: 'stripe',
-        status: 'failed',
+        processingState: 'failed',
       },
       limit: safeLimit,
       sort: ['receivedAt:asc', 'createdAt:asc'],
@@ -160,11 +163,11 @@ export default factories.createCoreService('api::payment-webhook-event.payment-w
     const payload = validateStripeWebhookEvent(input);
     const existingEvent = await findWebhookEvent(strapi, payload.providerEventId);
 
-    if (existingEvent?.status === 'processed' || existingEvent?.status === 'ignored') {
+    if (webhookEventProcessingState(existingEvent) === 'processed' || webhookEventProcessingState(existingEvent) === 'ignored') {
       return {
         duplicate: true,
         providerEventId: payload.providerEventId,
-        status: existingEvent.status,
+        status: webhookEventProcessingState(existingEvent),
       };
     }
 
@@ -176,7 +179,7 @@ export default factories.createCoreService('api::payment-webhook-event.payment-w
             payload,
             processingError: null,
             receivedAt: existingEvent.receivedAt || receivedAt,
-            status: 'received',
+            processingState: 'received',
           },
         })
       : await documents(strapi, 'api::payment-webhook-event.payment-webhook-event').create({
@@ -191,7 +194,7 @@ export default factories.createCoreService('api::payment-webhook-event.payment-w
             payload,
             providerEventId: payload.providerEventId,
             receivedAt,
-            status: 'received',
+            processingState: 'received',
           },
         });
 
@@ -226,14 +229,14 @@ export default factories.createCoreService('api::payment-webhook-event.payment-w
             : {}),
           processedAt: new Date().toISOString(),
           processingError: null,
-          status: paymentDocumentId ? 'processed' : 'ignored',
+          processingState: paymentDocumentId ? 'processed' : 'ignored',
         },
         populate: ['payment', 'refund'],
       });
 
       return {
         providerEventId: payload.providerEventId,
-        status: processedEvent.status,
+        status: webhookEventProcessingState(processedEvent),
       };
     } catch (error) {
       await documents(strapi, 'api::payment-webhook-event.payment-webhook-event').update({
@@ -241,7 +244,7 @@ export default factories.createCoreService('api::payment-webhook-event.payment-w
         data: {
           processedAt: new Date().toISOString(),
           processingError: stringifyError(error),
-          status: 'failed',
+          processingState: 'failed',
         },
       });
 

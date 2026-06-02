@@ -2,6 +2,8 @@
 
 const { compileStrapi, createStrapi } = require('@strapi/strapi');
 
+process.env.CLASS_WORKFLOW_BOOTSTRAP_ENABLED = 'false';
+
 const upsertBySlug = async (strapi, uid, slug, data, populate = []) => {
   const existingRecords = await strapi.documents(uid).findMany({
     filters: { slug },
@@ -114,7 +116,7 @@ const main = async () => {
       sector: 'Marketing',
       sourceReference: 'HireFlip internal launch outline',
       sourceType: 'internal',
-      status: 'active',
+      courseState: 'active',
       version: 'launch-v1',
     });
 

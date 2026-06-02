@@ -24,6 +24,11 @@ type CandidateService = {
     context: RequestContext
   ): Promise<unknown>;
   createCurrentCandidateUnlistedInterest(auth: unknown, input: unknown, context: RequestContext): Promise<unknown>;
+  declineCurrentCandidateWaitingListOffer(
+    auth: unknown,
+    offerDocumentId: string,
+    context: RequestContext
+  ): Promise<unknown>;
   expireCurrentCandidateClassReservation(
     auth: unknown,
     reservationDocumentId: string,
@@ -177,6 +182,22 @@ export default factories.createCoreController('api::candidate.candidate', ({ str
     );
 
     ctx.status = result.created ? 201 : 200;
+    ctx.body = {
+      data: result,
+    };
+  },
+
+  async declineWaitingListOffer(ctx) {
+    const result = await candidateService(strapi).declineCurrentCandidateWaitingListOffer(
+      ctx.state?.hireflipAuth,
+      ctx.params?.offerDocumentId,
+      {
+        ipAddress: getForwardedClientIp(ctx),
+        requestId: ctx.state?.requestId,
+        userAgent: ctx.request.get('x-hireflip-client-user-agent') || ctx.request.get('user-agent'),
+      }
+    );
+
     ctx.body = {
       data: result,
     };

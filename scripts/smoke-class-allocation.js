@@ -5,6 +5,8 @@ const path = require('node:path');
 const { compileStrapi, createStrapi } = require('@strapi/strapi');
 const Redis = require('ioredis');
 
+process.env.CLASS_WORKFLOW_BOOTSTRAP_ENABLED = 'false';
+
 const stripQuotes = (value) => {
   const trimmed = value.trim();
 
@@ -168,7 +170,7 @@ const main = async () => {
       name: `Allocation Smoke Course ${runId}`,
       sector: 'Smoke',
       sourceType: 'internal',
-      status: 'active',
+      courseState: 'active',
       version: runId,
     });
     created.classRecord = await createDocument(
@@ -216,7 +218,7 @@ const main = async () => {
         lastName: `Smoke ${index}`,
         marketingConsentState: 'opted_out',
         preferredCommunicationChannel: 'email',
-        status: 'unenrolled',
+        candidateState: 'unenrolled',
         workSectorPreferences: preferenceSelection(sectorSlug, created.sector.name),
       });
 
@@ -247,7 +249,7 @@ const main = async () => {
         class: {
           documentId: created.classRecord.documentId,
         },
-        status: 'active',
+        reservationState: 'active',
       },
       limit: 1000,
       populate: ['candidate'],
@@ -257,7 +259,7 @@ const main = async () => {
         class: {
           documentId: created.classRecord.documentId,
         },
-        status: 'waiting_list',
+        enrollmentState: 'waiting_list',
       },
       limit: 1000,
       populate: ['candidate'],

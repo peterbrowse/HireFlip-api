@@ -505,6 +505,11 @@ export interface ApiAssessmentAppealAssessmentAppeal
       'manyToOne',
       'api::answer-submission.answer-submission'
     >;
+    appealState: Schema.Attribute.Enumeration<
+      ['submitted', 'under_review', 'approved', 'rejected', 'withdrawn']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'submitted'>;
     candidate: Schema.Attribute.Relation<
       'manyToOne',
       'api::candidate.candidate'
@@ -529,11 +534,6 @@ export interface ApiAssessmentAppealAssessmentAppeal
     reason: Schema.Attribute.Text & Schema.Attribute.Required;
     reviewedAt: Schema.Attribute.DateTime;
     reviewedByAdminId: Schema.Attribute.String;
-    status: Schema.Attribute.Enumeration<
-      ['submitted', 'under_review', 'approved', 'rejected', 'withdrawn']
-    > &
-      Schema.Attribute.Required &
-      Schema.Attribute.DefaultTo<'submitted'>;
     submittedAt: Schema.Attribute.DateTime;
     testAttempt: Schema.Attribute.Relation<
       'manyToOne',
@@ -727,12 +727,12 @@ export interface ApiCandidateInterviewStrikeCandidateInterviewStrike
     reviewDecision: Schema.Attribute.Text;
     reviewedAt: Schema.Attribute.DateTime;
     reviewedByAdminId: Schema.Attribute.String;
-    status: Schema.Attribute.Enumeration<
+    strikeNumber: Schema.Attribute.Integer;
+    strikeState: Schema.Attribute.Enumeration<
       ['active', 'appealed', 'upheld', 'removed', 'expired']
     > &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'active'>;
-    strikeNumber: Schema.Attribute.Integer;
     updatedAt: Schema.Attribute.DateTime;
     updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
@@ -775,6 +775,11 @@ export interface ApiCandidateProfileCandidateProfile
       Schema.Attribute.Private;
     location: Schema.Attribute.String;
     metadata: Schema.Attribute.JSON;
+    profileState: Schema.Attribute.Enumeration<
+      ['draft', 'in_review', 'completed', 'archived']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'draft'>;
     publishedAt: Schema.Attribute.DateTime;
     recruitmentPlatformVisibility: Schema.Attribute.Enumeration<
       ['not_set', 'visible', 'hidden']
@@ -782,11 +787,6 @@ export interface ApiCandidateProfileCandidateProfile
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'not_set'>;
     skills: Schema.Attribute.JSON;
-    status: Schema.Attribute.Enumeration<
-      ['draft', 'in_review', 'completed', 'archived']
-    > &
-      Schema.Attribute.Required &
-      Schema.Attribute.DefaultTo<'draft'>;
     summary: Schema.Attribute.Text;
     updatedAt: Schema.Attribute.DateTime;
     updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
@@ -849,6 +849,27 @@ export interface ApiCandidateCandidate extends Struct.CollectionTypeSchema {
     authProvider: Schema.Attribute.Enumeration<['auth0', 'manual', 'unknown']> &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'unknown'>;
+    candidateState: Schema.Attribute.Enumeration<
+      [
+        'interest_registered',
+        'account_created',
+        'unenrolled',
+        'enrolled',
+        'alumni',
+        'in_class',
+        'course_completed',
+        'passed',
+        'failed',
+        'interview_phase',
+        'hired',
+        'refunded',
+        'suspended',
+        'blacklisted',
+        'archived',
+      ]
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'account_created'>;
     classAreaPreferences: Schema.Attribute.JSON;
     createdAt: Schema.Attribute.DateTime;
     createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
@@ -910,27 +931,6 @@ export interface ApiCandidateCandidate extends Struct.CollectionTypeSchema {
       Schema.Attribute.SetMinMaxLength<{
         maxLength: 120;
       }>;
-    status: Schema.Attribute.Enumeration<
-      [
-        'interest_registered',
-        'account_created',
-        'unenrolled',
-        'enrolled',
-        'alumni',
-        'in_class',
-        'course_completed',
-        'passed',
-        'failed',
-        'interview_phase',
-        'hired',
-        'refunded',
-        'suspended',
-        'blacklisted',
-        'archived',
-      ]
-    > &
-      Schema.Attribute.Required &
-      Schema.Attribute.DefaultTo<'account_created'>;
     updatedAt: Schema.Attribute.DateTime;
     updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
@@ -1206,6 +1206,11 @@ export interface ApiCourseMaterialCourseMaterial
       'api::course-material.course-material'
     > &
       Schema.Attribute.Private;
+    materialState: Schema.Attribute.Enumeration<
+      ['draft', 'active', 'archived']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'draft'>;
     materialType: Schema.Attribute.Enumeration<
       [
         'text',
@@ -1229,9 +1234,6 @@ export interface ApiCourseMaterialCourseMaterial
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<0>;
     sourceReference: Schema.Attribute.String;
-    status: Schema.Attribute.Enumeration<['draft', 'active', 'archived']> &
-      Schema.Attribute.Required &
-      Schema.Attribute.DefaultTo<'draft'>;
     storedFile: Schema.Attribute.Relation<
       'oneToOne',
       'api::stored-file.stored-file'
@@ -1272,6 +1274,9 @@ export interface ApiCourseModuleCourseModule
       'oneToMany',
       'api::course-material.course-material'
     >;
+    moduleState: Schema.Attribute.Enumeration<['draft', 'active', 'archived']> &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'draft'>;
     publishedAt: Schema.Attribute.DateTime;
     required: Schema.Attribute.Boolean &
       Schema.Attribute.Required &
@@ -1285,9 +1290,6 @@ export interface ApiCourseModuleCourseModule
         number
       > &
       Schema.Attribute.DefaultTo<0>;
-    status: Schema.Attribute.Enumeration<['draft', 'active', 'archived']> &
-      Schema.Attribute.Required &
-      Schema.Attribute.DefaultTo<'draft'>;
     title: Schema.Attribute.String &
       Schema.Attribute.Required &
       Schema.Attribute.SetMinMaxLength<{
@@ -1341,6 +1343,11 @@ export interface ApiCourseProgressCourseProgress
     > &
       Schema.Attribute.Private;
     metadata: Schema.Attribute.JSON;
+    progressState: Schema.Attribute.Enumeration<
+      ['not_started', 'in_progress', 'completed', 'failed', 'skipped']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'not_started'>;
     progressType: Schema.Attribute.Enumeration<
       ['class', 'module', 'material', 'test', 'question']
     > &
@@ -1349,11 +1356,6 @@ export interface ApiCourseProgressCourseProgress
     question: Schema.Attribute.Relation<'manyToOne', 'api::question.question'>;
     score: Schema.Attribute.Decimal;
     startedAt: Schema.Attribute.DateTime;
-    status: Schema.Attribute.Enumeration<
-      ['not_started', 'in_progress', 'completed', 'failed', 'skipped']
-    > &
-      Schema.Attribute.Required &
-      Schema.Attribute.DefaultTo<'not_started'>;
     test: Schema.Attribute.Relation<'manyToOne', 'api::test.test'>;
     updatedAt: Schema.Attribute.DateTime;
     updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
@@ -1374,6 +1376,9 @@ export interface ApiCourseCourse extends Struct.CollectionTypeSchema {
   };
   attributes: {
     classes: Schema.Attribute.Relation<'oneToMany', 'api::class.class'>;
+    courseState: Schema.Attribute.Enumeration<['draft', 'active', 'archived']> &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'draft'>;
     createdAt: Schema.Attribute.DateTime;
     createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
@@ -1408,9 +1413,6 @@ export interface ApiCourseCourse extends Struct.CollectionTypeSchema {
     > &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'internal'>;
-    status: Schema.Attribute.Enumeration<['draft', 'active', 'archived']> &
-      Schema.Attribute.Required &
-      Schema.Attribute.DefaultTo<'draft'>;
     updatedAt: Schema.Attribute.DateTime;
     updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
@@ -1479,17 +1481,17 @@ export interface ApiEmployerCapacityChangeRequestEmployerCapacityChangeRequest
         },
         number
       >;
+    requestState: Schema.Attribute.Enumeration<
+      ['pending', 'approved', 'denied', 'cancelled']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'pending'>;
     reviewedAt: Schema.Attribute.DateTime;
     reviewedBy: Schema.Attribute.String &
       Schema.Attribute.SetMinMaxLength<{
         maxLength: 160;
       }>;
     reviewNotes: Schema.Attribute.Text;
-    status: Schema.Attribute.Enumeration<
-      ['pending', 'approved', 'denied', 'cancelled']
-    > &
-      Schema.Attribute.Required &
-      Schema.Attribute.DefaultTo<'pending'>;
     updatedAt: Schema.Attribute.DateTime;
     updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
@@ -1518,6 +1520,11 @@ export interface ApiEmployerContactEmployerContact
     authProvider: Schema.Attribute.Enumeration<['auth0', 'manual', 'unknown']> &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'unknown'>;
+    contactState: Schema.Attribute.Enumeration<
+      ['invited', 'active', 'disabled', 'archived']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'invited'>;
     createdAt: Schema.Attribute.DateTime;
     createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
@@ -1552,11 +1559,6 @@ export interface ApiEmployerContactEmployerContact
       Schema.Attribute.SetMinMaxLength<{
         maxLength: 160;
       }>;
-    status: Schema.Attribute.Enumeration<
-      ['invited', 'active', 'disabled', 'archived']
-    > &
-      Schema.Attribute.Required &
-      Schema.Attribute.DefaultTo<'invited'>;
     updatedAt: Schema.Attribute.DateTime;
     updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
@@ -1602,6 +1604,11 @@ export interface ApiEmployerEmployer extends Struct.CollectionTypeSchema {
     createdAt: Schema.Attribute.DateTime;
     createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
+    employerState: Schema.Attribute.Enumeration<
+      ['prospect', 'invited', 'active', 'paused', 'archived']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'prospect'>;
     initialInterviewCommitmentCadence: Schema.Attribute.Enumeration<
       ['not_set', 'quarterly', 'biannually', 'annually']
     > &
@@ -1642,11 +1649,6 @@ export interface ApiEmployerEmployer extends Struct.CollectionTypeSchema {
       }>;
     roleInterests: Schema.Attribute.JSON;
     sectorInterests: Schema.Attribute.JSON;
-    status: Schema.Attribute.Enumeration<
-      ['prospect', 'invited', 'active', 'paused', 'archived']
-    > &
-      Schema.Attribute.Required &
-      Schema.Attribute.DefaultTo<'prospect'>;
     updatedAt: Schema.Attribute.DateTime;
     updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
@@ -1681,6 +1683,29 @@ export interface ApiEnrollmentEnrollment extends Struct.CollectionTypeSchema {
     createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
     enrolledAt: Schema.Attribute.DateTime;
+    enrollmentState: Schema.Attribute.Enumeration<
+      [
+        'interest_registered',
+        'interest_withdrawn',
+        'enrollment_open',
+        'place_reserved',
+        'waiting_list',
+        'missed_out',
+        'enrolled',
+        'payment_exception',
+        'in_class',
+        'interview_phase',
+        'completed',
+        'failed',
+        'withdrawn',
+        'refunded',
+        'removed_no_refund',
+        'removed_partial_refund',
+        'removed_full_refund',
+      ]
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'interest_registered'>;
     interestRegisteredAt: Schema.Attribute.DateTime;
     interviewGuaranteeDeadline: Schema.Attribute.DateTime;
     interviewGuaranteeWindowStartsAt: Schema.Attribute.DateTime;
@@ -1731,29 +1756,6 @@ export interface ApiEnrollmentEnrollment extends Struct.CollectionTypeSchema {
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'not_assessed'>;
     reservationExpiresAt: Schema.Attribute.DateTime;
-    status: Schema.Attribute.Enumeration<
-      [
-        'interest_registered',
-        'interest_withdrawn',
-        'enrollment_open',
-        'place_reserved',
-        'waiting_list',
-        'missed_out',
-        'enrolled',
-        'payment_exception',
-        'in_class',
-        'interview_phase',
-        'completed',
-        'failed',
-        'withdrawn',
-        'refunded',
-        'removed_no_refund',
-        'removed_partial_refund',
-        'removed_full_refund',
-      ]
-    > &
-      Schema.Attribute.Required &
-      Schema.Attribute.DefaultTo<'interest_registered'>;
     updatedAt: Schema.Attribute.DateTime;
     updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
@@ -1865,8 +1867,7 @@ export interface ApiInterviewSlotInterviewSlot
     meetingUrl: Schema.Attribute.String;
     metadata: Schema.Attribute.JSON;
     publishedAt: Schema.Attribute.DateTime;
-    startTime: Schema.Attribute.DateTime & Schema.Attribute.Required;
-    status: Schema.Attribute.Enumeration<
+    slotState: Schema.Attribute.Enumeration<
       [
         'draft',
         'available',
@@ -1880,6 +1881,7 @@ export interface ApiInterviewSlotInterviewSlot
     > &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'available'>;
+    startTime: Schema.Attribute.DateTime & Schema.Attribute.Required;
     updatedAt: Schema.Attribute.DateTime;
     updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
@@ -1929,17 +1931,7 @@ export interface ApiInterviewInterview extends Struct.CollectionTypeSchema {
       'manyToOne',
       'api::interview-slot.interview-slot'
     >;
-    locale: Schema.Attribute.String & Schema.Attribute.Private;
-    localizations: Schema.Attribute.Relation<
-      'oneToMany',
-      'api::interview.interview'
-    > &
-      Schema.Attribute.Private;
-    metadata: Schema.Attribute.JSON;
-    publishedAt: Schema.Attribute.DateTime;
-    scheduledEndTime: Schema.Attribute.DateTime;
-    scheduledStartTime: Schema.Attribute.DateTime;
-    status: Schema.Attribute.Enumeration<
+    interviewState: Schema.Attribute.Enumeration<
       [
         'offered',
         'candidate_selected',
@@ -1954,6 +1946,16 @@ export interface ApiInterviewInterview extends Struct.CollectionTypeSchema {
     > &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'offered'>;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::interview.interview'
+    > &
+      Schema.Attribute.Private;
+    metadata: Schema.Attribute.JSON;
+    publishedAt: Schema.Attribute.DateTime;
+    scheduledEndTime: Schema.Attribute.DateTime;
+    scheduledStartTime: Schema.Attribute.DateTime;
     updatedAt: Schema.Attribute.DateTime;
     updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
@@ -1984,6 +1986,20 @@ export interface ApiNotificationEventNotificationEvent
     createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
     deliveredAt: Schema.Attribute.DateTime;
+    deliveryState: Schema.Attribute.Enumeration<
+      [
+        'queued',
+        'scheduled',
+        'sending',
+        'sent',
+        'delivered',
+        'failed',
+        'cancelled',
+        'suppressed',
+      ]
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'queued'>;
     employer: Schema.Attribute.Relation<'manyToOne', 'api::employer.employer'>;
     errorMessage: Schema.Attribute.Text;
     eventType: Schema.Attribute.String & Schema.Attribute.Required;
@@ -2027,20 +2043,6 @@ export interface ApiNotificationEventNotificationEvent
     relatedType: Schema.Attribute.String;
     scheduledAt: Schema.Attribute.DateTime;
     sentAt: Schema.Attribute.DateTime;
-    status: Schema.Attribute.Enumeration<
-      [
-        'queued',
-        'scheduled',
-        'sending',
-        'sent',
-        'delivered',
-        'failed',
-        'cancelled',
-        'suppressed',
-      ]
-    > &
-      Schema.Attribute.Required &
-      Schema.Attribute.DefaultTo<'queued'>;
     templateKey: Schema.Attribute.String;
     updatedAt: Schema.Attribute.DateTime;
     updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
@@ -2079,13 +2081,7 @@ export interface ApiOfferOffer extends Struct.CollectionTypeSchema {
     localizations: Schema.Attribute.Relation<'oneToMany', 'api::offer.offer'> &
       Schema.Attribute.Private;
     metadata: Schema.Attribute.JSON;
-    publishedAt: Schema.Attribute.DateTime;
-    requestedByEmployerContact: Schema.Attribute.Relation<
-      'manyToOne',
-      'api::employer-contact.employer-contact'
-    >;
-    requestedDetailsAt: Schema.Attribute.DateTime;
-    status: Schema.Attribute.Enumeration<
+    progressionState: Schema.Attribute.Enumeration<
       [
         'draft',
         'requested',
@@ -2097,6 +2093,12 @@ export interface ApiOfferOffer extends Struct.CollectionTypeSchema {
     > &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'requested'>;
+    publishedAt: Schema.Attribute.DateTime;
+    requestedByEmployerContact: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::employer-contact.employer-contact'
+    >;
+    requestedDetailsAt: Schema.Attribute.DateTime;
     updatedAt: Schema.Attribute.DateTime;
     updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
@@ -2134,17 +2136,17 @@ export interface ApiPaymentWebhookEventPaymentWebhookEvent
       Schema.Attribute.DefaultTo<'stripe'>;
     processedAt: Schema.Attribute.DateTime;
     processingError: Schema.Attribute.Text;
+    processingState: Schema.Attribute.Enumeration<
+      ['received', 'processed', 'ignored', 'failed']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'received'>;
     providerEventId: Schema.Attribute.String &
       Schema.Attribute.Required &
       Schema.Attribute.Unique;
     publishedAt: Schema.Attribute.DateTime;
     receivedAt: Schema.Attribute.DateTime;
     refund: Schema.Attribute.Relation<'manyToOne', 'api::refund.refund'>;
-    status: Schema.Attribute.Enumeration<
-      ['received', 'processed', 'ignored', 'failed']
-    > &
-      Schema.Attribute.Required &
-      Schema.Attribute.DefaultTo<'received'>;
     updatedAt: Schema.Attribute.DateTime;
     updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
@@ -2207,6 +2209,22 @@ export interface ApiPaymentPayment extends Struct.CollectionTypeSchema {
     paymentProvider: Schema.Attribute.Enumeration<['stripe']> &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'stripe'>;
+    paymentState: Schema.Attribute.Enumeration<
+      [
+        'draft',
+        'checkout_created',
+        'pending',
+        'paid',
+        'requires_review',
+        'failed',
+        'cancelled',
+        'expired',
+        'partially_refunded',
+        'refunded',
+      ]
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'draft'>;
     paymentType: Schema.Attribute.Enumeration<
       ['course_payment', 'subscription', 'other']
     > &
@@ -2232,22 +2250,6 @@ export interface ApiPaymentPayment extends Struct.CollectionTypeSchema {
       'api::reservation.reservation'
     >;
     slotReservationExpiresAt: Schema.Attribute.DateTime;
-    status: Schema.Attribute.Enumeration<
-      [
-        'draft',
-        'checkout_created',
-        'pending',
-        'paid',
-        'requires_review',
-        'failed',
-        'cancelled',
-        'expired',
-        'partially_refunded',
-        'refunded',
-      ]
-    > &
-      Schema.Attribute.Required &
-      Schema.Attribute.DefaultTo<'draft'>;
     updatedAt: Schema.Attribute.DateTime;
     updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
@@ -2327,21 +2329,7 @@ export interface ApiPrivacyRightsRequestPrivacyRightsRequest
       ]
     > &
       Schema.Attribute.Required;
-    requestType: Schema.Attribute.Enumeration<
-      [
-        'access',
-        'correction',
-        'deletion',
-        'erasure',
-        'portability',
-        'objection',
-        'restriction',
-        'other',
-      ]
-    > &
-      Schema.Attribute.Required;
-    retentionReasons: Schema.Attribute.JSON;
-    status: Schema.Attribute.Enumeration<
+    requestState: Schema.Attribute.Enumeration<
       [
         'received',
         'identity_verification_required',
@@ -2356,6 +2344,20 @@ export interface ApiPrivacyRightsRequestPrivacyRightsRequest
     > &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'received'>;
+    requestType: Schema.Attribute.Enumeration<
+      [
+        'access',
+        'correction',
+        'deletion',
+        'erasure',
+        'portability',
+        'objection',
+        'restriction',
+        'other',
+      ]
+    > &
+      Schema.Attribute.Required;
+    retentionReasons: Schema.Attribute.JSON;
     subjectUserId: Schema.Attribute.String;
     subjectUserType: Schema.Attribute.Enumeration<
       ['candidate', 'employer_contact', 'recruiter', 'public_lead', 'unknown']
@@ -2527,6 +2529,11 @@ export interface ApiQuestionQuestion extends Struct.CollectionTypeSchema {
     options: Schema.Attribute.JSON;
     prompt: Schema.Attribute.RichText & Schema.Attribute.Required;
     publishedAt: Schema.Attribute.DateTime;
+    questionState: Schema.Attribute.Enumeration<
+      ['draft', 'active', 'archived']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'draft'>;
     questionType: Schema.Attribute.Enumeration<
       [
         'short_text',
@@ -2544,9 +2551,6 @@ export interface ApiQuestionQuestion extends Struct.CollectionTypeSchema {
     sortOrder: Schema.Attribute.Integer &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<0>;
-    status: Schema.Attribute.Enumeration<['draft', 'active', 'archived']> &
-      Schema.Attribute.Required &
-      Schema.Attribute.DefaultTo<'draft'>;
     test: Schema.Attribute.Relation<'manyToOne', 'api::test.test'>;
     updatedAt: Schema.Attribute.DateTime;
     updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
@@ -2637,8 +2641,7 @@ export interface ApiRefundRefund extends Struct.CollectionTypeSchema {
         },
         number
       >;
-    requestedAt: Schema.Attribute.DateTime;
-    status: Schema.Attribute.Enumeration<
+    refundState: Schema.Attribute.Enumeration<
       [
         'draft',
         'requested',
@@ -2653,6 +2656,7 @@ export interface ApiRefundRefund extends Struct.CollectionTypeSchema {
     > &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'draft'>;
+    requestedAt: Schema.Attribute.DateTime;
     updatedAt: Schema.Attribute.DateTime;
     updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
@@ -2715,12 +2719,7 @@ export interface ApiReservationReservation extends Struct.CollectionTypeSchema {
     paidAt: Schema.Attribute.DateTime;
     publishedAt: Schema.Attribute.DateTime;
     reservationStartedAt: Schema.Attribute.DateTime & Schema.Attribute.Required;
-    source: Schema.Attribute.Enumeration<
-      ['candidate_dashboard', 'waiting_list_offer', 'admin']
-    > &
-      Schema.Attribute.Required &
-      Schema.Attribute.DefaultTo<'candidate_dashboard'>;
-    status: Schema.Attribute.Enumeration<
+    reservationState: Schema.Attribute.Enumeration<
       [
         'active',
         'cancelled',
@@ -2732,6 +2731,11 @@ export interface ApiReservationReservation extends Struct.CollectionTypeSchema {
     > &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'active'>;
+    source: Schema.Attribute.Enumeration<
+      ['candidate_dashboard', 'waiting_list_offer', 'admin']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'candidate_dashboard'>;
     termsAcceptedAt: Schema.Attribute.DateTime;
     termsVersion: Schema.Attribute.String &
       Schema.Attribute.SetMinMaxLength<{
@@ -2761,6 +2765,11 @@ export interface ApiStoredFileStoredFile extends Struct.CollectionTypeSchema {
     createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
     deletedAt: Schema.Attribute.DateTime;
+    fileState: Schema.Attribute.Enumeration<
+      ['pending', 'uploaded', 'generated', 'deleted', 'quarantined']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'pending'>;
     generatedByService: Schema.Attribute.String;
     locale: Schema.Attribute.String & Schema.Attribute.Private;
     localizations: Schema.Attribute.Relation<
@@ -2808,11 +2817,6 @@ export interface ApiStoredFileStoredFile extends Struct.CollectionTypeSchema {
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'active'>;
     sizeBytes: Schema.Attribute.BigInteger;
-    status: Schema.Attribute.Enumeration<
-      ['pending', 'uploaded', 'generated', 'deleted', 'quarantined']
-    > &
-      Schema.Attribute.Required &
-      Schema.Attribute.DefaultTo<'pending'>;
     updatedAt: Schema.Attribute.DateTime;
     updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
@@ -2850,6 +2854,19 @@ export interface ApiTestAttemptTestAttempt extends Struct.CollectionTypeSchema {
   };
   attributes: {
     attemptNumber: Schema.Attribute.Integer & Schema.Attribute.Required;
+    attemptState: Schema.Attribute.Enumeration<
+      [
+        'in_progress',
+        'submitted',
+        'scored',
+        'passed',
+        'failed',
+        'appealed',
+        'void',
+      ]
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'in_progress'>;
     candidate: Schema.Attribute.Relation<
       'manyToOne',
       'api::candidate.candidate'
@@ -2890,19 +2907,6 @@ export interface ApiTestAttemptTestAttempt extends Struct.CollectionTypeSchema {
       Schema.Attribute.DefaultTo<'first_attempt'>;
     score: Schema.Attribute.Decimal;
     startedAt: Schema.Attribute.DateTime;
-    status: Schema.Attribute.Enumeration<
-      [
-        'in_progress',
-        'submitted',
-        'scored',
-        'passed',
-        'failed',
-        'appealed',
-        'void',
-      ]
-    > &
-      Schema.Attribute.Required &
-      Schema.Attribute.DefaultTo<'in_progress'>;
     submittedAt: Schema.Attribute.DateTime;
     test: Schema.Attribute.Relation<'manyToOne', 'api::test.test'>;
     timeTakenSeconds: Schema.Attribute.Integer;
@@ -2947,7 +2951,7 @@ export interface ApiTestTest extends Struct.CollectionTypeSchema {
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<true>;
     questions: Schema.Attribute.Relation<'oneToMany', 'api::question.question'>;
-    status: Schema.Attribute.Enumeration<['draft', 'active', 'archived']> &
+    testState: Schema.Attribute.Enumeration<['draft', 'active', 'archived']> &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'draft'>;
     timeLimitMinutes: Schema.Attribute.Integer;
@@ -2992,16 +2996,16 @@ export interface ApiUnlistedInterestUnlistedInterest
       Schema.Attribute.Private;
     metadata: Schema.Attribute.JSON;
     publishedAt: Schema.Attribute.DateTime;
+    reviewState: Schema.Attribute.Enumeration<
+      ['new', 'reviewed', 'planned', 'rejected', 'archived']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'new'>;
     source: Schema.Attribute.Enumeration<
       ['class_page', 'onboarding', 'settings']
     > &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'settings'>;
-    status: Schema.Attribute.Enumeration<
-      ['new', 'reviewed', 'planned', 'rejected', 'archived']
-    > &
-      Schema.Attribute.Required &
-      Schema.Attribute.DefaultTo<'new'>;
     suggestedValue: Schema.Attribute.String &
       Schema.Attribute.Required &
       Schema.Attribute.SetMinMaxLength<{
@@ -3011,6 +3015,92 @@ export interface ApiUnlistedInterestUnlistedInterest
     updatedAt: Schema.Attribute.DateTime;
     updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
+  };
+}
+
+export interface ApiWaitingListOfferWaitingListOffer
+  extends Struct.CollectionTypeSchema {
+  collectionName: 'waiting_list_offers';
+  info: {
+    description: 'Exclusive timed offers to waiting-list candidates when a class place may become available.';
+    displayName: 'Waiting List Offer';
+    pluralName: 'waiting-list-offers';
+    singularName: 'waiting-list-offer';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    candidate: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::candidate.candidate'
+    >;
+    claimedAt: Schema.Attribute.DateTime;
+    class: Schema.Attribute.Relation<'manyToOne', 'api::class.class'>;
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    declinedAt: Schema.Attribute.DateTime;
+    enrollment: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::enrollment.enrollment'
+    >;
+    expiredAt: Schema.Attribute.DateTime;
+    expiresAt: Schema.Attribute.DateTime & Schema.Attribute.Required;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::waiting-list-offer.waiting-list-offer'
+    > &
+      Schema.Attribute.Private;
+    metadata: Schema.Attribute.JSON;
+    offeredAt: Schema.Attribute.DateTime & Schema.Attribute.Required;
+    offerState: Schema.Attribute.Enumeration<
+      [
+        'active',
+        'claimed',
+        'declined',
+        'expired',
+        'skipped_ineligible',
+        'superseded',
+      ]
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'active'>;
+    publishedAt: Schema.Attribute.DateTime;
+    reservation: Schema.Attribute.Relation<
+      'oneToOne',
+      'api::reservation.reservation'
+    >;
+    skippedAt: Schema.Attribute.DateTime;
+    sourceTrigger: Schema.Attribute.Enumeration<
+      [
+        'expired_reservation',
+        'cancelled_reservation',
+        'enrolled_candidate_withdrawal',
+        'admin_released_place',
+        'payment_failure_after_expiry',
+        'payment_exception_release',
+        'admin_ineligibility_removal',
+        'waiting_list_offer_declined',
+        'waiting_list_offer_expired',
+        'system_reconciliation',
+      ]
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'system_reconciliation'>;
+    supersededAt: Schema.Attribute.DateTime;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    waitingListJoinedAt: Schema.Attribute.DateTime;
+    waitingListPositionAtOffer: Schema.Attribute.Integer &
+      Schema.Attribute.SetMinMax<
+        {
+          min: 1;
+        },
+        number
+      >;
   };
 }
 
@@ -3609,6 +3699,7 @@ declare module '@strapi/strapi' {
       'api::test-attempt.test-attempt': ApiTestAttemptTestAttempt;
       'api::test.test': ApiTestTest;
       'api::unlisted-interest.unlisted-interest': ApiUnlistedInterestUnlistedInterest;
+      'api::waiting-list-offer.waiting-list-offer': ApiWaitingListOfferWaitingListOffer;
       'api::work-sector.work-sector': ApiWorkSectorWorkSector;
       'plugin::content-releases.release': PluginContentReleasesRelease;
       'plugin::content-releases.release-action': PluginContentReleasesReleaseAction;

@@ -4,6 +4,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { compileStrapi, createStrapi } = require('@strapi/strapi');
 
+process.env.CLASS_WORKFLOW_BOOTSTRAP_ENABLED = 'false';
+
 const stripQuotes = (value) => {
   const trimmed = value.trim();
 

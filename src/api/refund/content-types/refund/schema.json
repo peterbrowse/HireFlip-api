@@ -34,7 +34,7 @@
       "default": "stripe",
       "required": true
     },
-    "status": {
+    "refundState": {
       "type": "enumeration",
       "enum": [
         "draft",

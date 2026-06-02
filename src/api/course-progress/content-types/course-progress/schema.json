@@ -32,7 +32,7 @@
       ],
       "required": true
     },
-    "status": {
+    "progressState": {
       "type": "enumeration",
       "enum": [
         "not_started",

@@ -17,6 +17,9 @@
     "seed:reset-content": "npm run reset:class-data && npm run seed:content",
     "seed:local-content": "npm run seed:content",
     "smoke:class-allocation": "ENV_PATH=${ENV_PATH:-.env.local} node scripts/smoke-class-allocation.js",
+    "smoke:class-realtime": "npm run build && ENV_PATH=${ENV_PATH:-.env.local} node scripts/smoke-class-realtime.js",
+    "smoke:class-workflows": "npm run build && ENV_PATH=${ENV_PATH:-.env.local} node scripts/smoke-class-allocation.js && ENV_PATH=${ENV_PATH:-.env.local} node scripts/smoke-waiting-list-offers.js && ENV_PATH=${ENV_PATH:-.env.local} node scripts/smoke-class-realtime.js",
+    "smoke:waiting-list-offers": "ENV_PATH=${ENV_PATH:-.env.local} node scripts/smoke-waiting-list-offers.js",
     "upgrade": "npx @strapi/upgrade latest",
     "upgrade:dry": "npx @strapi/upgrade latest --dry"
   },
@@ -27,6 +30,7 @@
     "@strapi/provider-upload-aws-s3": "5.47.0",
     "@strapi/strapi": "5.47.0",
     "better-sqlite3": "^12.10.0",
+    "bullmq": "^5.77.7",
     "ioredis": "^5.11.0",
     "jose": "^6.2.3",
     "libphonenumber-js": "^1.13.3",

@@ -83,7 +83,7 @@
     "accountOnboardingCompletedAt": {
       "type": "datetime"
     },
-    "status": {
+    "candidateState": {
       "type": "enumeration",
       "enum": [
         "interest_registered",

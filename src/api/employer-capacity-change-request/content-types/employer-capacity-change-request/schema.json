@@ -56,7 +56,7 @@
     "reason": {
       "type": "text"
     },
-    "status": {
+    "requestState": {
       "type": "enumeration",
       "enum": [
         "pending",

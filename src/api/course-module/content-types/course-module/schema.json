@@ -37,7 +37,7 @@
       "default": true,
       "required": true
     },
-    "status": {
+    "moduleState": {
       "type": "enumeration",
       "enum": [
         "draft",

@@ -67,7 +67,7 @@
       "default": "private",
       "required": true
     },
-    "status": {
+    "fileState": {
       "type": "enumeration",
       "enum": [
         "pending",

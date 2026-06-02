@@ -28,7 +28,7 @@
       "type": "string",
       "required": true
     },
-    "status": {
+    "processingState": {
       "type": "enumeration",
       "enum": [
         "received",

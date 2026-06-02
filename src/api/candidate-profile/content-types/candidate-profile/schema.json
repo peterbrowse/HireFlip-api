@@ -16,7 +16,7 @@
       "relation": "manyToOne",
       "target": "api::candidate.candidate"
     },
-    "status": {
+    "profileState": {
       "type": "enumeration",
       "enum": [
         "draft",

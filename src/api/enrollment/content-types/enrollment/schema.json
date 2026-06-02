@@ -21,7 +21,7 @@
       "relation": "manyToOne",
       "target": "api::class.class"
     },
-    "status": {
+    "enrollmentState": {
       "type": "enumeration",
       "enum": [
         "interest_registered",

@@ -15,6 +15,11 @@ import {
   tryAcquireClassAllocationSyncLock,
   waitForClassAllocationReady,
 } from '../../../utils/class-allocation-redis';
+import { addWaitingListOfferExpiryJob } from '../../../utils/class-workflow-queue';
+import {
+  publishCandidateClassRealtimeEvent,
+  publishClassRealtimeEvent,
+} from '../../../utils/class-realtime-events';
 
 const { ApplicationError, UnauthorizedError, ValidationError } = errors;
 
@@ -44,17 +49,23 @@ type DocumentRecord = Record<string, unknown> & {
   amountPence?: number;
   authIdentityId?: string;
   candidate?: DocumentRecord;
+  candidateState?: string;
   candidateEmail?: string;
   capacity?: number;
   class?: DocumentRecord;
   classArea?: DocumentRecord;
+  claimedAt?: string;
   classAreaPreferences?: unknown;
   completionStatus?: string;
   currency?: string;
+  declinedAt?: string;
   displayTitle?: string;
   documentId?: string;
+  deliveryState?: string;
   email?: string;
   enrollment?: DocumentRecord;
+  enrollmentState?: string;
+  expiredAt?: string;
   expiresAt?: string;
   firstName?: string;
   id?: number;
@@ -69,8 +80,11 @@ type DocumentRecord = Record<string, unknown> & {
   metadata?: unknown;
   name?: string;
   notificationPreferences?: unknown;
+  offerState?: string;
+  offeredAt?: string;
   passStatus?: string;
   paidAt?: string;
+  paymentState?: string;
   paymentStatus?: string;
   paymentType?: string;
   phone?: string;
@@ -84,17 +98,24 @@ type DocumentRecord = Record<string, unknown> & {
   providerPaymentIntentId?: string;
   registeredInterestAt?: string;
   reservation?: DocumentRecord;
+  reservationState?: string;
   region?: string;
+  reviewState?: string;
   reservationExpiresAt?: string;
   reservationDocumentId?: string;
   sector?: string;
+  skippedAt?: string;
   slug?: string;
   startDate?: string;
   source?: string;
+  sourceTrigger?: string;
   state?: string;
   status?: string;
   suggestedValue?: string;
+  supersededAt?: string;
   waitingListPosition?: number;
+  waitingListJoinedAt?: string;
+  waitingListOffer?: DocumentRecord;
   workSector?: DocumentRecord;
   workSectorPreferences?: unknown;
 };
@@ -193,12 +214,22 @@ const enrollmentStatusAliases: Record<string, string> = {
   waitlisted: 'interest_registered',
 };
 
+const candidateState = (candidate?: DocumentRecord) => candidate?.candidateState || candidate?.status;
+const enrollmentState = (enrollment?: DocumentRecord) => enrollment?.enrollmentState || enrollment?.status;
+const reservationState = (reservation?: DocumentRecord) => reservation?.reservationState || reservation?.status;
+const paymentState = (payment?: DocumentRecord) => payment?.paymentState || payment?.status;
+const offerState = (offer?: DocumentRecord) => offer?.offerState || offer?.status;
+const unlistedInterestState = (interest?: DocumentRecord) => interest?.reviewState || interest?.status;
+
 const normalizeEnrollmentStatus = (status?: string) =>
   status ? enrollmentStatusAliases[status] || status : undefined;
 
+const normalizedEnrollmentState = (enrollment?: DocumentRecord) =>
+  normalizeEnrollmentStatus(enrollmentState(enrollment));
+
 const isCandidateRestricted = (candidate) =>
   restrictedCandidateStatuses.has(candidate?.accountRestrictionStatus) ||
-  restrictedCandidateStatuses.has(candidate?.status);
+  restrictedCandidateStatuses.has(candidateState(candidate));
 
 type UploadedFile = {
   filepath?: string;
@@ -214,6 +245,7 @@ const getIntegerEnv = (name: string, fallback: number) => {
 };
 
 const getReservationWindowMs = () => getIntegerEnv('CLASS_RESERVATION_WINDOW_SECONDS', 10 * 60) * 1000;
+const getWaitingListOfferWindowMs = () => getIntegerEnv('WAITING_LIST_OFFER_WINDOW_SECONDS', 15 * 60) * 1000;
 const getClassTermsVersion = () => process.env.CLASS_TERMS_VERSION || 'class-terms-v1';
 
 const getProfileImageFormat = () => {
@@ -352,6 +384,7 @@ const validateRegisterClassInterest = validateZodSchema(registerClassInterestSch
 const reserveClassPlaceSchema = z
   .object({
     classDocumentId: z.string().trim().min(1).max(80),
+    waitingListOfferDocumentId: optionalString(80),
   })
   .strict();
 
@@ -512,7 +545,7 @@ const sanitizeCandidate = async (strapi, candidate) => ({
   marketingConsentCapturedAt: candidate.marketingConsentCapturedAt,
   marketingConsentWordingVersion: candidate.marketingConsentWordingVersion,
   accountOnboardingCompletedAt: candidate.accountOnboardingCompletedAt,
-  status: candidate.status,
+  status: candidateState(candidate),
   accountRestrictionStatus: candidate.accountRestrictionStatus || 'active',
   accountRestrictionReason: candidate.accountRestrictionReason,
   accountRestrictionMessage: candidate.accountRestrictionMessage,
@@ -930,7 +963,7 @@ const enrollmentClassDocumentId = (enrollment) => enrollment?.class?.documentId;
 
 const relationshipClassDocumentIds = (enrollments: DocumentRecord[] = []) =>
   enrollments
-    .filter((enrollment) => candidateRelationshipEnrollmentStatuses.has(normalizeEnrollmentStatus(enrollment.status)))
+    .filter((enrollment) => candidateRelationshipEnrollmentStatuses.has(normalizedEnrollmentState(enrollment)))
     .map(enrollmentClassDocumentId)
     .filter((documentId): documentId is string => Boolean(documentId));
 
@@ -986,7 +1019,7 @@ const findClassInterestCounts = async (strapi: StrapiDocumentService, classes: D
           $in: classDocumentIds,
         },
       },
-      status: {
+      enrollmentState: {
         $in: interestCountEnrollmentStatuses,
       },
     },
@@ -1008,6 +1041,819 @@ const findClassInterestCounts = async (strapi: StrapiDocumentService, classes: D
 const isPastDate = (value?: string) => Boolean(value && Date.parse(value) <= Date.now());
 
 const getReservationExpiry = (now = new Date()) => new Date(now.getTime() + getReservationWindowMs()).toISOString();
+const getWaitingListOfferExpiry = (now = new Date()) =>
+  new Date(now.getTime() + getWaitingListOfferWindowMs()).toISOString();
+
+const waitingListOfferPopulate = ['candidate', 'class', 'enrollment', 'reservation'];
+const waitingListOfferTerminalStatuses = new Set([
+  'claimed',
+  'declined',
+  'expired',
+  'skipped_ineligible',
+  'superseded',
+]);
+
+type WaitingListOfferSourceTrigger =
+  | 'expired_reservation'
+  | 'cancelled_reservation'
+  | 'enrolled_candidate_withdrawal'
+  | 'admin_released_place'
+  | 'payment_failure_after_expiry'
+  | 'payment_exception_release'
+  | 'admin_ineligibility_removal'
+  | 'waiting_list_offer_declined'
+  | 'waiting_list_offer_expired'
+  | 'system_reconciliation';
+
+const classAllowsWaitingListOffers = (classRecord?: DocumentRecord) =>
+  classRecord?.state === 'open' || classRecord?.state === 'full';
+
+const waitingListOfferEligibility = (enrollment?: DocumentRecord) => {
+  const metadata = objectValue(enrollment?.metadata);
+
+  return metadata.waitingListOfferEligible !== false;
+};
+
+const findActiveWaitingListOfferForClass = async (
+  strapi: StrapiDocumentService,
+  classRecord?: DocumentRecord
+) => {
+  if (!classRecord?.documentId) {
+    return undefined;
+  }
+
+  const offers = await documents(strapi, 'api::waiting-list-offer.waiting-list-offer').findMany({
+    filters: {
+      class: {
+        documentId: classRecord.documentId,
+      },
+      expiresAt: {
+        $gt: new Date().toISOString(),
+      },
+      offerState: 'active',
+    },
+    limit: 1,
+    populate: waitingListOfferPopulate,
+    sort: ['offeredAt:asc', 'createdAt:asc'],
+  });
+
+  return offers[0];
+};
+
+const findActiveWaitingListOfferForEnrollment = async (
+  strapi: StrapiDocumentService,
+  enrollment?: DocumentRecord
+) => {
+  if (!enrollment?.documentId) {
+    return undefined;
+  }
+
+  const offers = await documents(strapi, 'api::waiting-list-offer.waiting-list-offer').findMany({
+    filters: {
+      enrollment: {
+        documentId: enrollment.documentId,
+      },
+      expiresAt: {
+        $gt: new Date().toISOString(),
+      },
+      offerState: 'active',
+    },
+    limit: 1,
+    populate: waitingListOfferPopulate,
+    sort: ['offeredAt:desc', 'createdAt:desc'],
+  });
+
+  return offers[0];
+};
+
+const findCandidateWaitingListOffer = async (
+  strapi: StrapiDocumentService,
+  candidate: DocumentRecord,
+  offerDocumentId: string
+) => {
+  const offers = await documents(strapi, 'api::waiting-list-offer.waiting-list-offer').findMany({
+    filters: {
+      candidate: {
+        documentId: candidate.documentId,
+      },
+      documentId: offerDocumentId,
+    },
+    limit: 1,
+    populate: waitingListOfferPopulate,
+  });
+
+  return offers[0];
+};
+
+const sanitizeWaitingListOffer = (offer?: DocumentRecord | null) => {
+  if (!offer) {
+    return null;
+  }
+
+  return {
+    claimedAt: offer.claimedAt,
+    declinedAt: offer.declinedAt,
+    documentId: offer.documentId,
+    enrollmentDocumentId: offer.enrollment?.documentId,
+    expiredAt: offer.expiredAt,
+    expiresAt: offer.expiresAt,
+    offeredAt: offer.offeredAt,
+    reservationDocumentId: offer.reservation?.documentId,
+    skippedAt: offer.skippedAt,
+    sourceTrigger: offer.sourceTrigger,
+    status: offerState(offer),
+    supersededAt: offer.supersededAt,
+    waitingListJoinedAt: offer.waitingListJoinedAt,
+    waitingListPositionAtOffer: offer.waitingListPositionAtOffer,
+  };
+};
+
+const requestNotificationServiceEmail = async ({
+  html,
+  subject,
+  text,
+  to,
+  type,
+  correlationId,
+}: {
+  correlationId?: string;
+  html: string;
+  subject: string;
+  text: string;
+  to: string;
+  type: string;
+}): Promise<NotificationServiceQueueResponse | undefined> => {
+  const baseUrl = process.env.NOTIFICATION_SERVICE_URL;
+  const serviceToken = process.env.NOTIFICATION_SERVICE_TOKEN;
+
+  if (!baseUrl || !serviceToken) {
+    return undefined;
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    getIntegerEnv('NOTIFICATION_SERVICE_TIMEOUT_MS', 5000)
+  );
+
+  try {
+    const response = await fetch(`${trimTrailingSlash(baseUrl)}/api/internal/notifications/email`, {
+      body: JSON.stringify({
+        correlationId,
+        html,
+        priority: 'critical',
+        source: 'core-api',
+        subject,
+        text,
+        to,
+        type,
+      }),
+      headers: {
+        'content-type': 'application/json',
+        'x-hireflip-service-name': 'core-api',
+        'x-hireflip-service-token': serviceToken,
+      },
+      method: 'POST',
+      signal: controller.signal,
+    });
+    const payload = (await response.json().catch(() => null)) as NotificationServiceQueueResponse | null;
+
+    if (!response.ok || !payload?.data) {
+      return undefined;
+    }
+
+    return payload;
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
+const buildWaitingListOfferEmail = (offer: DocumentRecord) => {
+  const claimUrl = buildDashboardClassOfferUrl(offer);
+  const candidateName =
+    typeof offer.candidate?.firstName === 'string' && offer.candidate.firstName.trim()
+      ? offer.candidate.firstName.trim()
+      : 'there';
+  const className =
+    offer.class?.displayTitle ||
+    offer.class?.name ||
+    'your HireFlip class';
+  const expiresAt = offer.expiresAt
+    ? new Intl.DateTimeFormat('en-GB', {
+        dateStyle: 'medium',
+        timeStyle: 'short',
+        timeZone: 'Europe/London',
+      }).format(new Date(offer.expiresAt))
+    : 'soon';
+  const escapedCandidateName = htmlEscape(candidateName);
+  const escapedClassName = htmlEscape(String(className));
+  const escapedClaimUrl = htmlEscape(claimUrl);
+  const escapedExpiresAt = htmlEscape(expiresAt);
+
+  return {
+    html: [
+      `<p>Hi ${escapedCandidateName},</p>`,
+      `<p>A place may be available on ${escapedClassName}.</p>`,
+      `<p>You have until ${escapedExpiresAt} to claim it. The place is not reserved until you click through and complete the checkout reservation step.</p>`,
+      `<p><a href="${escapedClaimUrl}">Claim your place</a></p>`,
+      `<p>If you do not want the place, you can decline it from your dashboard and we will offer it to the next person on the waiting list.</p>`,
+      '<p>HireFlip</p>',
+    ].join(''),
+    subject: 'A HireFlip class place may be available',
+    text: [
+      `Hi ${candidateName},`,
+      '',
+      `A place may be available on ${className}.`,
+      `You have until ${expiresAt} to claim it. The place is not reserved until you click through and complete the checkout reservation step.`,
+      '',
+      `Claim your place: ${claimUrl}`,
+      '',
+      'If you do not want the place, you can decline it from your dashboard and we will offer it to the next person on the waiting list.',
+      '',
+      'HireFlip',
+    ].join('\n'),
+  };
+};
+
+const updateEnrollmentWaitingListOfferEligibility = async ({
+  eligible,
+  enrollment,
+  reason,
+  strapi,
+}: {
+  eligible: boolean;
+  enrollment?: DocumentRecord;
+  reason: string;
+  strapi: StrapiDocumentService;
+}) => {
+  if (!enrollment?.documentId) {
+    return enrollment;
+  }
+
+  const now = new Date().toISOString();
+
+  return documents(strapi, 'api::enrollment.enrollment').update({
+    documentId: enrollment.documentId,
+    data: {
+      metadata: {
+        ...(objectValue(enrollment.metadata)),
+        waitingListOfferEligibilityChangedAt: now,
+        waitingListOfferEligibilityReason: reason,
+        waitingListOfferEligible: eligible,
+      },
+    },
+    populate: ['candidate', 'class'],
+  });
+};
+
+const queueWaitingListOfferNotifications = async (
+  strapi: StrapiDocumentService,
+  offer: DocumentRecord,
+  requestContext: RequestContext
+) => {
+  const candidate = offer.candidate;
+  const classRecord = offer.class;
+  const notificationPreferences = objectValue(candidate?.notificationPreferences);
+  const channelPreferences = objectValue(notificationPreferences.channels);
+  const emailContent =
+    typeof candidate?.email === 'string' ? buildWaitingListOfferEmail(offer) : undefined;
+  const emailQueueResult =
+    candidate?.email && emailContent
+      ? await requestNotificationServiceEmail({
+          correlationId: offer.documentId,
+          html: emailContent.html,
+          subject: emailContent.subject,
+          text: emailContent.text,
+          to: candidate.email,
+          type: 'candidate_waiting_list_offer_created',
+        })
+      : undefined;
+  const notificationChannels = [
+    'in_app',
+    ...(candidate?.email ? ['email'] : []),
+    ...(candidate?.phone && channelPreferences.sms === true ? ['sms'] : []),
+  ] as const;
+
+  await Promise.all(
+    notificationChannels.map((channel) =>
+      documents(strapi, 'api::notification-event.notification-event').create({
+        data: {
+          candidate: candidate?.documentId
+            ? {
+                connect: [{ documentId: candidate.documentId }],
+              }
+            : undefined,
+          channel,
+          class: classRecord?.documentId
+            ? {
+                connect: [{ documentId: classRecord.documentId }],
+              }
+            : undefined,
+          eventType: 'candidate.waiting_list_offer_created',
+          metadata: {
+            class: sanitizeClass(classRecord),
+            expiresAt: offer.expiresAt,
+            notificationServiceJobId:
+              channel === 'email' && typeof emailQueueResult?.data?.jobId === 'string'
+                ? emailQueueResult.data.jobId
+                : undefined,
+            notificationServiceQueued:
+              channel === 'email' && typeof emailQueueResult?.data?.queued === 'boolean'
+                ? emailQueueResult.data.queued
+                : undefined,
+            requestId: requestContext.requestId,
+            url: buildDashboardClassOfferUrl(offer),
+            waitingListOffer: sanitizeWaitingListOffer(offer),
+          },
+          priority: 'urgent',
+          recipientEmail: candidate?.email,
+          recipientId: candidate?.documentId,
+          recipientPhone: channel === 'sms' ? candidate?.phone : undefined,
+          recipientType: 'candidate',
+          relatedId: offer.documentId,
+          relatedType: 'waiting_list_offer',
+          deliveryState:
+            channel === 'email'
+              ? emailQueueResult?.data?.queued === true
+                ? 'queued'
+                : 'failed'
+              : channel === 'sms'
+                ? 'scheduled'
+                : 'queued',
+          templateKey: 'candidate_waiting_list_offer_created',
+        },
+      })
+    )
+  );
+};
+
+const recordWaitingListOfferAudit = async ({
+  eventType,
+  newState,
+  offer,
+  previousState,
+  requestContext,
+  severity = 'info',
+  source = 'core_api',
+  strapi,
+}: {
+  eventType: string;
+  newState?: unknown;
+  offer: DocumentRecord;
+  previousState?: unknown;
+  requestContext: RequestContext;
+  severity?: 'info' | 'warning' | 'error' | 'critical';
+  source?: 'core_api' | 'candidate_dashboard' | 'payment_service' | 'system';
+  strapi: StrapiDocumentService;
+}) => {
+  const candidate = offer.candidate;
+
+  await auditEvents(strapi).record({
+    actorEmail: candidate?.email,
+    actorId: source === 'candidate_dashboard' ? candidate?.authIdentityId : requestContext.serviceName,
+    actorType: source === 'candidate_dashboard' ? 'candidate' : 'service',
+    eventCategory: 'payment',
+    eventType,
+    ipAddress: requestContext.ipAddress,
+    metadata: {
+      class: sanitizeClass(offer.class),
+      enrollment: sanitizeEnrollment(offer.enrollment),
+      sourceTrigger: offer.sourceTrigger,
+      waitingListPositionAtOffer: offer.waitingListPositionAtOffer,
+    },
+    newState,
+    occurredAt: new Date().toISOString(),
+    previousState,
+    requestId: requestContext.requestId,
+    serviceName: requestContext.serviceName,
+    severity,
+    source,
+    subjectDisplayName: candidate?.email,
+    subjectId: candidate?.documentId,
+    subjectType: 'candidate',
+    userAgent: requestContext.userAgent,
+  });
+};
+
+const realtimeLogger = (strapi: StrapiDocumentService) =>
+  (strapi as unknown as { log?: { error?: (message: string, error?: unknown) => void } }).log;
+
+const publishClassRelationshipEvent = async ({
+  candidate,
+  classRecord,
+  eventType = 'class_relationship_updated',
+  strapi,
+}: {
+  candidate?: DocumentRecord;
+  classRecord?: DocumentRecord;
+  eventType?:
+    | 'class_relationship_updated'
+    | 'reservation_cancelled'
+    | 'reservation_created'
+    | 'reservation_expired'
+    | 'waiting_list_joined';
+  strapi: StrapiDocumentService;
+}) => {
+  const logger = realtimeLogger(strapi);
+
+  if (candidate?.documentId) {
+    await publishCandidateClassRealtimeEvent(
+      {
+        candidateDocumentId: candidate.documentId,
+        classDocumentId: classRecord?.documentId,
+        type: eventType,
+      },
+      logger
+    );
+  }
+
+  if (classRecord?.documentId) {
+    await publishClassRealtimeEvent(
+      {
+        candidateDocumentId: candidate?.documentId,
+        classDocumentId: classRecord.documentId,
+        type: eventType,
+      },
+      logger
+    );
+  }
+};
+
+const publishWaitingListOfferEvent = async ({
+  offer,
+  strapi,
+  type,
+}: {
+  offer?: DocumentRecord;
+  strapi: StrapiDocumentService;
+  type:
+    | 'waiting_list_offer_claimed'
+    | 'waiting_list_offer_created'
+    | 'waiting_list_offer_declined'
+    | 'waiting_list_offer_expired'
+    | 'waiting_list_offer_superseded';
+}) => {
+  const candidateDocumentId = offer?.candidate?.documentId;
+
+  if (!candidateDocumentId) {
+    return;
+  }
+
+  await publishCandidateClassRealtimeEvent(
+    {
+      candidateDocumentId,
+      classDocumentId: offer.class?.documentId,
+      offerDocumentId: offer.documentId,
+      type,
+    },
+    realtimeLogger(strapi)
+  );
+
+  await publishClassRealtimeEvent(
+    {
+      candidateDocumentId,
+      classDocumentId: offer.class?.documentId,
+      offerDocumentId: offer.documentId,
+      type,
+    },
+    realtimeLogger(strapi)
+  );
+};
+
+const createSkippedWaitingListOffer = async ({
+  classRecord,
+  enrollment,
+  reason,
+  requestContext,
+  sourceTrigger,
+  strapi,
+}: {
+  classRecord: DocumentRecord;
+  enrollment: DocumentRecord;
+  reason: string;
+  requestContext: RequestContext;
+  sourceTrigger: WaitingListOfferSourceTrigger;
+  strapi: StrapiDocumentService;
+}) => {
+  const now = new Date().toISOString();
+  const skippedOffer = await documents(strapi, 'api::waiting-list-offer.waiting-list-offer').create({
+    data: {
+      candidate: enrollment.candidate?.documentId
+        ? {
+            connect: [{ documentId: enrollment.candidate.documentId }],
+          }
+        : undefined,
+      class: {
+        connect: [{ documentId: classRecord.documentId }],
+      },
+      enrollment: {
+        connect: [{ documentId: enrollment.documentId }],
+      },
+      expiresAt: now,
+      metadata: {
+        reason,
+      },
+      offeredAt: now,
+      skippedAt: now,
+      sourceTrigger,
+      offerState: 'skipped_ineligible',
+      waitingListJoinedAt: enrollment.interestRegisteredAt,
+      waitingListPositionAtOffer: enrollment.waitingListPosition,
+    },
+    populate: waitingListOfferPopulate,
+  });
+
+  await updateEnrollmentWaitingListOfferEligibility({
+    eligible: false,
+    enrollment,
+    reason,
+    strapi,
+  });
+
+  await recordWaitingListOfferAudit({
+    eventType: 'candidate.waiting_list_offer_skipped',
+    newState: sanitizeWaitingListOffer(skippedOffer),
+    offer: skippedOffer,
+    requestContext,
+    severity: 'warning',
+    source: 'system',
+    strapi,
+  });
+
+  return skippedOffer;
+};
+
+const createWaitingListOffer = async ({
+  classRecord,
+  enrollment,
+  requestContext,
+  sourceTrigger,
+  strapi,
+}: {
+  classRecord: DocumentRecord;
+  enrollment: DocumentRecord;
+  requestContext: RequestContext;
+  sourceTrigger: WaitingListOfferSourceTrigger;
+  strapi: StrapiDocumentService;
+}) => {
+  const existingOffer = await findActiveWaitingListOfferForEnrollment(strapi, enrollment);
+
+  if (existingOffer) {
+    return existingOffer;
+  }
+
+  const nowDate = new Date();
+  const now = nowDate.toISOString();
+  const offer = await documents(strapi, 'api::waiting-list-offer.waiting-list-offer').create({
+    data: {
+      candidate: {
+        connect: [{ documentId: enrollment.candidate?.documentId }],
+      },
+      class: {
+        connect: [{ documentId: classRecord.documentId }],
+      },
+      enrollment: {
+        connect: [{ documentId: enrollment.documentId }],
+      },
+      expiresAt: getWaitingListOfferExpiry(nowDate),
+      metadata: {
+        class: sanitizeClass(classRecord),
+        sourceTrigger,
+      },
+      offeredAt: now,
+      sourceTrigger,
+      offerState: 'active',
+      waitingListJoinedAt: enrollment.interestRegisteredAt,
+      waitingListPositionAtOffer: enrollment.waitingListPosition,
+    },
+    populate: waitingListOfferPopulate,
+  });
+
+  await addWaitingListOfferExpiryJob({
+    classDocumentId: classRecord.documentId,
+    expiresAt: offer.expiresAt!,
+    offerDocumentId: offer.documentId!,
+  });
+  await queueWaitingListOfferNotifications(strapi, offer, requestContext);
+  await recordWaitingListOfferAudit({
+    eventType: 'candidate.waiting_list_offer_created',
+    newState: sanitizeWaitingListOffer(offer),
+    offer,
+    requestContext,
+    source: 'system',
+    strapi,
+  });
+  await publishWaitingListOfferEvent({
+    offer,
+    strapi,
+    type: 'waiting_list_offer_created',
+  });
+
+  return offer;
+};
+
+const promoteNextWaitingListOffer = async ({
+  classRecord,
+  excludeEnrollmentDocumentIds = [],
+  requestContext = {},
+  sourceTrigger,
+  strapi,
+}: {
+  classRecord?: DocumentRecord;
+  excludeEnrollmentDocumentIds?: string[];
+  requestContext?: RequestContext;
+  sourceTrigger: WaitingListOfferSourceTrigger;
+  strapi: StrapiDocumentService;
+}) => {
+  if (!classRecord?.documentId || !classAllowsWaitingListOffers(classRecord)) {
+    return undefined;
+  }
+
+  return withDatabaseTransaction(strapi, async (transactionContext) => {
+    await lockClassForCapacityCheck(strapi, classRecord, transactionContext?.trx);
+
+    const lockedClass = (await findClassByDocumentId(strapi, classRecord.documentId!)) || classRecord;
+
+    if (!classAllowsWaitingListOffers(lockedClass)) {
+      return undefined;
+    }
+
+    const activeOffer = await findActiveWaitingListOfferForClass(strapi, lockedClass);
+
+    if (activeOffer) {
+      return activeOffer;
+    }
+
+    const classCapacity = Number(lockedClass.capacity || 0);
+
+    if (classCapacity <= 0 || (await countCapacityHeldPlaces(strapi, lockedClass)) >= classCapacity) {
+      return undefined;
+    }
+
+    const waitingListEnrollments = await documents(strapi, 'api::enrollment.enrollment').findMany({
+      filters: {
+        class: {
+          documentId: lockedClass.documentId,
+        },
+        enrollmentState: 'waiting_list',
+      },
+      limit: 1000,
+      populate: ['candidate', 'class'],
+      sort: ['waitingListPosition:asc', 'createdAt:asc'],
+    });
+    const excludedEnrollments = new Set(excludeEnrollmentDocumentIds);
+
+    for (const enrollment of waitingListEnrollments) {
+      if (!enrollment.documentId || excludedEnrollments.has(enrollment.documentId)) {
+        continue;
+      }
+
+      if (!waitingListOfferEligibility(enrollment)) {
+        continue;
+      }
+
+      if (!enrollment.candidate?.documentId || isCandidateRestricted(enrollment.candidate)) {
+        await createSkippedWaitingListOffer({
+          classRecord: lockedClass,
+          enrollment,
+          reason: isCandidateRestricted(enrollment.candidate)
+            ? 'candidate_restricted'
+            : 'candidate_missing',
+          requestContext,
+          sourceTrigger,
+          strapi,
+        });
+        continue;
+      }
+
+      return createWaitingListOffer({
+        classRecord: lockedClass,
+        enrollment,
+        requestContext,
+        sourceTrigger,
+        strapi,
+      });
+    }
+
+    return undefined;
+  });
+};
+
+const expireWaitingListOffer = async ({
+  offer,
+  requestContext,
+  source = 'system',
+  strapi,
+}: {
+  offer: DocumentRecord;
+  requestContext: RequestContext;
+  source?: 'candidate_dashboard' | 'system';
+  strapi: StrapiDocumentService;
+}) => {
+  if (!offer.documentId || offerState(offer) !== 'active') {
+    return offer;
+  }
+
+  const now = new Date().toISOString();
+  const previousState = sanitizeWaitingListOffer(offer);
+  const expiredOffer = await documents(strapi, 'api::waiting-list-offer.waiting-list-offer').update({
+    documentId: offer.documentId,
+    data: {
+      expiredAt: now,
+      metadata: {
+        ...(objectValue(offer.metadata)),
+        expiredBy: source,
+      },
+      offerState: 'expired',
+    },
+    populate: waitingListOfferPopulate,
+  });
+
+  await updateEnrollmentWaitingListOfferEligibility({
+    eligible: false,
+    enrollment: offer.enrollment,
+    reason: 'waiting_list_offer_expired',
+    strapi,
+  });
+
+  if (offer.candidate?.documentId && offer.class?.documentId) {
+    await releaseClassPlaceAllocation({
+      candidateDocumentId: offer.candidate.documentId,
+      classDocumentId: offer.class.documentId,
+      removeWaitlist: true,
+    }).catch((error) => {
+      const logger = (strapi as unknown as { log?: { error?: (message: string, error?: unknown) => void } }).log;
+      logger?.error?.('Class allocation Redis waiting-list offer expiry cleanup failed.', error);
+    });
+  }
+
+  await recordWaitingListOfferAudit({
+    eventType: 'candidate.waiting_list_offer_expired',
+    newState: sanitizeWaitingListOffer(expiredOffer),
+    offer: expiredOffer,
+    previousState,
+    requestContext,
+    severity: 'warning',
+    source,
+    strapi,
+  });
+  await publishWaitingListOfferEvent({
+    offer: expiredOffer,
+    strapi,
+    type: 'waiting_list_offer_expired',
+  });
+
+  return expiredOffer;
+};
+
+const supersedeWaitingListOffer = async ({
+  offer,
+  reason,
+  requestContext,
+  strapi,
+}: {
+  offer?: DocumentRecord;
+  reason: string;
+  requestContext: RequestContext;
+  strapi: StrapiDocumentService;
+}) => {
+  if (!offer?.documentId || offerState(offer) !== 'active') {
+    return offer;
+  }
+
+  const now = new Date().toISOString();
+  const previousState = sanitizeWaitingListOffer(offer);
+  const supersededOffer = await documents(strapi, 'api::waiting-list-offer.waiting-list-offer').update({
+    documentId: offer.documentId,
+    data: {
+      metadata: {
+        ...(objectValue(offer.metadata)),
+        supersededReason: reason,
+      },
+      offerState: 'superseded',
+      supersededAt: now,
+    },
+    populate: waitingListOfferPopulate,
+  });
+
+  await recordWaitingListOfferAudit({
+    eventType: 'candidate.waiting_list_offer_skipped',
+    newState: sanitizeWaitingListOffer(supersededOffer),
+    offer: supersededOffer,
+    previousState,
+    requestContext,
+    severity: 'warning',
+    source: 'system',
+    strapi,
+  });
+  await publishWaitingListOfferEvent({
+    offer: supersededOffer,
+    strapi,
+    type: 'waiting_list_offer_superseded',
+  });
+
+  return supersededOffer;
+};
 
 type PaymentAction = {
   canCreateCheckoutSession: boolean;
@@ -1036,6 +1882,14 @@ type PaymentServiceCheckoutResponse = {
 
 type PaymentServiceCheckoutLookupResponse = {
   data?: unknown;
+};
+
+type NotificationServiceQueueResponse = {
+  data?: {
+    jobId?: unknown;
+    queued?: unknown;
+    type?: unknown;
+  };
 };
 
 type PaymentServiceCheckoutConfirmation = {
@@ -1072,6 +1926,14 @@ const classPaymentAmount = (classRecord?: DocumentRecord) =>
 
 const trimTrailingSlash = (value: string) => value.replace(/\/+$/, '');
 
+const htmlEscape = (value: string) =>
+  value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
 const buildDashboardCheckoutUrl = (reservationDocumentId: string, status: string) => {
   const baseUrl = trimTrailingSlash(process.env.CANDIDATE_DASHBOARD_BASE_URL || 'http://localhost:3001');
   const url = new URL(`${baseUrl}/class/checkout/${reservationDocumentId}`);
@@ -1083,6 +1945,17 @@ const buildDashboardCheckoutUrl = (reservationDocumentId: string, status: string
   }
 
   return url.toString().replace('%7BCHECKOUT_SESSION_ID%7D', '{CHECKOUT_SESSION_ID}');
+};
+
+const buildDashboardClassOfferUrl = (offer: DocumentRecord) => {
+  const baseUrl = trimTrailingSlash(process.env.CANDIDATE_DASHBOARD_BASE_URL || 'http://localhost:3001');
+  const url = new URL(`${baseUrl}/class`);
+
+  if (offer.documentId) {
+    url.searchParams.set('waitingListOffer', offer.documentId);
+  }
+
+  return url.toString();
 };
 
 const buildDashboardOrderProcessingUrl = (reservationDocumentId: string) => {
@@ -1100,7 +1973,7 @@ const getNextWaitingListPosition = async (strapi, classRecord, candidate?) => {
       class: {
         documentId: classRecord.documentId,
       },
-      status: 'waiting_list',
+      enrollmentState: 'waiting_list',
     },
     limit: 1000,
     sort: ['waitingListPosition:desc', 'createdAt:asc'],
@@ -1129,7 +2002,7 @@ const hasWaitingListAhead = async (strapi, classRecord, candidate?) => {
       class: {
         documentId: classRecord.documentId,
       },
-      status: 'waiting_list',
+      enrollmentState: 'waiting_list',
     },
     limit: 1000,
     populate: ['candidate'],
@@ -1149,29 +2022,6 @@ const hasWaitingListAhead = async (strapi, classRecord, candidate?) => {
     .some((enrollment) => enrollment.candidate?.documentId !== candidate?.documentId);
 };
 
-const canCandidateClaimWaitingListPlace = async (strapi, classRecord, enrollment, candidate?) => {
-  if (
-    normalizeEnrollmentStatus(enrollment?.status) !== 'waiting_list' ||
-    !classHasPaymentAccess(classRecord)
-  ) {
-    return false;
-  }
-
-  const classCapacity = Number(classRecord?.capacity || 0);
-
-  if (classCapacity <= 0) {
-    return false;
-  }
-
-  const heldPlaces = await countCapacityHeldPlaces(strapi, classRecord);
-
-  if (heldPlaces >= classCapacity) {
-    return false;
-  }
-
-  return !(await hasWaitingListAhead(strapi, classRecord, candidate));
-};
-
 const findActiveReservationForEnrollment = async (strapi, enrollment) => {
   if (!enrollment?.documentId) {
     return undefined;
@@ -1182,7 +2032,7 @@ const findActiveReservationForEnrollment = async (strapi, enrollment) => {
       enrollment: {
         documentId: enrollment.documentId,
       },
-      status: 'active',
+      reservationState: 'active',
     },
     limit: 1,
     populate: ['candidate', 'class', 'enrollment'],
@@ -1228,7 +2078,7 @@ const countCapacityHeldPlaces = async (strapi, classRecord) => {
       class: {
         documentId: classRecord.documentId,
       },
-      status: {
+      enrollmentState: {
         $in: Array.from(capacityHoldingEnrollmentStatuses),
       },
     },
@@ -1237,12 +2087,54 @@ const countCapacityHeldPlaces = async (strapi, classRecord) => {
   });
 
   return enrollments.filter((enrollment) => {
-    if (normalizeEnrollmentStatus(enrollment.status) !== 'place_reserved') {
+    if (normalizedEnrollmentState(enrollment) !== 'place_reserved') {
       return true;
     }
 
     return !isPastDate(enrollment.reservationExpiresAt);
   }).length;
+};
+
+const waitlistedCandidateCanReserveOpenPlace = async ({
+  candidate,
+  classRecord,
+  enrollment,
+  strapi,
+}: {
+  candidate?: DocumentRecord;
+  classRecord?: DocumentRecord;
+  enrollment?: DocumentRecord;
+  strapi: StrapiDocumentService;
+}) => {
+  if (
+    !candidate?.documentId ||
+    !classRecord?.documentId ||
+    !enrollment?.documentId ||
+    normalizedEnrollmentState(enrollment) !== 'waiting_list' ||
+    !classHasPaymentAccess(classRecord)
+  ) {
+    return false;
+  }
+
+  const capacity = Number(classRecord.capacity || 0);
+
+  if (!Number.isFinite(capacity) || capacity <= 0) {
+    return false;
+  }
+
+  const activeWaitingListOffer = await findActiveWaitingListOfferForClass(strapi, classRecord);
+
+  if (activeWaitingListOffer?.documentId) {
+    return false;
+  }
+
+  if (await hasWaitingListAhead(strapi, classRecord, candidate)) {
+    return false;
+  }
+
+  const heldPlaces = await countCapacityHeldPlaces(strapi, classRecord);
+
+  return heldPlaces < capacity;
 };
 
 const countPaidClassPlaces = async (
@@ -1258,7 +2150,7 @@ const countPaidClassPlaces = async (
       class: {
         documentId: classRecord.documentId,
       },
-      status: {
+      enrollmentState: {
         $in: Array.from(paidEnrollmentStatuses),
       },
     },
@@ -1283,7 +2175,7 @@ const findActiveClassReservationsForAllocation = async (
       expiresAt: {
         $gt: now,
       },
-      status: 'active',
+      reservationState: 'active',
     },
     limit: 1000,
     populate: ['candidate'],
@@ -1299,7 +2191,7 @@ const findPaidClassEnrollmentsForAllocation = async (
       class: {
         documentId: classRecord.documentId,
       },
-      status: {
+      enrollmentState: {
         $in: Array.from(paidEnrollmentStatuses),
       },
     },
@@ -1311,17 +2203,17 @@ const findWaitingListClassEnrollmentsForAllocation = async (
   strapi: StrapiDocumentService,
   classRecord: DocumentRecord
 ) =>
-  documents(strapi, 'api::enrollment.enrollment').findMany({
-    filters: {
-      class: {
-        documentId: classRecord.documentId,
+  (await documents(strapi, 'api::enrollment.enrollment').findMany({
+      filters: {
+        class: {
+          documentId: classRecord.documentId,
+        },
+        enrollmentState: 'waiting_list',
       },
-      status: 'waiting_list',
-    },
-    limit: 1000,
-    populate: ['candidate'],
-    sort: ['waitingListPosition:asc', 'createdAt:asc'],
-  });
+      limit: 1000,
+      populate: ['candidate'],
+      sort: ['waitingListPosition:asc', 'createdAt:asc'],
+    })).filter(waitingListOfferEligibility);
 
 const ensureClassAllocationSnapshot = async (
   strapi: StrapiDocumentService,
@@ -1511,7 +2403,7 @@ const sanitizeReservation = (reservation) => {
         ? metadata.paymentExceptionReason
         : undefined,
     reservationStartedAt: reservation.reservationStartedAt,
-    status: reservation.status,
+    status: reservationState(reservation),
     termsAcceptedAt: reservation.termsAcceptedAt,
     termsVersion: reservation.termsVersion,
   };
@@ -1533,7 +2425,7 @@ const sanitizePayment = (payment) => {
     paymentType: payment.paymentType,
     providerCheckoutSessionId: payment.providerCheckoutSessionId,
     providerPaymentIntentId: payment.providerPaymentIntentId,
-    status: payment.status,
+    status: paymentState(payment),
   };
 };
 
@@ -1565,7 +2457,7 @@ const findCheckoutPaymentForReservation = async (
       reservation: {
         documentId: reservation.documentId,
       },
-      status: {
+      paymentState: {
         $in: ['checkout_created', 'pending'],
       },
     },
@@ -1605,7 +2497,7 @@ const findConfirmedPaymentForReservationOrEnrollment = async (
         reservation: {
           documentId: reservation.documentId,
         },
-        status: {
+        paymentState: {
           $in: ['paid', 'requires_review'],
         },
       },
@@ -1624,7 +2516,7 @@ const findConfirmedPaymentForReservationOrEnrollment = async (
         enrollment: {
           documentId: reservation.enrollment.documentId,
         },
-        status: {
+        paymentState: {
           $in: ['paid', 'requires_review'],
         },
       },
@@ -1855,7 +2747,7 @@ const recordPaymentException = async ({
       connect: [{ documentId: reservation.documentId }],
     },
     slotReservationExpiresAt: reservation.expiresAt,
-    status: 'requires_review',
+    paymentState: 'requires_review',
   };
   const payment = existingPayment?.documentId
     ? await documents(strapi, 'api::payment.payment').update({
@@ -1876,7 +2768,7 @@ const recordPaymentException = async ({
         ...(confirmation.paymentIntentId ? { providerPaymentIntentId: confirmation.paymentIntentId } : {}),
       },
       paidAt: reservation.paidAt || now,
-      status: 'payment_exception',
+      reservationState: 'payment_exception',
     },
     populate: ['candidate', 'class', 'enrollment'],
   });
@@ -1896,7 +2788,7 @@ const recordPaymentException = async ({
           },
           paymentStatus: 'requires_review',
           reservationExpiresAt: null,
-          status: 'payment_exception',
+          enrollmentState: 'payment_exception',
           waitingListPosition: null,
         },
         populate: ['class'],
@@ -2022,8 +2914,8 @@ const confirmReservationPaymentWithProvider = async ({
       (await findCheckoutPaymentForReservation(strapi, currentReservation));
 
     if (
-      currentReservation.status === 'paid' &&
-      normalizeEnrollmentStatus(currentReservation.enrollment?.status) === 'enrolled'
+      reservationState(currentReservation) === 'paid' &&
+      normalizedEnrollmentState(currentReservation.enrollment) === 'enrolled'
     ) {
       return {
         classInterest: await buildCandidateClassInterestForCandidate(strapi, candidate),
@@ -2032,7 +2924,7 @@ const confirmReservationPaymentWithProvider = async ({
       };
     }
 
-    if (currentReservation.status === 'payment_exception') {
+    if (reservationState(currentReservation) === 'payment_exception') {
       return {
         classInterest: await buildCandidateClassInterestForCandidate(strapi, candidate),
         payment: sanitizePayment(existingPayment),
@@ -2040,14 +2932,14 @@ const confirmReservationPaymentWithProvider = async ({
       };
     }
 
-    if (currentReservation.status === 'cancelled' || currentReservation.status === 'released') {
+    if (reservationState(currentReservation) === 'cancelled' || reservationState(currentReservation) === 'released') {
       return recordPaymentException({
         actor,
         candidate,
         confirmation,
         existingPayment,
         reason:
-          currentReservation.status === 'cancelled'
+          reservationState(currentReservation) === 'cancelled'
             ? 'reservation_cancelled'
             : 'reservation_released',
         requestContext,
@@ -2114,7 +3006,7 @@ const confirmReservationPaymentWithProvider = async ({
         connect: [{ documentId: currentReservation.documentId }],
       },
       slotReservationExpiresAt: currentReservation.expiresAt,
-      status: 'paid',
+      paymentState: 'paid',
     };
     const payment = existingPayment?.documentId
       ? await documents(strapi, 'api::payment.payment').update({
@@ -2134,7 +3026,7 @@ const confirmReservationPaymentWithProvider = async ({
           ...(confirmation.paymentIntentId ? { providerPaymentIntentId: confirmation.paymentIntentId } : {}),
         },
         paidAt: currentReservation.paidAt || now,
-        status: 'paid',
+        reservationState: 'paid',
       },
       populate: ['candidate', 'class', 'enrollment'],
     });
@@ -2155,7 +3047,7 @@ const confirmReservationPaymentWithProvider = async ({
             },
             paymentStatus: 'paid',
             reservationExpiresAt: null,
-            status: 'enrolled',
+            enrollmentState: 'enrolled',
             waitingListPosition: null,
           },
           populate: ['class'],
@@ -2218,6 +3110,16 @@ const confirmReservationPaymentWithProvider = async ({
       }).catch((error) => {
         const logger = (strapi as unknown as { log?: { error?: (message: string, error?: unknown) => void } }).log;
         logger?.error?.('Class allocation Redis exception release failed.', error);
+      });
+
+      await promoteNextWaitingListOffer({
+        classRecord: reservation.class,
+        excludeEnrollmentDocumentIds: [reservation.enrollment?.documentId].filter(
+          (documentId): documentId is string => Boolean(documentId)
+        ),
+        requestContext,
+        sourceTrigger: 'payment_exception_release',
+        strapi,
       });
     }
   }
@@ -2328,7 +3230,7 @@ const recordProviderPaymentOutcome = async ({
       connect: [{ documentId: reservation.documentId }],
     },
     slotReservationExpiresAt: reservation.expiresAt,
-    status: paymentStatus,
+    paymentState: paymentStatus,
   };
   const payment = existingPayment?.documentId
     ? await documents(strapi, 'api::payment.payment').update({
@@ -2340,11 +3242,11 @@ const recordProviderPaymentOutcome = async ({
       });
   const shouldReleaseReservation =
     outcome === 'expired' ||
-    (outcome === 'failed' && reservation.status === 'active' && isPastDate(reservation.expiresAt));
+    (outcome === 'failed' && reservationState(reservation) === 'active' && isPastDate(reservation.expiresAt));
   let updatedReservation = reservation;
   let updatedEnrollment = reservation.enrollment;
 
-  if (shouldReleaseReservation && reservation.status === 'active') {
+  if (shouldReleaseReservation && reservationState(reservation) === 'active') {
     const fallbackStatus = (await hasWaitingListAhead(strapi, reservation.class, candidate))
       ? 'waiting_list'
       : 'enrollment_open';
@@ -2365,7 +3267,7 @@ const recordProviderPaymentOutcome = async ({
           providerPaymentStatus: confirmation.paymentStatus,
           providerSessionStatus: confirmation.status,
         },
-        status: 'expired',
+        reservationState: 'expired',
       },
       populate: ['candidate', 'class', 'enrollment'],
     });
@@ -2384,7 +3286,7 @@ const recordProviderPaymentOutcome = async ({
             },
             paymentStatus: 'pending',
             reservationExpiresAt: null,
-            status: fallbackStatus,
+            enrollmentState: fallbackStatus,
             waitingListPosition,
           },
           populate: ['class'],
@@ -2400,6 +3302,16 @@ const recordProviderPaymentOutcome = async ({
         logger?.error?.('Class allocation Redis provider outcome release failed.', error);
       });
     }
+
+    await promoteNextWaitingListOffer({
+      classRecord: reservation.class,
+      excludeEnrollmentDocumentIds: [updatedEnrollment?.documentId].filter(
+        (documentId): documentId is string => Boolean(documentId)
+      ),
+      requestContext,
+      sourceTrigger: 'payment_failure_after_expiry',
+      strapi,
+    });
   } else if (reservation.enrollment?.documentId) {
     updatedEnrollment = await documents(strapi, 'api::enrollment.enrollment').update({
       documentId: reservation.enrollment.documentId,
@@ -2477,7 +3389,7 @@ const getPaymentActionForReservation = async ({
     return disabledPaymentAction('Reservation could not be found.');
   }
 
-  if (reservation.status !== 'active') {
+  if (reservationState(reservation) !== 'active') {
     return disabledPaymentAction('This reservation is no longer active.', 'reservation_inactive');
   }
 
@@ -2534,7 +3446,7 @@ const getPaymentActionForReservation = async ({
         connect: [{ documentId: reservation.documentId }],
       },
       slotReservationExpiresAt: reservation.expiresAt,
-      status: 'checkout_created',
+      paymentState: 'checkout_created',
     },
   });
   const updatedEnrollment =
@@ -2631,11 +3543,11 @@ const summarizeUnsupportedPreferences = (value: unknown) => {
 
 const deriveCandidateLifecycleState = (enrollments = []) => {
   const activeEnrollment = enrollments.find((enrollment) => {
-    if (terminalEnrollmentStatuses.has(enrollment.status)) {
+    if (terminalEnrollmentStatuses.has(enrollmentState(enrollment))) {
       return false;
     }
 
-    return enrollment.paymentStatus === 'paid' || paidEnrollmentStatuses.has(enrollment.status);
+    return enrollment.paymentStatus === 'paid' || paidEnrollmentStatuses.has(enrollmentState(enrollment));
   });
 
   if (activeEnrollment) {
@@ -2646,7 +3558,7 @@ const deriveCandidateLifecycleState = (enrollments = []) => {
     (enrollment) =>
       enrollment.passStatus === 'passed' ||
       Boolean(enrollment.passedAt) ||
-      (completedEnrollmentStatuses.has(enrollment.status) && enrollment.passStatus !== 'failed')
+      (completedEnrollmentStatuses.has(enrollmentState(enrollment)) && enrollment.passStatus !== 'failed')
   );
 
   return passedEnrollment ? 'alumni' : 'unenrolled';
@@ -2654,11 +3566,11 @@ const deriveCandidateLifecycleState = (enrollments = []) => {
 
 const findActiveEnrollment = (enrollments = []) =>
   enrollments.find((enrollment) => {
-    if (terminalEnrollmentStatuses.has(enrollment.status)) {
+    if (terminalEnrollmentStatuses.has(enrollmentState(enrollment))) {
       return false;
     }
 
-    return enrollment.paymentStatus === 'paid' || paidEnrollmentStatuses.has(enrollment.status);
+    return enrollment.paymentStatus === 'paid' || paidEnrollmentStatuses.has(enrollmentState(enrollment));
   });
 
 const sanitizeClass = (classRecord) => {
@@ -2719,7 +3631,7 @@ const sanitizeEnrollment = (enrollment) => {
     invitedToJoinAt: enrollment.invitedToJoinAt,
     passStatus: enrollment.passStatus,
     paymentStatus: enrollment.paymentStatus,
-    status: enrollment.status,
+    status: enrollmentState(enrollment),
     reservationExpiresAt: enrollment.reservationExpiresAt,
     reservationDocumentId,
     waitingListPosition: enrollment.waitingListPosition,
@@ -2732,7 +3644,7 @@ const classHasJoinOrWaitlistAccess = (classRecord) =>
 
 const deriveClassRelationshipState = (enrollment, classRecord?) => {
   if (enrollment) {
-    const normalizedStatus = normalizeEnrollmentStatus(enrollment.status);
+    const normalizedStatus = normalizedEnrollmentState(enrollment);
     const hasPaymentAccess = classHasPaymentAccess(enrollment.class || classRecord);
     const hasJoinOrWaitlistAccess = classHasJoinOrWaitlistAccess(enrollment.class || classRecord);
 
@@ -2839,13 +3751,24 @@ const buildClassTimeline = (classRecord, relationshipState) => {
 
 const buildClassRelationship = async ({ candidate, classRecord, enrollment, registeredInterestCount = 0, strapi }) => {
   const derivedState = deriveClassRelationshipState(enrollment, classRecord);
-  const state =
+  const activeWaitingListOffer =
+    derivedState === 'waiting_list'
+      ? await findActiveWaitingListOfferForEnrollment(strapi, enrollment)
+      : undefined;
+  const waitlistedCanReserveOpenPlace =
     derivedState === 'waiting_list' &&
-    (await canCandidateClaimWaitingListPlace(strapi, classRecord, enrollment, candidate))
-      ? 'enrollment_open'
-      : derivedState;
+    !activeWaitingListOffer &&
+    await waitlistedCandidateCanReserveOpenPlace({
+      candidate,
+      classRecord,
+      enrollment,
+      strapi,
+    });
+  const state = waitlistedCanReserveOpenPlace ? 'enrollment_open' : derivedState;
 
   return {
+    activeWaitingListOffer: sanitizeWaitingListOffer(activeWaitingListOffer),
+    canClaimWaitingListOffer: Boolean(activeWaitingListOffer),
     canRegisterInterest: state === 'not_registered',
     canWithdrawInterest: state === 'interest_registered',
     canJoinClass: state === 'enrollment_open',
@@ -2916,7 +3839,7 @@ const buildClassInterestResponse = async ({ candidate, enrollments, interestCoun
       lifecycleState: deriveCandidateLifecycleState(enrollments),
       preferences: sanitizeCandidatePreferences(candidate),
       registeredInterestAt: candidate.registeredInterestAt,
-      status: candidate.status,
+      status: candidateState(candidate),
       unsupportedPreferences: {
         classAreas: summarizeUnsupportedPreferences(candidate.classAreaPreferences),
         workSectors: summarizeUnsupportedPreferences(candidate.workSectorPreferences),
@@ -2984,7 +3907,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
           recruitmentPlatformVisibility: 'not_set',
           region: profile.region,
           sector: profile.sector,
-          status: 'account_created',
+          candidateState: 'account_created',
         },
       });
 
@@ -3300,7 +4223,9 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       registeredInterestAt: existingCandidate.registeredInterestAt || now,
       region: existingCandidate.region || preferenceSnapshot.region,
       sector: existingCandidate.sector || preferenceSnapshot.sector,
-      status: existingCandidate.status === 'account_created' ? 'interest_registered' : existingCandidate.status,
+      candidateState: candidateState(existingCandidate) === 'account_created'
+        ? 'interest_registered'
+        : candidateState(existingCandidate),
     };
 
     enrollment = existingEnrollment?.documentId
@@ -3317,7 +4242,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
             },
             passStatus: existingEnrollment.passStatus || 'not_assessed',
             paymentStatus: 'not_required',
-            status: 'interest_registered',
+            enrollmentState: 'interest_registered',
           },
           populate: ['class'],
         })
@@ -3337,7 +4262,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
             },
             passStatus: 'not_assessed',
             paymentStatus: 'not_required',
-            status: 'interest_registered',
+            enrollmentState: 'interest_registered',
           },
           populate: ['class'],
         });
@@ -3376,7 +4301,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       occurredAt: now,
       previousState: {
         registeredInterestAt: existingCandidate.registeredInterestAt,
-        status: existingCandidate.status,
+        status: candidateState(existingCandidate),
       },
       requestId: requestContext.requestId,
       source: 'candidate_dashboard',
@@ -3384,6 +4309,11 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       subjectId: updatedCandidate.documentId,
       subjectType: 'candidate',
       userAgent: requestContext.userAgent,
+    });
+    await publishClassRelationshipEvent({
+      candidate: updatedCandidate,
+      classRecord: targetClass,
+      strapi,
     });
 
     return {
@@ -3449,10 +4379,10 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
           ...(objectValue(existingEnrollment.metadata)),
           interestWithdrawnAt: now,
           interestWithdrawnSource: 'candidate_dashboard',
-          previousStatus: existingEnrollment.status,
+          previousStatus: enrollmentState(existingEnrollment),
         },
         paymentStatus: 'not_required',
-        status: 'interest_withdrawn',
+        enrollmentState: 'interest_withdrawn',
       },
       populate: ['class'],
     });
@@ -3476,6 +4406,11 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       subjectId: existingCandidate.documentId,
       subjectType: 'candidate',
       userAgent: requestContext.userAgent,
+    });
+    await publishClassRelationshipEvent({
+      candidate: existingCandidate,
+      classRecord: targetClass,
+      strapi,
     });
 
     return {
@@ -3565,14 +4500,14 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
           documentId: existingReservation.documentId,
           data: {
             expiredAt: now,
-            status: 'expired',
+            reservationState: 'expired',
           },
           populate: ['candidate', 'class', 'enrollment'],
         });
 
         if (
           existingEnrollment?.documentId &&
-          normalizeEnrollmentStatus(existingEnrollment.status) === 'place_reserved'
+          normalizedEnrollmentState(existingEnrollment) === 'place_reserved'
         ) {
           existingEnrollment = await documents(strapi, 'api::enrollment.enrollment').update({
             documentId: existingEnrollment.documentId,
@@ -3583,7 +4518,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
                 lastReservationExpiredAt: now,
               },
               reservationExpiresAt: null,
-              status: fallbackStatus,
+              enrollmentState: fallbackStatus,
               waitingListPosition,
             },
             populate: ['class'],
@@ -3616,14 +4551,61 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       }
 
       const currentState = deriveClassRelationshipState(existingEnrollment, lockedTargetClass);
-      const canClaimWaitingListPlace = await canCandidateClaimWaitingListPlace(
-        strapi,
-        lockedTargetClass,
-        existingEnrollment,
-        existingCandidate
-      );
-      const reservableState =
-        currentState === 'waiting_list' && canClaimWaitingListPlace ? 'enrollment_open' : currentState;
+      let waitingListOffer: DocumentRecord | undefined;
+      let reservableState = currentState;
+
+      if (currentState === 'waiting_list') {
+        if (!payload.waitingListOfferDocumentId) {
+          if (
+            !(await waitlistedCandidateCanReserveOpenPlace({
+              candidate: existingCandidate,
+              classRecord: lockedTargetClass,
+              enrollment: existingEnrollment,
+              strapi,
+            }))
+          ) {
+            throw new ValidationError('A waiting-list offer is required before this waiting-list place can be claimed.');
+          }
+        } else {
+          waitingListOffer = await findCandidateWaitingListOffer(
+            strapi,
+            existingCandidate,
+            payload.waitingListOfferDocumentId
+          );
+
+          if (
+            !waitingListOffer ||
+            offerState(waitingListOffer) !== 'active' ||
+            waitingListOffer.class?.documentId !== lockedTargetClass.documentId ||
+            waitingListOffer.enrollment?.documentId !== existingEnrollment?.documentId
+          ) {
+            throw new ValidationError('This waiting-list offer is not available for this class.');
+          }
+
+          if (isPastDate(waitingListOffer.expiresAt)) {
+            const expiredOffer = await expireWaitingListOffer({
+              offer: waitingListOffer,
+              requestContext,
+              source: 'candidate_dashboard',
+              strapi,
+            });
+
+            await promoteNextWaitingListOffer({
+              classRecord: lockedTargetClass,
+              excludeEnrollmentDocumentIds: [expiredOffer.enrollment?.documentId].filter(
+                (documentId): documentId is string => Boolean(documentId)
+              ),
+              requestContext,
+              sourceTrigger: 'waiting_list_offer_expired',
+              strapi,
+            });
+
+            throw new ValidationError('This waiting-list offer has expired.');
+          }
+        }
+
+        reservableState = 'enrollment_open';
+      }
 
       if (reservableState === 'place_reserved') {
         const activeReservation = await findActiveReservationForEnrollment(strapi, existingEnrollment);
@@ -3663,7 +4645,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       const reservationExpiresAt = getReservationExpiry(nowDate);
       const allocationId = randomUUID();
       const allocationCapacity =
-        lockedTargetClass.state === 'full' || heldPlaces >= lockedTargetClass.capacity
+        (!waitingListOffer && lockedTargetClass.state === 'full') || heldPlaces >= lockedTargetClass.capacity
           ? 0
           : lockedTargetClass.capacity || 0;
       const allocation = await allocateClassPlace({
@@ -3699,6 +4681,15 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       }
 
       if (allocationWaitlisted) {
+        if (waitingListOffer) {
+          await supersedeWaitingListOffer({
+            offer: waitingListOffer,
+            reason: 'capacity_unavailable_at_claim',
+            requestContext,
+            strapi,
+          });
+        }
+
         if (allocation.waitlistCreated) {
           redisCleanup = {
             classDocumentId: lockedTargetClass.documentId!,
@@ -3721,7 +4712,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
               data: {
                 metadata,
                 paymentStatus: 'pending',
-                status: 'waiting_list',
+                enrollmentState: 'waiting_list',
                 waitingListPosition,
               },
               populate: ['class'],
@@ -3739,7 +4730,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
                 metadata,
                 passStatus: 'not_assessed',
                 paymentStatus: 'pending',
-                status: 'waiting_list',
+                enrollmentState: 'waiting_list',
                 waitingListPosition,
             },
             populate: ['class'],
@@ -3770,6 +4761,12 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
           subjectType: 'candidate',
           userAgent: requestContext.userAgent,
         });
+        await publishClassRelationshipEvent({
+          candidate: existingCandidate,
+          classRecord: lockedTargetClass,
+          eventType: 'waiting_list_joined',
+          strapi,
+        });
 
         redisCleanup = undefined;
 
@@ -3798,7 +4795,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
               metadata: enrollmentMetadata,
               paymentStatus: 'pending',
               reservationExpiresAt,
-              status: 'place_reserved',
+              enrollmentState: 'place_reserved',
               waitingListPosition: null,
             },
             populate: ['class'],
@@ -3818,7 +4815,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
               passStatus: 'not_assessed',
               paymentStatus: 'pending',
               reservationExpiresAt,
-              status: 'place_reserved',
+              enrollmentState: 'place_reserved',
             },
             populate: ['class'],
           });
@@ -3843,12 +4840,13 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
             class: sanitizeClass(lockedTargetClass),
             heldPlacesBeforeReservation: heldPlaces,
             redisHeldPlacesBeforeReservation: allocation.heldPlaces,
-            source: 'candidate_dashboard',
+            source: waitingListOffer ? 'waiting_list_offer' : 'candidate_dashboard',
+            waitingListOfferDocumentId: waitingListOffer?.documentId,
           },
           idempotencyKey: allocationId,
           reservationStartedAt: now,
-          source: 'candidate_dashboard',
-          status: 'active',
+          source: waitingListOffer ? 'waiting_list_offer' : 'candidate_dashboard',
+          reservationState: 'active',
         },
         populate: ['candidate', 'class', 'enrollment'],
       });
@@ -3862,9 +4860,45 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
         },
         populate: ['class'],
       });
+      let claimedWaitingListOffer: DocumentRecord | undefined;
 
-      await auditEvents(strapi).record({
-        actorEmail: existingCandidate.email,
+      if (waitingListOffer?.documentId) {
+        const previousOfferState = sanitizeWaitingListOffer(waitingListOffer);
+
+        claimedWaitingListOffer = await documents(strapi, 'api::waiting-list-offer.waiting-list-offer').update({
+          documentId: waitingListOffer.documentId,
+          data: {
+            claimedAt: now,
+            metadata: {
+              ...(objectValue(waitingListOffer.metadata)),
+              claimedReservationDocumentId: reservation.documentId,
+            },
+            reservation: {
+              connect: [{ documentId: reservation.documentId }],
+            },
+            offerState: 'claimed',
+          },
+          populate: waitingListOfferPopulate,
+        });
+
+        await recordWaitingListOfferAudit({
+          eventType: 'candidate.waiting_list_offer_claimed',
+          newState: sanitizeWaitingListOffer(claimedWaitingListOffer),
+          offer: claimedWaitingListOffer,
+          previousState: previousOfferState,
+          requestContext,
+          source: 'candidate_dashboard',
+          strapi,
+        });
+        await publishWaitingListOfferEvent({
+          offer: claimedWaitingListOffer,
+          strapi,
+          type: 'waiting_list_offer_claimed',
+        });
+      }
+
+        await auditEvents(strapi).record({
+          actorEmail: existingCandidate.email,
         actorId: auth.subject,
         actorType: 'candidate',
         eventCategory: 'payment',
@@ -3875,6 +4909,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
           class: sanitizeClass(lockedTargetClass),
           heldPlacesBeforeReservation: heldPlaces,
           redisHeldPlacesBeforeReservation: allocation.heldPlaces,
+          waitingListOffer: sanitizeWaitingListOffer(claimedWaitingListOffer),
         },
         newState: {
           enrollment: sanitizeEnrollment(reservedEnrollment),
@@ -3885,9 +4920,15 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
         requestId: requestContext.requestId,
         source: 'candidate_dashboard',
         subjectDisplayName: existingCandidate.email,
-        subjectId: existingCandidate.documentId,
-        subjectType: 'candidate',
+          subjectId: existingCandidate.documentId,
+          subjectType: 'candidate',
           userAgent: requestContext.userAgent,
+        });
+        await publishClassRelationshipEvent({
+          candidate: existingCandidate,
+          classRecord: lockedTargetClass,
+          eventType: 'reservation_created',
+          strapi,
         });
 
         redisCleanup = undefined;
@@ -3919,6 +4960,126 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
     }
   },
 
+  async declineCurrentCandidateWaitingListOffer(
+    auth: Auth0State | undefined,
+    offerDocumentId: string,
+    requestContext: RequestContext = {}
+  ) {
+    if (!auth || auth.type !== 'auth0' || !auth.subject) {
+      throw new UnauthorizedError('Auth0 authentication is required.');
+    }
+
+    const existingCandidate = await findCandidateByAuthIdentity(strapi, auth.subject);
+
+    if (!existingCandidate) {
+      throw new ValidationError('Candidate account must be synced before a waiting-list offer can be declined.');
+    }
+
+    const offer = await findCandidateWaitingListOffer(strapi, existingCandidate, offerDocumentId);
+
+    if (!offer) {
+      throw new ValidationError('Waiting-list offer could not be found.');
+    }
+
+    if (waitingListOfferTerminalStatuses.has(String(offerState(offer)))) {
+      return {
+        classInterest: await buildCandidateClassInterestForCandidate(strapi, existingCandidate),
+        waitingListOffer: sanitizeWaitingListOffer(offer),
+      };
+    }
+
+    if (offerState(offer) !== 'active') {
+      throw new ValidationError('This waiting-list offer cannot be declined.');
+    }
+
+    if (isPastDate(offer.expiresAt)) {
+      const expiredOffer = await expireWaitingListOffer({
+        offer,
+        requestContext,
+        source: 'candidate_dashboard',
+        strapi,
+      });
+
+      await promoteNextWaitingListOffer({
+        classRecord: offer.class,
+        excludeEnrollmentDocumentIds: [offer.enrollment?.documentId].filter(
+          (documentId): documentId is string => Boolean(documentId)
+        ),
+        requestContext,
+        sourceTrigger: 'waiting_list_offer_expired',
+        strapi,
+      });
+
+      return {
+        classInterest: await buildCandidateClassInterestForCandidate(strapi, existingCandidate),
+        waitingListOffer: sanitizeWaitingListOffer(expiredOffer),
+      };
+    }
+
+    const now = new Date().toISOString();
+    const previousOfferState = sanitizeWaitingListOffer(offer);
+    const declinedOffer = await documents(strapi, 'api::waiting-list-offer.waiting-list-offer').update({
+      documentId: offer.documentId,
+      data: {
+        declinedAt: now,
+        metadata: {
+          ...(objectValue(offer.metadata)),
+          declinedBy: 'candidate_dashboard',
+        },
+        offerState: 'declined',
+      },
+      populate: waitingListOfferPopulate,
+    });
+
+    await updateEnrollmentWaitingListOfferEligibility({
+      eligible: false,
+      enrollment: offer.enrollment,
+      reason: 'waiting_list_offer_declined',
+      strapi,
+    });
+
+    if (offer.candidate?.documentId && offer.class?.documentId) {
+      await releaseClassPlaceAllocation({
+        candidateDocumentId: offer.candidate.documentId,
+        classDocumentId: offer.class.documentId,
+        removeWaitlist: true,
+      }).catch((error) => {
+        const logger = (strapi as unknown as { log?: { error?: (message: string, error?: unknown) => void } }).log;
+        logger?.error?.('Class allocation Redis waiting-list offer decline cleanup failed.', error);
+      });
+    }
+
+    await recordWaitingListOfferAudit({
+      eventType: 'candidate.waiting_list_offer_declined',
+      newState: sanitizeWaitingListOffer(declinedOffer),
+      offer: declinedOffer,
+      previousState: previousOfferState,
+      requestContext,
+      source: 'candidate_dashboard',
+      strapi,
+    });
+    await publishWaitingListOfferEvent({
+      offer: declinedOffer,
+      strapi,
+      type: 'waiting_list_offer_declined',
+    });
+
+    await promoteNextWaitingListOffer({
+      classRecord: offer.class,
+      excludeEnrollmentDocumentIds: [offer.enrollment?.documentId].filter(
+        (documentId): documentId is string => Boolean(documentId)
+      ),
+      requestContext,
+      sourceTrigger: 'waiting_list_offer_declined',
+      strapi,
+    });
+
+    return {
+      classInterest: await buildCandidateClassInterestForCandidate(strapi, existingCandidate),
+      waitingListOffer: sanitizeWaitingListOffer(declinedOffer),
+    };
+  },
+
   async getCurrentCandidateClassReservation(
     auth: Auth0State | undefined,
     reservationDocumentId: string,
@@ -3943,10 +5104,10 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
     const confirmedPayment = await findConfirmedPaymentForReservationOrEnrollment(strapi, reservation);
     const paymentAction = confirmedPayment
       ? disabledPaymentAction(
-          confirmedPayment.status === 'paid'
+          paymentState(confirmedPayment) === 'paid'
             ? 'Payment has been confirmed.'
             : 'Payment needs HireFlip review.',
-          confirmedPayment.status === 'paid' ? 'payment_confirmed' : 'payment_requires_review'
+          paymentState(confirmedPayment) === 'paid' ? 'payment_confirmed' : 'payment_requires_review'
         )
       : await getPaymentActionForReservation({
           candidate: existingCandidate,
@@ -3986,7 +5147,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       throw new ValidationError('Reservation could not be found.');
     }
 
-    if (reservation.status !== 'active') {
+    if (reservationState(reservation) !== 'active') {
       throw new ValidationError('Only an active reservation can accept terms.');
     }
 
@@ -4152,7 +5313,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
     const payments = await documents(strapi, 'api::payment.payment').findMany({
       filters: {
         paymentProvider: 'stripe',
-        status: {
+        paymentState: {
           $in: ['checkout_created', 'pending'],
         },
       },
@@ -4286,6 +5447,205 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
     return summary;
   },
 
+  async processWaitingListOffers(limit = 50, requestContext: RequestContext = {}) {
+    const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 200);
+    const now = new Date().toISOString();
+    const expiredOffers = await documents(strapi, 'api::waiting-list-offer.waiting-list-offer').findMany({
+      filters: {
+        expiresAt: {
+          $lte: now,
+        },
+        offerState: 'active',
+      },
+      limit: safeLimit,
+      populate: waitingListOfferPopulate,
+      sort: ['expiresAt:asc', 'createdAt:asc'],
+    });
+    const summary = {
+      expired: 0,
+      failed: 0,
+      promoted: 0,
+      skipped: 0,
+      total: expiredOffers.length,
+    };
+
+    for (const offer of expiredOffers) {
+      try {
+        const expiredOffer = await expireWaitingListOffer({
+          offer,
+          requestContext: {
+            ...requestContext,
+            serviceName: requestContext.serviceName || 'class-workflow-manual',
+          },
+          source: 'system',
+          strapi,
+        });
+        summary.expired += 1;
+
+        const nextOffer = await promoteNextWaitingListOffer({
+          classRecord: expiredOffer.class,
+          excludeEnrollmentDocumentIds: [expiredOffer.enrollment?.documentId].filter(
+            (documentId): documentId is string => Boolean(documentId)
+          ),
+          requestContext: {
+            ...requestContext,
+            serviceName: requestContext.serviceName || 'class-workflow-manual',
+          },
+          sourceTrigger: 'waiting_list_offer_expired',
+          strapi,
+        });
+
+        if (nextOffer) {
+          summary.promoted += 1;
+        } else {
+          summary.skipped += 1;
+        }
+      } catch {
+        summary.failed += 1;
+      }
+    }
+
+    return summary;
+  },
+
+  async syncWaitingListOfferExpiryJobs(limit = 1000, requestContext: RequestContext = {}) {
+    const safeLimit = Math.min(Math.max(Number(limit) || 1000, 1), 5000);
+    const now = new Date();
+    const activeOffers = await documents(strapi, 'api::waiting-list-offer.waiting-list-offer').findMany({
+      filters: {
+        offerState: 'active',
+      },
+      limit: safeLimit,
+      populate: waitingListOfferPopulate,
+      sort: ['expiresAt:asc', 'createdAt:asc'],
+    });
+    const summary = {
+      expired: 0,
+      failed: 0,
+      promoted: 0,
+      rescheduled: 0,
+      total: activeOffers.length,
+    };
+    const serviceName = requestContext.serviceName || 'class-workflow-bootstrap';
+
+    for (const offer of activeOffers) {
+      if (!offer.documentId || !offer.expiresAt) {
+        summary.failed += 1;
+        continue;
+      }
+
+      try {
+        if (Date.parse(offer.expiresAt) <= now.getTime()) {
+          const expiredOffer = await expireWaitingListOffer({
+            offer,
+            requestContext: {
+              ...requestContext,
+              serviceName,
+            },
+            source: 'system',
+            strapi,
+          });
+          const nextOffer = await promoteNextWaitingListOffer({
+            classRecord: expiredOffer.class,
+            excludeEnrollmentDocumentIds: [expiredOffer.enrollment?.documentId].filter(
+              (documentId): documentId is string => Boolean(documentId)
+            ),
+            requestContext: {
+              ...requestContext,
+              serviceName,
+            },
+            sourceTrigger: 'waiting_list_offer_expired',
+            strapi,
+          });
+
+          summary.expired += 1;
+
+          if (nextOffer) {
+            summary.promoted += 1;
+          }
+
+          continue;
+        }
+
+        await addWaitingListOfferExpiryJob({
+          classDocumentId: offer.class?.documentId,
+          expiresAt: offer.expiresAt,
+          offerDocumentId: offer.documentId,
+        });
+        summary.rescheduled += 1;
+      } catch {
+        summary.failed += 1;
+      }
+    }
+
+    return summary;
+  },
+
+  async expireWaitingListOfferByDocumentId(
+    offerDocumentId: string,
+    requestContext: RequestContext = {}
+  ) {
+    if (!offerDocumentId) {
+      throw new ValidationError('Waiting-list offer document ID is required.');
+    }
+
+    const offers = await documents(strapi, 'api::waiting-list-offer.waiting-list-offer').findMany({
+      filters: {
+        documentId: offerDocumentId,
+      },
+      limit: 1,
+      populate: waitingListOfferPopulate,
+    });
+    const offer = offers[0];
+
+    if (!offer || offerState(offer) !== 'active') {
+      return {
+        skipped: true,
+        waitingListOffer: sanitizeWaitingListOffer(offer),
+      };
+    }
+
+    if (!isPastDate(offer.expiresAt)) {
+      await addWaitingListOfferExpiryJob({
+        classDocumentId: offer.class?.documentId,
+        expiresAt: offer.expiresAt!,
+        offerDocumentId: offer.documentId!,
+      });
+
+      return {
+        rescheduled: true,
+        waitingListOffer: sanitizeWaitingListOffer(offer),
+      };
+    }
+
+    const expiredOffer = await expireWaitingListOffer({
+      offer,
+      requestContext: {
+        ...requestContext,
+        serviceName: requestContext.serviceName || 'class-workflow-worker',
+      },
+      source: 'system',
+      strapi,
+    });
+    const nextOffer = await promoteNextWaitingListOffer({
+      classRecord: expiredOffer.class,
+      excludeEnrollmentDocumentIds: [expiredOffer.enrollment?.documentId].filter(
+        (documentId): documentId is string => Boolean(documentId)
+      ),
+      requestContext: {
+        ...requestContext,
+        serviceName: requestContext.serviceName || 'class-workflow-worker',
+      },
+      sourceTrigger: 'waiting_list_offer_expired',
+      strapi,
+    });
+
+    return {
+      promoted: Boolean(nextOffer),
+      waitingListOffer: sanitizeWaitingListOffer(expiredOffer),
+    };
+  },
+
   async cancelCurrentCandidateClassReservation(
     auth: Auth0State | undefined,
     reservationDocumentId: string,
@@ -4355,19 +5715,19 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
         ? await getNextWaitingListPosition(strapi, classRecord, existingCandidate)
         : null;
     const updatedReservation =
-      reservation.status === 'active'
+      reservationState(reservation) === 'active'
         ? await documents(strapi, 'api::reservation.reservation').update({
             documentId: reservation.documentId,
             data: {
               cancelledAt: now,
-              status: 'cancelled',
+              reservationState: 'cancelled',
             },
             populate: ['candidate', 'class', 'enrollment'],
           })
         : reservation;
     const updatedEnrollment =
       reservation.enrollment?.documentId &&
-      normalizeEnrollmentStatus(reservation.enrollment.status) === 'place_reserved'
+      normalizedEnrollmentState(reservation.enrollment) === 'place_reserved'
         ? await documents(strapi, 'api::enrollment.enrollment').update({
             documentId: reservation.enrollment.documentId,
             data: {
@@ -4377,7 +5737,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
                 lastReservationCancelledAt: now,
               },
               reservationExpiresAt: null,
-              status: fallbackStatus,
+              enrollmentState: fallbackStatus,
               waitingListPosition,
             },
             populate: ['class'],
@@ -4410,6 +5770,12 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       subjectType: 'candidate',
       userAgent: requestContext.userAgent,
     });
+    await publishClassRelationshipEvent({
+      candidate: existingCandidate,
+      classRecord,
+      eventType: 'reservation_cancelled',
+      strapi,
+    });
 
     if (existingCandidate.documentId && classRecord?.documentId) {
       await releaseClassPlaceAllocation({
@@ -4420,6 +5786,16 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
         logger?.error?.('Class allocation Redis cancel release failed.', error);
       });
     }
+
+    await promoteNextWaitingListOffer({
+      classRecord,
+      excludeEnrollmentDocumentIds: [updatedEnrollment?.documentId].filter(
+        (documentId): documentId is string => Boolean(documentId)
+      ),
+      requestContext,
+      sourceTrigger: 'cancelled_reservation',
+      strapi,
+    });
 
     return {
       classInterest: await buildCandidateClassInterestForCandidate(strapi, existingCandidate),
@@ -4474,7 +5850,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       };
     }
 
-    if (reservation.status !== 'active') {
+    if (reservationState(reservation) !== 'active') {
       return {
         classInterest: await buildCandidateClassInterestForCandidate(strapi, existingCandidate),
         reservation: sanitizeReservation(reservation),
@@ -4503,13 +5879,13 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       documentId: reservation.documentId,
       data: {
         expiredAt: now,
-        status: 'expired',
+        reservationState: 'expired',
       },
       populate: ['candidate', 'class', 'enrollment'],
     });
     const updatedEnrollment =
       reservation.enrollment?.documentId &&
-      normalizeEnrollmentStatus(reservation.enrollment.status) === 'place_reserved'
+      normalizedEnrollmentState(reservation.enrollment) === 'place_reserved'
         ? await documents(strapi, 'api::enrollment.enrollment').update({
             documentId: reservation.enrollment.documentId,
             data: {
@@ -4519,7 +5895,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
                 lastReservationExpiredAt: now,
               },
               reservationExpiresAt: null,
-              status: fallbackStatus,
+              enrollmentState: fallbackStatus,
               waitingListPosition,
             },
             populate: ['class'],
@@ -4552,6 +5928,12 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       subjectType: 'candidate',
       userAgent: requestContext.userAgent,
     });
+    await publishClassRelationshipEvent({
+      candidate: existingCandidate,
+      classRecord,
+      eventType: 'reservation_expired',
+      strapi,
+    });
 
     if (existingCandidate.documentId && classRecord?.documentId) {
       await releaseClassPlaceAllocation({
@@ -4562,6 +5944,16 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
         logger?.error?.('Class allocation Redis expiry release failed.', error);
       });
     }
+
+    await promoteNextWaitingListOffer({
+      classRecord,
+      excludeEnrollmentDocumentIds: [updatedEnrollment?.documentId].filter(
+        (documentId): documentId is string => Boolean(documentId)
+      ),
+      requestContext,
+      sourceTrigger: 'expired_reservation',
+      strapi,
+    });
 
     return {
       classInterest: await buildCandidateClassInterestForCandidate(strapi, existingCandidate),
@@ -4602,7 +5994,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
           snapshot: preferenceSnapshot,
         },
         source: payload.source,
-        status: 'new',
+        reviewState: 'new',
         suggestedValue: payload.suggestedValue,
       },
     });
@@ -4611,7 +6003,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       documentId: unlistedInterest.documentId,
       interestType: unlistedInterest.interestType,
       source: unlistedInterest.source,
-      status: unlistedInterest.status,
+      status: unlistedInterestState(unlistedInterest),
       suggestedValue: unlistedInterest.suggestedValue,
     };
 

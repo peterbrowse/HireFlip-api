@@ -1,0 +1,98 @@
+{
+  "kind": "collectionType",
+  "collectionName": "waiting_list_offers",
+  "info": {
+    "singularName": "waiting-list-offer",
+    "pluralName": "waiting-list-offers",
+    "displayName": "Waiting List Offer",
+    "description": "Exclusive timed offers to waiting-list candidates when a class place may become available."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "candidate": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::candidate.candidate"
+    },
+    "class": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::class.class"
+    },
+    "enrollment": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::enrollment.enrollment"
+    },
+    "reservation": {
+      "type": "relation",
+      "relation": "oneToOne",
+      "target": "api::reservation.reservation"
+    },
+    "offerState": {
+      "type": "enumeration",
+      "enum": [
+        "active",
+        "claimed",
+        "declined",
+        "expired",
+        "skipped_ineligible",
+        "superseded"
+      ],
+      "default": "active",
+      "required": true
+    },
+    "sourceTrigger": {
+      "type": "enumeration",
+      "enum": [
+        "expired_reservation",
+        "cancelled_reservation",
+        "enrolled_candidate_withdrawal",
+        "admin_released_place",
+        "payment_failure_after_expiry",
+        "payment_exception_release",
+        "admin_ineligibility_removal",
+        "waiting_list_offer_declined",
+        "waiting_list_offer_expired",
+        "system_reconciliation"
+      ],
+      "default": "system_reconciliation",
+      "required": true
+    },
+    "waitingListPositionAtOffer": {
+      "type": "integer",
+      "min": 1
+    },
+    "waitingListJoinedAt": {
+      "type": "datetime"
+    },
+    "offeredAt": {
+      "type": "datetime",
+      "required": true
+    },
+    "expiresAt": {
+      "type": "datetime",
+      "required": true
+    },
+    "claimedAt": {
+      "type": "datetime"
+    },
+    "declinedAt": {
+      "type": "datetime"
+    },
+    "expiredAt": {
+      "type": "datetime"
+    },
+    "skippedAt": {
+      "type": "datetime"
+    },
+    "supersededAt": {
+      "type": "datetime"
+    },
+    "metadata": {
+      "type": "json"
+    }
+  }
+}

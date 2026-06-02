@@ -17,7 +17,7 @@
       "maxLength": 200,
       "required": true
     },
-    "status": {
+    "employerState": {
       "type": "enumeration",
       "enum": [
         "prospect",

@@ -50,7 +50,7 @@
       "default": true,
       "required": true
     },
-    "status": {
+    "testState": {
       "type": "enumeration",
       "enum": [
         "draft",

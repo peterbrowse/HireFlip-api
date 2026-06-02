@@ -4,6 +4,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { compileStrapi, createStrapi } = require('@strapi/strapi');
 
+process.env.CLASS_WORKFLOW_BOOTSTRAP_ENABLED = 'false';
+
 const resetTargets = [
   ['api::notification-event.notification-event', 'notification events'],
   ['api::payment-webhook-event.payment-webhook-event', 'payment webhook events'],
@@ -18,6 +20,7 @@ const resetTargets = [
   ['api::answer-submission.answer-submission', 'answer submissions'],
   ['api::test-attempt.test-attempt', 'test attempts'],
   ['api::course-progress.course-progress', 'course progress records'],
+  ['api::waiting-list-offer.waiting-list-offer', 'waiting-list offers'],
   ['api::reservation.reservation', 'reservations'],
   ['api::enrollment.enrollment', 'enrollments'],
   ['api::class.class', 'classes'],

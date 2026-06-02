@@ -36,7 +36,7 @@
       "relation": "manyToOne",
       "target": "api::interview-slot.interview-slot"
     },
-    "status": {
+    "interviewState": {
       "type": "enumeration",
       "enum": [
         "offered",

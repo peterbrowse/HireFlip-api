@@ -44,7 +44,7 @@
       "default": "course_payment",
       "required": true
     },
-    "status": {
+    "paymentState": {
       "type": "enumeration",
       "enum": [
         "draft",

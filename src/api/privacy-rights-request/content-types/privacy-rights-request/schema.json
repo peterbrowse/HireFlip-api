@@ -25,7 +25,7 @@
       ],
       "required": true
     },
-    "status": {
+    "requestState": {
       "type": "enumeration",
       "enum": [
         "received",

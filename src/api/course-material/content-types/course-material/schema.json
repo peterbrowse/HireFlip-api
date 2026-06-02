@@ -60,7 +60,7 @@
     "sourceReference": {
       "type": "string"
     },
-    "status": {
+    "materialState": {
       "type": "enumeration",
       "enum": [
         "draft",

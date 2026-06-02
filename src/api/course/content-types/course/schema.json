@@ -44,7 +44,7 @@
       "type": "string",
       "maxLength": 240
     },
-    "status": {
+    "courseState": {
       "type": "enumeration",
       "enum": [
         "draft",

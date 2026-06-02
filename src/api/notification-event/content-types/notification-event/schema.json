@@ -48,7 +48,7 @@
     "templateKey": {
       "type": "string"
     },
-    "status": {
+    "deliveryState": {
       "type": "enumeration",
       "enum": [
         "queued",

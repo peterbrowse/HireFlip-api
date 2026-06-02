@@ -46,7 +46,7 @@
     "meetingUrl": {
       "type": "string"
     },
-    "status": {
+    "slotState": {
       "type": "enumeration",
       "enum": [
         "draft",

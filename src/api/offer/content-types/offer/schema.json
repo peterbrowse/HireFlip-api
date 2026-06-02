@@ -26,7 +26,7 @@
       "relation": "manyToOne",
       "target": "api::interview.interview"
     },
-    "status": {
+    "progressionState": {
       "type": "enumeration",
       "enum": [
         "draft",

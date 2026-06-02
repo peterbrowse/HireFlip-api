@@ -51,7 +51,7 @@
     "randomizationGroup": {
       "type": "string"
     },
-    "status": {
+    "questionState": {
       "type": "enumeration",
       "enum": [
         "draft",
