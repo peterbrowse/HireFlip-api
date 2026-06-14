@@ -13,6 +13,7 @@
     "strapi": "ENV_PATH=${ENV_PATH:-.env.local} strapi",
     "reset:class-data": "ENV_PATH=${ENV_PATH:-.env.local} node scripts/reset-class-data.js",
     "reconcile:payment-webhooks": "ENV_PATH=${ENV_PATH:-.env.local} node scripts/retry-payment-webhook-events.js",
+    "seed:admin-roles": "ENV_PATH=${ENV_PATH:-.env.local} node scripts/seed-admin-roles.js",
     "seed:content": "ENV_PATH=${ENV_PATH:-.env.local} node scripts/seed-content.js",
     "seed:reset-content": "npm run reset:class-data && npm run seed:content",
     "seed:local-content": "npm run seed:content",

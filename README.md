@@ -39,6 +39,17 @@ Local development scripts load `.env.local` by default through Strapi's `ENV_PAT
 npm run develop
 npm run build
 npm run start
+npm run seed:admin-roles
+```
+
+`npm run seed:admin-roles` creates or updates the custom Strapi admin/staff
+roles required by `HireFlip-admin-dashboard`: Admin, Sales, and Support. It is
+idempotent and safe to run locally or as a first-run remote setup command.
+
+Remote first-run setup:
+
+```bash
+heroku run "npm run seed:admin-roles" --app hireflip-api
 ```
 
 ## Storage Direction
