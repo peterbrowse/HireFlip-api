@@ -5,6 +5,7 @@ export default ({ env }) => {
     'blob:',
     env('AWS_S3_CSP_SOURCE', 'https://*.s3.amazonaws.com'),
     env('CLOUDINARY_CSP_SOURCE', 'https://res.cloudinary.com'),
+    ...env.array('PUBLIC_ASSET_CSP_SOURCES', ['https://hireflip.work']),
   ].filter(Boolean);
 
   return [

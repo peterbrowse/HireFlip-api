@@ -61,6 +61,10 @@ filename handling, which can reject full URLs as invalid filenames. Optional env
 overrides: `STRAPI_PROJECT_LOGO_URL`, `STRAPI_PROJECT_LOGO_FILENAME`, and
 `STRAPI_PROJECT_LOGO_TARGETS`.
 
+The Strapi admin Content Security Policy allows homepage-hosted public image
+assets by default through `PUBLIC_ASSET_CSP_SOURCES=https://hireflip.work`. Add
+other public origins there if `STRAPI_PROJECT_LOGO_URL` is moved later.
+
 ## Storage Direction
 
 Private product files should use S3:
