@@ -36,6 +36,7 @@ type AdminUser = Record<string, unknown> & {
   id?: number | string;
   isActive?: boolean;
   lastname?: string;
+  registrationToken?: string;
   roles?: Array<Record<string, unknown>>;
   username?: string;
 };
@@ -87,6 +88,25 @@ type AdminAuthService = {
   forgotPassword(input: { email: string }): Promise<unknown>;
 };
 
+type AdminUserService = {
+  create(input: Record<string, unknown>): Promise<AdminUser>;
+  findRegistrationInfo(registrationToken: string): Promise<Pick<AdminUser, 'email' | 'firstname' | 'lastname'> | undefined>;
+  register(input: {
+    registrationToken: string;
+    userInfo: {
+      firstname: string;
+      lastname?: string | null;
+      password: string;
+    };
+  }): Promise<AdminUser>;
+  updateById(id: string | number, input: Record<string, unknown>): Promise<AdminUser | null>;
+};
+
+type AdminRoleService = {
+  findOne(input: Record<string, unknown>): Promise<Record<string, unknown> | null>;
+  getSuperAdmin(): Promise<Record<string, unknown> | null>;
+};
+
 const loginSchema = z
   .object({
     email: z.string().trim().email().max(254).transform((value) => value.toLowerCase()),
@@ -125,11 +145,47 @@ const staffPasswordResetSchema = z
     message: 'Email or staff user ID is required.',
   });
 
+const staffRoleKeySchema = z.enum(['admin', 'sales', 'super_admin', 'support']);
+
+const staffInviteSchema = z
+  .object({
+    email: z.string().trim().email().max(254).transform((value) => value.toLowerCase()),
+    firstname: z.string().trim().min(1).max(80),
+    lastname: z.string().trim().max(80).optional().transform((value) => value || undefined),
+    roleKey: staffRoleKeySchema,
+    sessionToken: z.string().trim().min(32).max(512),
+  })
+  .strict();
+
+const staffInviteInfoSchema = z
+  .object({
+    registrationToken: z.string().trim().min(16).max(256),
+  })
+  .strict();
+
+const staffInviteAcceptanceSchema = z
+  .object({
+    firstname: z.string().trim().min(1).max(80),
+    lastname: z.string().trim().max(80).optional().transform((value) => value || undefined),
+    password: z
+      .string()
+      .min(8)
+      .max(128)
+      .refine((value) => /[A-Z]/.test(value), 'Password must include an uppercase letter.')
+      .refine((value) => /\d/.test(value), 'Password must include a number.')
+      .refine((value) => Buffer.byteLength(value, 'utf8') <= 72, 'Password is too long.'),
+    registrationToken: z.string().trim().min(16).max(256),
+  })
+  .strict();
+
 const validateLogin = validateZodSchema(loginSchema);
 const validateVerifyTwoFactor = validateZodSchema(verifyTwoFactorSchema);
 const validateResendTwoFactor = validateZodSchema(resendTwoFactorSchema);
 const validateSessionToken = validateZodSchema(sessionTokenSchema);
 const validateStaffPasswordReset = validateZodSchema(staffPasswordResetSchema);
+const validateStaffInvite = validateZodSchema(staffInviteSchema);
+const validateStaffInviteAcceptance = validateZodSchema(staffInviteAcceptanceSchema);
+const validateStaffInviteInfo = validateZodSchema(staffInviteInfoSchema);
 
 const secondsEnv = (name: string, fallback: number) => {
   const value = Number.parseInt(process.env[name] || '', 10);
@@ -233,8 +289,25 @@ const displayName = (user: AdminUser) => {
 };
 
 const getAdminAuthService = () => strapi.service('admin::auth') as unknown as AdminAuthService;
+const getAdminUserService = () => strapi.service('admin::user') as unknown as AdminUserService;
+const getAdminRoleService = () => strapi.service('admin::role') as unknown as AdminRoleService;
 const getAuditEventService = () =>
   strapi.service('api::audit-event.audit-event') as unknown as AuditEventService;
+
+const staffRoleDefinitions: Record<Exclude<AdminRoleKey, 'super_admin'>, { code: string; label: string }> = {
+  admin: {
+    code: 'hireflip-admin',
+    label: 'Admin',
+  },
+  sales: {
+    code: 'hireflip-sales',
+    label: 'Sales',
+  },
+  support: {
+    code: 'hireflip-support',
+    label: 'Support',
+  },
+};
 
 const findAdminUserById = async (id: string | number) =>
   strapi.db.query('admin::user').findOne({
@@ -249,6 +322,24 @@ const findAdminUserByEmail = async (email: string) =>
     where: {
       email,
       isActive: true,
+    },
+    populate: ['roles'],
+  }) as Promise<AdminUser | null>;
+
+const findAnyAdminUserByEmail = async (email: string) =>
+  strapi.db.query('admin::user').findOne({
+    where: {
+      email: {
+        $eqi: email,
+      },
+    },
+    populate: ['roles'],
+  }) as Promise<AdminUser | null>;
+
+const findAdminUserByRegistrationToken = async (registrationToken: string) =>
+  strapi.db.query('admin::user').findOne({
+    where: {
+      registrationToken,
     },
     populate: ['roles'],
   }) as Promise<AdminUser | null>;
@@ -280,6 +371,68 @@ const maskEmail = (email: string) => {
   const visible = localPart.slice(0, Math.min(localPart.length, 2));
 
   return `${visible}${'*'.repeat(Math.max(localPart.length - visible.length, 2))}@${domain}`;
+};
+
+const escapeHtml = (value: string) =>
+  value.replace(/[&<>"']/g, (character) => {
+    const replacements: Record<string, string> = {
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;',
+    };
+
+    return replacements[character] || character;
+  });
+
+const trimTrailingSlash = (value: string) => value.replace(/\/+$/, '');
+
+const adminDashboardPublicUrl = () => {
+  const value = process.env.ADMIN_DASHBOARD_PUBLIC_URL;
+
+  if (!value) {
+    throw new ApplicationError('Admin dashboard public URL is not configured.');
+  }
+
+  return trimTrailingSlash(value);
+};
+
+const getStaffRole = async (roleKey: AdminRoleKey) => {
+  const roleService = getAdminRoleService();
+
+  if (roleKey === 'super_admin') {
+    const superAdminRole = await roleService.getSuperAdmin();
+
+    if (!superAdminRole) {
+      throw new ApplicationError('The Super Admin role is not available.');
+    }
+
+    return superAdminRole;
+  }
+
+  const definition = staffRoleDefinitions[roleKey];
+  const role =
+    (await roleService.findOne({ code: definition.code })) ||
+    (await roleService.findOne({ name: definition.label }));
+
+  if (!role) {
+    throw new ApplicationError('HireFlip admin roles are not seeded. Run npm run seed:admin-roles.');
+  }
+
+  return role;
+};
+
+const staffUserPayload = (user: AdminUser) => {
+  const sessionUser = toSessionUser(user);
+
+  return {
+    displayName: sessionUser.displayName,
+    email: sessionUser.email,
+    id: sessionUser.id,
+    roleKeys: sessionUser.roleKeys,
+    roles: sessionUser.roles,
+  };
 };
 
 const recordAuditEvent = async (
@@ -376,6 +529,25 @@ const sendTwoFactorEmail = async (email: string, code: string, expiresAt: string
     subject: 'Your HireFlip admin sign-in code',
     text: `Your HireFlip admin sign-in code is ${code}. This code expires in ${expiryMinutes} minutes. If you did not try to sign in, contact the Super Admin team.`,
     to: email,
+  });
+};
+
+const sendStaffInviteEmail = async (user: AdminUser, registrationToken: string) => {
+  if (!user.email) {
+    throw new ValidationError('Staff account is missing an email address.');
+  }
+
+  const url = new URL('/staff/accept-invite', adminDashboardPublicUrl());
+  url.searchParams.set('token', registrationToken);
+
+  const safeDisplayName = escapeHtml(displayName(user));
+  const safeUrl = escapeHtml(url.toString());
+
+  await strapi.plugin('email').service('email').send({
+    html: `<p>${safeDisplayName}, you have been invited to HireFlip admin.</p><p>Use this link to set your password:</p><p><a href="${safeUrl}">${safeUrl}</a></p><p>After setting your password, sign in with your staff email and email verification code.</p><p>If you were not expecting this invitation, ignore this email and contact the Super Admin team.</p>`,
+    subject: 'Your HireFlip admin invitation',
+    text: `${displayName(user)}, you have been invited to HireFlip admin.\n\nSet your password here: ${url.toString()}\n\nAfter setting your password, sign in with your staff email and email verification code.\n\nIf you were not expecting this invitation, ignore this email and contact the Super Admin team.`,
+    to: user.email,
   });
 };
 
@@ -838,6 +1010,169 @@ export default () => ({
         email: targetUser.email,
         id: String(targetUser.id),
       },
+    };
+  },
+
+  async inviteStaffUser(input: unknown, requestContext: RequestContext = {}) {
+    const body = validateStaffInvite(input);
+    const store = getStore();
+    const actorSession = await requireSuperAdminSession(store, body.sessionToken, requestContext);
+    const role = await getStaffRole(body.roleKey);
+    const roleId = role.id;
+
+    if (!roleId) {
+      throw new ApplicationError('Selected staff role is missing an ID.');
+    }
+
+    const existingUser = await findAnyAdminUserByEmail(body.email);
+    let staffUser: AdminUser | null = null;
+    let registrationToken: string | undefined;
+    let resentExistingInvite = false;
+
+    if (existingUser) {
+      if (existingUser.isActive || !existingUser.registrationToken || !existingUser.id) {
+        throw new ApplicationError('A staff user with this email already exists.');
+      }
+
+      staffUser = await getAdminUserService().updateById(existingUser.id, {
+        firstname: body.firstname,
+        lastname: body.lastname || null,
+        roles: [roleId],
+        isActive: false,
+      });
+      registrationToken = existingUser.registrationToken;
+      resentExistingInvite = true;
+    } else {
+      staffUser = await getAdminUserService().create({
+        email: body.email,
+        firstname: body.firstname,
+        lastname: body.lastname || null,
+        roles: [roleId],
+        isActive: false,
+      });
+      registrationToken = staffUser.registrationToken;
+    }
+
+    if (!staffUser?.id || !staffUser.email || !registrationToken) {
+      throw new ApplicationError('Staff invite could not be created.');
+    }
+
+    await recordAuditEvent('admin.staff.invite_created', requestContext, {
+      actorEmail: actorSession.user.email,
+      actorId: actorSession.user.id,
+      actorDisplayName: actorSession.user.displayName,
+      eventCategory: 'admin',
+      metadata: {
+        resentExistingInvite,
+        roleKey: body.roleKey,
+      },
+      subjectDisplayName: displayName(staffUser),
+      subjectId: String(staffUser.id),
+      subjectType: 'admin_user',
+    });
+
+    try {
+      await sendStaffInviteEmail(staffUser, registrationToken);
+      await recordAuditEvent('admin.staff.invite_email_delivered', requestContext, {
+        actorEmail: actorSession.user.email,
+        actorId: actorSession.user.id,
+        actorDisplayName: actorSession.user.displayName,
+        eventCategory: 'admin',
+        metadata: {
+          resentExistingInvite,
+          roleKey: body.roleKey,
+        },
+        subjectDisplayName: displayName(staffUser),
+        subjectId: String(staffUser.id),
+        subjectType: 'admin_user',
+      });
+    } catch (error) {
+      await recordAuditEvent('admin.staff.invite_email_delivery_failed', requestContext, {
+        actorEmail: actorSession.user.email,
+        actorId: actorSession.user.id,
+        actorDisplayName: actorSession.user.displayName,
+        eventCategory: 'admin',
+        metadata: {
+          message: error instanceof Error ? error.message : 'Email delivery failed.',
+          resentExistingInvite,
+          roleKey: body.roleKey,
+        },
+        severity: 'error',
+        subjectDisplayName: displayName(staffUser),
+        subjectId: String(staffUser.id),
+        subjectType: 'admin_user',
+      });
+      throw new ApplicationError(
+        'Staff invite was created, but the invite email could not be sent. Check the notification service and try again.'
+      );
+    }
+
+    return {
+      inviteSent: true,
+      resentExistingInvite,
+      staffUser: staffUserPayload(staffUser),
+    };
+  },
+
+  async getStaffInviteInfo(input: unknown) {
+    const body = validateStaffInviteInfo(input);
+    const inviteInfo = await getAdminUserService().findRegistrationInfo(body.registrationToken);
+
+    if (!inviteInfo?.email) {
+      throw new ValidationError('Staff invitation is invalid or has already been used.');
+    }
+
+    return {
+      email: inviteInfo.email,
+      firstname: inviteInfo.firstname || '',
+      lastname: inviteInfo.lastname || '',
+    };
+  },
+
+  async acceptStaffInvite(input: unknown, requestContext: RequestContext = {}) {
+    const body = validateStaffInviteAcceptance(input);
+    const pendingUser = await findAdminUserByRegistrationToken(body.registrationToken);
+
+    if (!pendingUser?.id || !pendingUser.email) {
+      await recordAuditEvent('admin.staff.invite_accept_failed', requestContext, {
+        actorType: 'staff_invite',
+        eventCategory: 'security',
+        metadata: {
+          reason: 'invalid_registration_token',
+        },
+        severity: 'warning',
+      });
+      throw new ValidationError('Staff invitation is invalid or has already been used.');
+    }
+
+    const staffUser = await getAdminUserService().register({
+      registrationToken: body.registrationToken,
+      userInfo: {
+        firstname: body.firstname,
+        lastname: body.lastname || null,
+        password: body.password,
+      },
+    });
+
+    const fullStaffUser = await findAdminUserById(staffUser.id || pendingUser.id);
+    const sessionUser = staffUserPayload(fullStaffUser || staffUser);
+
+    await recordAuditEvent('admin.staff.invite_accepted', requestContext, {
+      actorEmail: sessionUser.email,
+      actorId: sessionUser.id,
+      actorDisplayName: sessionUser.displayName,
+      eventCategory: 'security',
+      metadata: {
+        roleKeys: sessionUser.roleKeys,
+      },
+      subjectDisplayName: sessionUser.displayName,
+      subjectId: sessionUser.id,
+      subjectType: 'admin_user',
+    });
+
+    return {
+      accepted: true,
+      staffUser: sessionUser,
     };
   },
 });
