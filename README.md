@@ -88,16 +88,15 @@ configured to accept ACLs later.
 
 ## Strapi System Email
 
-Strapi system emails should eventually route through `HireFlip-notification-service`,
-not directly through SendGrid from the API.
+Strapi system emails should route through `HireFlip-notification-service`, not
+directly through SendGrid from the API.
 
 The API includes an env-gated custom Strapi email provider for that handoff.
-Leave it disabled until the notification service exposes the matching internal
-email endpoint.
+Local development should use the notification service on port `3010`.
 
 ```bash
 STRAPI_EMAIL_PROVIDER=notification-service
-NOTIFICATION_SERVICE_URL=https://your-notification-service.example.com
+NOTIFICATION_SERVICE_URL=http://localhost:3010
 NOTIFICATION_SERVICE_TOKEN=...
 STRAPI_EMAIL_DEFAULT_FROM=no-reply@hireflip.work
 STRAPI_EMAIL_DEFAULT_REPLY_TO=support@hireflip.work

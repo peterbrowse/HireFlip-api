@@ -9,7 +9,7 @@ import {
 import { promisify } from 'node:util';
 import { errors, validateZodSchema, z } from '@strapi/utils';
 
-const { ForbiddenError, RateLimitError, UnauthorizedError, ValidationError } = errors;
+const { ApplicationError, ForbiddenError, RateLimitError, UnauthorizedError, ValidationError } = errors;
 
 const scryptAsync = promisify(scrypt);
 const storeName = 'admin-dashboard-auth';
@@ -597,7 +597,9 @@ export default () => ({
         },
         severity: 'error',
       });
-      throw error;
+      throw new ApplicationError(
+        'Email verification code could not be sent. Check the notification service and try again.'
+      );
     }
 
     return {
@@ -645,7 +647,29 @@ export default () => ({
       key: challengeKey(challenge.id),
       value: nextChallenge,
     });
-    await sendTwoFactorEmail(challenge.email, code, expiresAt);
+
+    try {
+      await sendTwoFactorEmail(challenge.email, code, expiresAt);
+    } catch (error) {
+      await store.set({
+        key: challengeKey(challenge.id),
+        value: challenge,
+      });
+      await recordAuditEvent('admin.auth.2fa_delivery_failed', requestContext, {
+        actorEmail: challenge.email,
+        actorId: challenge.userId,
+        actorDisplayName: challenge.user.displayName,
+        metadata: {
+          message: error instanceof Error ? error.message : 'Email delivery failed.',
+          resent: true,
+        },
+        severity: 'error',
+      });
+      throw new ApplicationError(
+        'Email verification code could not be sent. Check the notification service and try again.'
+      );
+    }
+
     await recordAuditEvent('admin.auth.2fa_challenge_delivered', requestContext, {
       actorEmail: challenge.email,
       actorId: challenge.userId,
