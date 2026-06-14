@@ -10,11 +10,13 @@ type AdminAuthService = {
   createTwoFactorChallenge(input: unknown, context: RequestContext): Promise<unknown>;
   deleteStaffUser(input: unknown, context: RequestContext): Promise<unknown>;
   getStaffInviteInfo(input: unknown, context: RequestContext): Promise<unknown>;
+  getStaffPasswordResetInfo(input: unknown, context: RequestContext): Promise<unknown>;
   getSession(input: unknown, context: RequestContext): Promise<unknown>;
   inviteStaffUser(input: unknown, context: RequestContext): Promise<unknown>;
   listStaffUsers(input: unknown, context: RequestContext): Promise<unknown>;
   logout(input: unknown, context: RequestContext): Promise<unknown>;
   requestStaffPasswordReset(input: unknown, context: RequestContext): Promise<unknown>;
+  resetStaffPassword(input: unknown, context: RequestContext): Promise<unknown>;
   resendTwoFactorChallenge(input: unknown, context: RequestContext): Promise<unknown>;
   updateStaffUserRole(input: unknown, context: RequestContext): Promise<unknown>;
   updateStaffUserStatus(input: unknown, context: RequestContext): Promise<unknown>;
@@ -161,6 +163,28 @@ export default ({ strapi }) => ({
 
   async staffInviteInfo(ctx) {
     const result = await adminAuthService(strapi).getStaffInviteInfo(
+      ctx.request.body,
+      getRequestContext(ctx)
+    );
+
+    ctx.body = {
+      data: result,
+    };
+  },
+
+  async staffPasswordResetInfo(ctx) {
+    const result = await adminAuthService(strapi).getStaffPasswordResetInfo(
+      ctx.request.body,
+      getRequestContext(ctx)
+    );
+
+    ctx.body = {
+      data: result,
+    };
+  },
+
+  async resetStaffPassword(ctx) {
+    const result = await adminAuthService(strapi).resetStaffPassword(
       ctx.request.body,
       getRequestContext(ctx)
     );

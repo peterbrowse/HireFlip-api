@@ -117,6 +117,24 @@ export default {
     },
     {
       method: 'POST',
+      path: '/internal/admin/staff/reset-password-info',
+      handler: 'admin-auth.staffPasswordResetInfo',
+      config: {
+        auth: false,
+        policies: [adminDashboardServicePolicy],
+      },
+    },
+    {
+      method: 'POST',
+      path: '/internal/admin/staff/complete-reset-password',
+      handler: 'admin-auth.resetStaffPassword',
+      config: {
+        auth: false,
+        policies: [adminDashboardServicePolicy],
+      },
+    },
+    {
+      method: 'POST',
       path: '/internal/admin/staff/accept-invite',
       handler: 'admin-auth.acceptStaffInvite',
       config: {

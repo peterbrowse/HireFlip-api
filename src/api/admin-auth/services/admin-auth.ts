@@ -14,6 +14,7 @@ const { ApplicationError, ForbiddenError, RateLimitError, UnauthorizedError, Val
 const scryptAsync = promisify(scrypt);
 const storeName = 'admin-dashboard-auth';
 const sessionTokenBytes = 32;
+const resetPasswordTokenBytes = 20;
 const defaultCodeTtlSeconds = 10 * 60;
 const defaultCodeAttempts = 5;
 const defaultResendCooldownSeconds = 60;
@@ -88,7 +89,6 @@ type AuditEventService = {
 
 type AdminAuthService = {
   checkCredentials(input: { email: string; password: string }): Promise<[unknown, AdminUser | false, { message?: string }?]>;
-  forgotPassword(input: { email: string }): Promise<unknown>;
 };
 
 type AdminUserService = {
@@ -186,18 +186,33 @@ const staffInviteInfoSchema = z
   })
   .strict();
 
+const staffPasswordSchema = z
+  .string()
+  .min(8)
+  .max(128)
+  .refine((value) => /[A-Z]/.test(value), 'Password must include an uppercase letter.')
+  .refine((value) => /\d/.test(value), 'Password must include a number.')
+  .refine((value) => Buffer.byteLength(value, 'utf8') <= 72, 'Password is too long.');
+
 const staffInviteAcceptanceSchema = z
   .object({
     firstname: z.string().trim().min(1).max(80),
     lastname: z.string().trim().max(80).optional().transform((value) => value || undefined),
-    password: z
-      .string()
-      .min(8)
-      .max(128)
-      .refine((value) => /[A-Z]/.test(value), 'Password must include an uppercase letter.')
-      .refine((value) => /\d/.test(value), 'Password must include a number.')
-      .refine((value) => Buffer.byteLength(value, 'utf8') <= 72, 'Password is too long.'),
+    password: staffPasswordSchema,
     registrationToken: z.string().trim().min(16).max(256),
+  })
+  .strict();
+
+const staffPasswordResetInfoSchema = z
+  .object({
+    resetPasswordToken: z.string().trim().min(16).max(256),
+  })
+  .strict();
+
+const staffPasswordResetCompletionSchema = z
+  .object({
+    password: staffPasswordSchema,
+    resetPasswordToken: z.string().trim().min(16).max(256),
   })
   .strict();
 
@@ -212,6 +227,8 @@ const validateStaffUserStatus = validateZodSchema(staffUserStatusSchema);
 const validateStaffInvite = validateZodSchema(staffInviteSchema);
 const validateStaffInviteAcceptance = validateZodSchema(staffInviteAcceptanceSchema);
 const validateStaffInviteInfo = validateZodSchema(staffInviteInfoSchema);
+const validateStaffPasswordResetCompletion = validateZodSchema(staffPasswordResetCompletionSchema);
+const validateStaffPasswordResetInfo = validateZodSchema(staffPasswordResetInfoSchema);
 
 const secondsEnv = (name: string, fallback: number) => {
   const value = Number.parseInt(process.env[name] || '', 10);
@@ -248,6 +265,7 @@ const lockKey = (scope: string, identifier: string) => `lock:${scope}:${hashValu
 
 const numericCode = () => randomInt(0, 1_000_000).toString().padStart(6, '0');
 const token = () => randomBytes(sessionTokenBytes).toString('base64url');
+const resetPasswordToken = () => randomBytes(resetPasswordTokenBytes).toString('hex');
 const addSeconds = (seconds: number) => new Date(Date.now() + seconds * 1000).toISOString();
 const isPast = (isoDate?: string) => !isoDate || new Date(isoDate).getTime() <= Date.now();
 
@@ -366,6 +384,15 @@ const findAdminUserByRegistrationToken = async (registrationToken: string) =>
   strapi.db.query('admin::user').findOne({
     where: {
       registrationToken,
+    },
+    populate: ['roles'],
+  }) as Promise<AdminUser | null>;
+
+const findAdminUserByResetPasswordToken = async (passwordResetToken: string) =>
+  strapi.db.query('admin::user').findOne({
+    where: {
+      resetPasswordToken: passwordResetToken,
+      isActive: true,
     },
     populate: ['roles'],
   }) as Promise<AdminUser | null>;
@@ -606,6 +633,25 @@ const sendStaffInviteEmail = async (user: AdminUser, registrationToken: string) 
     html: `<p>${safeDisplayName}, you have been invited to HireFlip admin.</p><p>Use this link to set your password:</p><p><a href="${safeUrl}">${safeUrl}</a></p><p>After setting your password, sign in with your staff email and email verification code.</p><p>If you were not expecting this invitation, ignore this email and contact the Super Admin team.</p>`,
     subject: 'Your HireFlip admin invitation',
     text: `${displayName(user)}, you have been invited to HireFlip admin.\n\nSet your password here: ${url.toString()}\n\nAfter setting your password, sign in with your staff email and email verification code.\n\nIf you were not expecting this invitation, ignore this email and contact the Super Admin team.`,
+    to: user.email,
+  });
+};
+
+const sendStaffPasswordResetEmail = async (user: AdminUser, passwordResetToken: string) => {
+  if (!user.email) {
+    throw new ValidationError('Staff account is missing an email address.');
+  }
+
+  const url = new URL('/staff/reset-password', adminDashboardPublicUrl());
+  url.searchParams.set('token', passwordResetToken);
+
+  const safeDisplayName = escapeHtml(displayName(user));
+  const safeUrl = escapeHtml(url.toString());
+
+  await strapi.plugin('email').service('email').send({
+    html: `<p>${safeDisplayName}, a password reset was requested for your HireFlip admin account.</p><p>Use this link to set a new password:</p><p><a href="${safeUrl}">${safeUrl}</a></p><p>After setting your new password, sign in with your staff email and email verification code.</p><p>If you were not expecting this reset, contact the Super Admin team.</p>`,
+    subject: 'Reset your HireFlip admin password',
+    text: `${displayName(user)}, a password reset was requested for your HireFlip admin account.\n\nSet a new password here: ${url.toString()}\n\nAfter setting your new password, sign in with your staff email and email verification code.\n\nIf you were not expecting this reset, contact the Super Admin team.`,
     to: user.email,
   });
 };
@@ -1045,7 +1091,40 @@ export default () => ({
       throw new ValidationError('Staff user could not be found.');
     }
 
-    await getAdminAuthService().forgotPassword({ email: targetUser.email });
+    if (!targetUser.isActive) {
+      throw new ValidationError('Staff user must be active before a password reset link can be sent.');
+    }
+
+    const passwordResetToken = resetPasswordToken();
+    const resetUser = await getAdminUserService().updateById(targetUser.id, {
+      resetPasswordToken: passwordResetToken,
+    });
+
+    if (!resetUser) {
+      throw new ValidationError('Staff user could not be updated.');
+    }
+
+    try {
+      await sendStaffPasswordResetEmail(resetUser, passwordResetToken);
+    } catch (error) {
+      await recordAuditEvent('admin.staff.reset_password_email_delivery_failed', requestContext, {
+        actorEmail: actorSession.user.email,
+        actorId: actorSession.user.id,
+        actorDisplayName: actorSession.user.displayName,
+        eventCategory: 'admin',
+        metadata: {
+          message: error instanceof Error ? error.message : 'Email delivery failed.',
+        },
+        severity: 'error',
+        subjectDisplayName: displayName(targetUser),
+        subjectId: String(targetUser.id),
+        subjectType: 'admin_user',
+      });
+      throw new ApplicationError(
+        'Password reset link could not be sent. Check the notification service and try again.'
+      );
+    }
+
     const invalidatedSessions = await invalidateUserSessions(store, String(targetUser.id));
 
     await recordAuditEvent('admin.staff.reset_password_requested', requestContext, {
@@ -1361,6 +1440,70 @@ export default () => ({
       email: inviteInfo.email,
       firstname: inviteInfo.firstname || '',
       lastname: inviteInfo.lastname || '',
+    };
+  },
+
+  async getStaffPasswordResetInfo(input: unknown) {
+    const body = validateStaffPasswordResetInfo(input);
+    const staffUser = await findAdminUserByResetPasswordToken(body.resetPasswordToken);
+
+    if (!staffUser?.email) {
+      throw new ValidationError('Password reset link is invalid or has already been used.');
+    }
+
+    return {
+      displayName: displayName(staffUser),
+      email: staffUser.email,
+    };
+  },
+
+  async resetStaffPassword(input: unknown, requestContext: RequestContext = {}) {
+    const body = validateStaffPasswordResetCompletion(input);
+    const pendingUser = await findAdminUserByResetPasswordToken(body.resetPasswordToken);
+
+    if (!pendingUser?.id || !pendingUser.email) {
+      await recordAuditEvent('admin.staff.password_reset_failed', requestContext, {
+        actorType: 'staff_password_reset',
+        eventCategory: 'security',
+        metadata: {
+          reason: 'invalid_reset_password_token',
+        },
+        severity: 'warning',
+      });
+      throw new ValidationError('Password reset link is invalid or has already been used.');
+    }
+
+    const staffUser = await getAdminUserService().updateById(pendingUser.id, {
+      password: body.password,
+      resetPasswordToken: null,
+    });
+
+    if (!staffUser?.id) {
+      throw new ValidationError('Password could not be reset.');
+    }
+
+    const fullStaffUser = await findAdminUserById(staffUser.id || pendingUser.id);
+    const sessionUser = staffUserPayload(fullStaffUser || staffUser);
+    const invalidatedSessions = await invalidateUserSessions(getStore(), sessionUser.id);
+
+    await recordAuditEvent('admin.staff.password_reset_completed', requestContext, {
+      actorEmail: sessionUser.email,
+      actorId: sessionUser.id,
+      actorDisplayName: sessionUser.displayName,
+      eventCategory: 'security',
+      metadata: {
+        invalidatedSessions,
+        roleKeys: sessionUser.roleKeys,
+      },
+      subjectDisplayName: sessionUser.displayName,
+      subjectId: sessionUser.id,
+      subjectType: 'admin_user',
+    });
+
+    return {
+      invalidatedSessions,
+      reset: true,
+      staffUser: sessionUser,
     };
   },
 
