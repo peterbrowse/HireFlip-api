@@ -228,3 +228,20 @@ export const startClassWorkflowWorker = (strapi: Core.Strapi) => {
 
   return workflowWorker;
 };
+
+export const stopClassWorkflowQueue = async () => {
+  const worker = workflowWorker;
+  const queue = workflowQueue;
+
+  workflowWorker = undefined;
+  workflowQueue = undefined;
+
+  if (worker) {
+    worker.removeAllListeners();
+    await worker.close();
+  }
+
+  if (queue) {
+    await queue.close();
+  }
+};

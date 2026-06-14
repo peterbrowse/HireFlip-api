@@ -2,6 +2,7 @@ import type { Core } from '@strapi/strapi';
 import {
   schedulePaymentReconciliationJob,
   startClassWorkflowWorker,
+  stopClassWorkflowQueue,
   syncWaitingListOfferExpiryJobs,
 } from './utils/class-workflow-queue';
 
@@ -38,6 +39,12 @@ export default {
     });
     void schedulePaymentReconciliationJob().catch((error) => {
       strapi.log.error('Payment reconciliation job scheduling failed.', error);
+    });
+  },
+
+  async destroy({ strapi }: { strapi: Core.Strapi }) {
+    await stopClassWorkflowQueue().catch((error) => {
+      strapi.log.error('Class workflow queue shutdown failed.', error);
     });
   },
 };
