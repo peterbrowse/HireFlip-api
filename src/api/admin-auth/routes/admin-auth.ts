@@ -108,6 +108,15 @@ export default {
     },
     {
       method: 'POST',
+      path: '/internal/admin/staff/resend-invite',
+      handler: 'admin-auth.resendStaffInvite',
+      config: {
+        auth: false,
+        policies: [adminDashboardServicePolicy],
+      },
+    },
+    {
+      method: 'POST',
       path: '/internal/admin/staff/invite-info',
       handler: 'admin-auth.staffInviteInfo',
       config: {

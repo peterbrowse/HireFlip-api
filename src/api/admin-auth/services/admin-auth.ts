@@ -1524,6 +1524,78 @@ export default () => ({
     };
   },
 
+  async resendStaffInvite(input: unknown, requestContext: RequestContext = {}) {
+    const body = validateStaffUserAction(input);
+    const store = getStore();
+    const actorSession = await requireSuperAdminSession(store, body.sessionToken, requestContext);
+    const targetUser = await findAdminUserById(body.staffUserId);
+
+    if (!targetUser?.id || !targetUser.email) {
+      throw new ValidationError('Staff user could not be found.');
+    }
+
+    if (targetUser.blocked || targetUser.isActive || !targetUser.registrationToken) {
+      throw new ValidationError('Only pending staff invitations can be resent.');
+    }
+
+    const roleKeys = Array.from(
+      new Set((targetUser.roles || []).map(roleKeyFromRole).filter(Boolean) as AdminRoleKey[])
+    );
+
+    await recordAuditEvent('admin.staff.invite_resend_requested', requestContext, {
+      actorEmail: actorSession.user.email,
+      actorId: actorSession.user.id,
+      actorDisplayName: actorSession.user.displayName,
+      eventCategory: 'admin',
+      metadata: {
+        roleKeys,
+      },
+      subjectDisplayName: displayName(targetUser),
+      subjectId: String(targetUser.id),
+      subjectType: 'admin_user',
+    });
+
+    try {
+      await sendStaffInviteEmail(targetUser, targetUser.registrationToken);
+      await recordAuditEvent('admin.staff.invite_resend_email_delivered', requestContext, {
+        actorEmail: actorSession.user.email,
+        actorId: actorSession.user.id,
+        actorDisplayName: actorSession.user.displayName,
+        eventCategory: 'admin',
+        metadata: {
+          roleKeys,
+        },
+        subjectDisplayName: displayName(targetUser),
+        subjectId: String(targetUser.id),
+        subjectType: 'admin_user',
+      });
+    } catch (error) {
+      await recordAuditEvent('admin.staff.invite_resend_email_delivery_failed', requestContext, {
+        actorEmail: actorSession.user.email,
+        actorId: actorSession.user.id,
+        actorDisplayName: actorSession.user.displayName,
+        eventCategory: 'admin',
+        metadata: {
+          message: error instanceof Error ? error.message : 'Email delivery failed.',
+          roleKeys,
+        },
+        severity: 'error',
+        subjectDisplayName: displayName(targetUser),
+        subjectId: String(targetUser.id),
+        subjectType: 'admin_user',
+      });
+      throw new ApplicationError(
+        'Staff invite could not be resent. Check the notification service and try again.'
+      );
+    }
+
+    return {
+      inviteSent: true,
+      resentExistingInvite: true,
+      staffUser: staffUserPayload(targetUser),
+    };
+  },
+
   async getStaffInviteInfo(input: unknown) {
     const body = validateStaffInviteInfo(input);
     const inviteInfo = await getAdminUserService().findRegistrationInfo(body.registrationToken);
