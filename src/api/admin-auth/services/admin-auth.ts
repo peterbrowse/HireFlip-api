@@ -53,6 +53,19 @@ type AdminSessionUser = {
   roles: string[];
 };
 
+type StaffUserStatus = 'active' | 'blocked' | 'inactive' | 'pending_invite';
+
+type StaffUserSummaryPayload = {
+  createdAt: string | null;
+  displayName: string;
+  email: string;
+  id: string;
+  roleKeys: AdminRoleKey[];
+  roles: string[];
+  status: StaffUserStatus;
+  updatedAt: string | null;
+};
+
 type TwoFactorChallenge = {
   attempts: number;
   codeHash: string;
@@ -164,6 +177,18 @@ const staffUserStatusSchema = staffUserActionSchema
 
 const staffRoleKeySchema = z.enum(['admin', 'sales', 'super_admin', 'support']);
 
+const staffListSortKeySchema = z.enum(['createdAt', 'displayName', 'email', 'role', 'status']);
+const staffListSortDirectionSchema = z.enum(['asc', 'desc']);
+
+const staffListSchema = sessionTokenSchema
+  .extend({
+    roleKey: staffRoleKeySchema.optional(),
+    search: z.string().trim().max(120).optional().transform((value) => value || undefined),
+    sortBy: staffListSortKeySchema.default('createdAt'),
+    sortDirection: staffListSortDirectionSchema.default('desc'),
+  })
+  .strict();
+
 const staffUserRoleSchema = staffUserActionSchema
   .extend({
     roleKey: staffRoleKeySchema,
@@ -220,6 +245,7 @@ const validateLogin = validateZodSchema(loginSchema);
 const validateVerifyTwoFactor = validateZodSchema(verifyTwoFactorSchema);
 const validateResendTwoFactor = validateZodSchema(resendTwoFactorSchema);
 const validateSessionToken = validateZodSchema(sessionTokenSchema);
+const validateStaffList = validateZodSchema(staffListSchema);
 const validateStaffPasswordReset = validateZodSchema(staffPasswordResetSchema);
 const validateStaffUserAction = validateZodSchema(staffUserActionSchema);
 const validateStaffUserRole = validateZodSchema(staffUserRoleSchema);
@@ -352,6 +378,18 @@ const staffRoleDefinitions: Record<Exclude<AdminRoleKey, 'super_admin'>, { code:
     label: 'Support',
   },
 };
+
+const staffStatusLabels: Record<StaffUserStatus, string> = {
+  active: 'Active',
+  blocked: 'Blocked',
+  inactive: 'Inactive',
+  pending_invite: 'Pending invite',
+};
+
+const staffSortCollator = new Intl.Collator('en-GB', {
+  numeric: true,
+  sensitivity: 'base',
+});
 
 const findAdminUserById = async (id: string | number) =>
   strapi.db.query('admin::user').findOne({
@@ -488,7 +526,7 @@ const staffUserPayload = (user: AdminUser) => {
   };
 };
 
-const staffUserSummaryPayload = (user: AdminUser) => {
+const staffUserSummaryPayload = (user: AdminUser): StaffUserSummaryPayload | null => {
   if (!user.id || !user.email) {
     return null;
   }
@@ -519,6 +557,54 @@ const staffUserSummaryPayload = (user: AdminUser) => {
     status,
     updatedAt: user.updatedAt || null,
   };
+};
+
+const staffUserCreatedAtTimestamp = (staffUser: StaffUserSummaryPayload) =>
+  staffUser.createdAt ? new Date(staffUser.createdAt).getTime() : 0;
+
+const compareStaffUsers = (
+  leftStaffUser: StaffUserSummaryPayload,
+  rightStaffUser: StaffUserSummaryPayload,
+  sortBy: 'createdAt' | 'displayName' | 'email' | 'role' | 'status',
+  sortDirection: 'asc' | 'desc'
+) => {
+  let result = 0;
+
+  if (sortBy === 'createdAt') {
+    result = staffUserCreatedAtTimestamp(leftStaffUser) - staffUserCreatedAtTimestamp(rightStaffUser);
+  } else if (sortBy === 'displayName') {
+    result = staffSortCollator.compare(leftStaffUser.displayName, rightStaffUser.displayName);
+  } else if (sortBy === 'email') {
+    result = staffSortCollator.compare(leftStaffUser.email, rightStaffUser.email);
+  } else if (sortBy === 'role') {
+    result = staffSortCollator.compare(leftStaffUser.roles[0] || '', rightStaffUser.roles[0] || '');
+  } else if (sortBy === 'status') {
+    result = staffSortCollator.compare(
+      staffStatusLabels[leftStaffUser.status],
+      staffStatusLabels[rightStaffUser.status]
+    );
+  }
+
+  if (result === 0 && sortBy !== 'displayName') {
+    result = staffSortCollator.compare(leftStaffUser.displayName, rightStaffUser.displayName);
+  }
+
+  return sortDirection === 'asc' ? result : -result;
+};
+
+const staffUserMatchesSearch = (staffUser: StaffUserSummaryPayload, search?: string) => {
+  const normalizedSearch = search?.trim().toLowerCase();
+
+  if (!normalizedSearch) {
+    return true;
+  }
+
+  return [
+    staffUser.displayName,
+    staffUser.email,
+    staffUser.roles.join(' '),
+    staffStatusLabels[staffUser.status],
+  ].some((value) => value.toLowerCase().includes(normalizedSearch));
 };
 
 const recordAuditEvent = async (
@@ -1152,7 +1238,7 @@ export default () => ({
   },
 
   async listStaffUsers(input: unknown, requestContext: RequestContext = {}) {
-    const body = validateSessionToken(input);
+    const body = validateStaffList(input);
     const store = getStore();
 
     await requireSuperAdminSession(store, body.sessionToken, requestContext);
@@ -1165,10 +1251,20 @@ export default () => ({
       ],
       populate: ['roles'],
     })) as AdminUser[];
-    const staffUsers = users.map(staffUserSummaryPayload).filter(Boolean);
+    const allStaffUsers = users
+      .map(staffUserSummaryPayload)
+      .filter((staffUser): staffUser is StaffUserSummaryPayload => Boolean(staffUser));
+    const filteredStaffUsers = allStaffUsers
+      .filter((staffUser) => !body.roleKey || staffUser.roleKeys.includes(body.roleKey))
+      .filter((staffUser) => staffUserMatchesSearch(staffUser, body.search))
+      .sort((leftStaffUser, rightStaffUser) =>
+        compareStaffUsers(leftStaffUser, rightStaffUser, body.sortBy, body.sortDirection)
+      );
 
     return {
-      staffUsers,
+      filteredStaffUsers: filteredStaffUsers.length,
+      staffUsers: filteredStaffUsers,
+      totalStaffUsers: allStaffUsers.length,
     };
   },
 
