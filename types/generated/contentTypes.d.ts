@@ -2256,6 +2256,81 @@ export interface ApiPaymentPayment extends Struct.CollectionTypeSchema {
   };
 }
 
+export interface ApiPolicyDocumentPolicyDocument
+  extends Struct.CollectionTypeSchema {
+  collectionName: 'policy_documents';
+  info: {
+    description: 'Versioned legal, policy, and terms content used across HireFlip surfaces.';
+    displayName: 'Policy Document';
+    pluralName: 'policy-documents';
+    singularName: 'policy-document';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    acceptanceLabel: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 280;
+      }>;
+    acceptedReservations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::reservation.reservation'
+    >;
+    body: Schema.Attribute.Text & Schema.Attribute.Required;
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    effectiveFrom: Schema.Attribute.DateTime;
+    internalNotes: Schema.Attribute.Text;
+    introCopy: Schema.Attribute.Text;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::policy-document.policy-document'
+    > &
+      Schema.Attribute.Private;
+    policyKey: Schema.Attribute.String &
+      Schema.Attribute.Required &
+      Schema.Attribute.Unique &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 200;
+        minLength: 1;
+      }>;
+    policyState: Schema.Attribute.Enumeration<['draft', 'active', 'archived']> &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'draft'>;
+    policyType: Schema.Attribute.Enumeration<
+      [
+        'class_checkout_terms',
+        'candidate_terms',
+        'website_terms',
+        'privacy_policy',
+        'cookie_policy',
+        'refund_policy',
+        'employer_terms',
+      ]
+    > &
+      Schema.Attribute.Required;
+    publishedAt: Schema.Attribute.DateTime;
+    title: Schema.Attribute.String &
+      Schema.Attribute.Required &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 180;
+        minLength: 1;
+      }>;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    version: Schema.Attribute.String &
+      Schema.Attribute.Required &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 120;
+        minLength: 1;
+      }>;
+  };
+}
+
 export interface ApiPrivacyRightsRequestPrivacyRightsRequest
   extends Struct.CollectionTypeSchema {
   collectionName: 'privacy_rights_requests';
@@ -2675,6 +2750,10 @@ export interface ApiReservationReservation extends Struct.CollectionTypeSchema {
     draftAndPublish: false;
   };
   attributes: {
+    acceptedTermsPolicyDocument: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::policy-document.policy-document'
+    >;
     amountPence: Schema.Attribute.Integer &
       Schema.Attribute.Required &
       Schema.Attribute.SetMinMax<
@@ -3690,6 +3769,7 @@ declare module '@strapi/strapi' {
       'api::offer.offer': ApiOfferOffer;
       'api::payment-webhook-event.payment-webhook-event': ApiPaymentWebhookEventPaymentWebhookEvent;
       'api::payment.payment': ApiPaymentPayment;
+      'api::policy-document.policy-document': ApiPolicyDocumentPolicyDocument;
       'api::privacy-rights-request.privacy-rights-request': ApiPrivacyRightsRequestPrivacyRightsRequest;
       'api::public-interest-lead.public-interest-lead': ApiPublicInterestLeadPublicInterestLead;
       'api::question.question': ApiQuestionQuestion;
