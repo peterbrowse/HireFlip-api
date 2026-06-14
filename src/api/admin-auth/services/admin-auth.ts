@@ -93,6 +93,7 @@ type AdminAuthService = {
 
 type AdminUserService = {
   create(input: Record<string, unknown>): Promise<AdminUser>;
+  deleteById(id: string | number): Promise<AdminUser | null>;
   findRegistrationInfo(registrationToken: string): Promise<Pick<AdminUser, 'email' | 'firstname' | 'lastname'> | undefined>;
   register(input: {
     registrationToken: string;
@@ -148,6 +149,19 @@ const staffPasswordResetSchema = z
     message: 'Email or staff user ID is required.',
   });
 
+const staffUserActionSchema = z
+  .object({
+    sessionToken: z.string().trim().min(32).max(512),
+    staffUserId: z.union([z.number().int().positive(), z.string().trim().min(1).max(80)]),
+  })
+  .strict();
+
+const staffUserStatusSchema = staffUserActionSchema
+  .extend({
+    isActive: z.boolean(),
+  })
+  .strict();
+
 const staffRoleKeySchema = z.enum(['admin', 'sales', 'super_admin', 'support']);
 
 const staffInviteSchema = z
@@ -186,6 +200,8 @@ const validateVerifyTwoFactor = validateZodSchema(verifyTwoFactorSchema);
 const validateResendTwoFactor = validateZodSchema(resendTwoFactorSchema);
 const validateSessionToken = validateZodSchema(sessionTokenSchema);
 const validateStaffPasswordReset = validateZodSchema(staffPasswordResetSchema);
+const validateStaffUserAction = validateZodSchema(staffUserActionSchema);
+const validateStaffUserStatus = validateZodSchema(staffUserStatusSchema);
 const validateStaffInvite = validateZodSchema(staffInviteSchema);
 const validateStaffInviteAcceptance = validateZodSchema(staffInviteAcceptanceSchema);
 const validateStaffInviteInfo = validateZodSchema(staffInviteInfoSchema);
@@ -1067,6 +1083,104 @@ export default () => ({
 
     return {
       staffUsers,
+    };
+  },
+
+  async updateStaffUserStatus(input: unknown, requestContext: RequestContext = {}) {
+    const body = validateStaffUserStatus(input);
+    const store = getStore();
+    const actorSession = await requireSuperAdminSession(store, body.sessionToken, requestContext);
+    const targetUser = await findAdminUserById(body.staffUserId);
+
+    if (!targetUser?.id || !targetUser.email) {
+      throw new ValidationError('Staff user could not be found.');
+    }
+
+    if (!body.isActive && String(targetUser.id) === actorSession.user.id) {
+      throw new ValidationError('You cannot deactivate your own staff account.');
+    }
+
+    if (body.isActive && targetUser.registrationToken) {
+      throw new ValidationError('Pending staff invitations must be accepted before activation.');
+    }
+
+    const updatedUser = await getAdminUserService().updateById(targetUser.id, {
+      isActive: body.isActive,
+    });
+
+    if (!updatedUser) {
+      throw new ValidationError('Staff user could not be updated.');
+    }
+
+    const invalidatedSessions = body.isActive
+      ? 0
+      : await invalidateUserSessions(store, String(targetUser.id));
+
+    await recordAuditEvent(
+      body.isActive ? 'admin.staff.activated' : 'admin.staff.deactivated',
+      requestContext,
+      {
+        actorEmail: actorSession.user.email,
+        actorId: actorSession.user.id,
+        actorDisplayName: actorSession.user.displayName,
+        eventCategory: 'admin',
+        metadata: {
+          invalidatedSessions,
+        },
+        subjectDisplayName: displayName(targetUser),
+        subjectId: String(targetUser.id),
+        subjectType: 'admin_user',
+      }
+    );
+
+    return {
+      staffUser: staffUserSummaryPayload(updatedUser),
+      updated: true,
+    };
+  },
+
+  async deleteStaffUser(input: unknown, requestContext: RequestContext = {}) {
+    const body = validateStaffUserAction(input);
+    const store = getStore();
+    const actorSession = await requireSuperAdminSession(store, body.sessionToken, requestContext);
+    const targetUser = await findAdminUserById(body.staffUserId);
+
+    if (!targetUser?.id || !targetUser.email) {
+      throw new ValidationError('Staff user could not be found.');
+    }
+
+    if (String(targetUser.id) === actorSession.user.id) {
+      throw new ValidationError('You cannot delete your own staff account.');
+    }
+
+    const invalidatedSessions = await invalidateUserSessions(store, String(targetUser.id));
+    const deletedUser = await getAdminUserService().deleteById(targetUser.id);
+
+    if (!deletedUser) {
+      throw new ValidationError('Staff user could not be deleted.');
+    }
+
+    await recordAuditEvent('admin.staff.deleted', requestContext, {
+      actorEmail: actorSession.user.email,
+      actorId: actorSession.user.id,
+      actorDisplayName: actorSession.user.displayName,
+      eventCategory: 'admin',
+      metadata: {
+        invalidatedSessions,
+      },
+      severity: 'warning',
+      subjectDisplayName: displayName(targetUser),
+      subjectId: String(targetUser.id),
+      subjectType: 'admin_user',
+    });
+
+    return {
+      deleted: true,
+      staffUser: {
+        displayName: displayName(targetUser),
+        email: targetUser.email,
+        id: String(targetUser.id),
+      },
     };
   },
 

@@ -72,6 +72,24 @@ export default {
     },
     {
       method: 'POST',
+      path: '/internal/admin/staff/status',
+      handler: 'admin-auth.updateStaffUserStatus',
+      config: {
+        auth: false,
+        policies: [adminDashboardServicePolicy],
+      },
+    },
+    {
+      method: 'POST',
+      path: '/internal/admin/staff/delete',
+      handler: 'admin-auth.deleteStaffUser',
+      config: {
+        auth: false,
+        policies: [adminDashboardServicePolicy],
+      },
+    },
+    {
+      method: 'POST',
       path: '/internal/admin/staff/invite',
       handler: 'admin-auth.inviteStaffUser',
       config: {
