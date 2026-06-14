@@ -40,6 +40,7 @@ npm run develop
 npm run build
 npm run start
 npm run seed:admin-roles
+npm run seed:project-logos
 ```
 
 `npm run seed:admin-roles` creates or updates the custom Strapi admin/staff
@@ -50,7 +51,15 @@ Remote first-run setup:
 
 ```bash
 heroku run "npm run seed:admin-roles" --app hireflip-api
+heroku run "npm run seed:project-logos" --app hireflip-api
 ```
+
+`npm run seed:project-logos` downloads and validates the public HireFlip logo
+PNG from the homepage, then stores the Strapi project auth/menu logo metadata
+with the public URL and a safe filename. This avoids Strapi Admin's URL-upload
+filename handling, which can reject full URLs as invalid filenames. Optional env
+overrides: `STRAPI_PROJECT_LOGO_URL`, `STRAPI_PROJECT_LOGO_FILENAME`, and
+`STRAPI_PROJECT_LOGO_TARGETS`.
 
 ## Storage Direction
 
