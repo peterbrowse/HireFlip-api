@@ -164,6 +164,12 @@ const staffUserStatusSchema = staffUserActionSchema
 
 const staffRoleKeySchema = z.enum(['admin', 'sales', 'super_admin', 'support']);
 
+const staffUserRoleSchema = staffUserActionSchema
+  .extend({
+    roleKey: staffRoleKeySchema,
+  })
+  .strict();
+
 const staffInviteSchema = z
   .object({
     email: z.string().trim().email().max(254).transform((value) => value.toLowerCase()),
@@ -201,6 +207,7 @@ const validateResendTwoFactor = validateZodSchema(resendTwoFactorSchema);
 const validateSessionToken = validateZodSchema(sessionTokenSchema);
 const validateStaffPasswordReset = validateZodSchema(staffPasswordResetSchema);
 const validateStaffUserAction = validateZodSchema(staffUserActionSchema);
+const validateStaffUserRole = validateZodSchema(staffUserRoleSchema);
 const validateStaffUserStatus = validateZodSchema(staffUserStatusSchema);
 const validateStaffInvite = validateZodSchema(staffInviteSchema);
 const validateStaffInviteAcceptance = validateZodSchema(staffInviteAcceptanceSchema);
@@ -1132,6 +1139,63 @@ export default () => ({
         subjectType: 'admin_user',
       }
     );
+
+    return {
+      staffUser: staffUserSummaryPayload(updatedUser),
+      updated: true,
+    };
+  },
+
+  async updateStaffUserRole(input: unknown, requestContext: RequestContext = {}) {
+    const body = validateStaffUserRole(input);
+    const store = getStore();
+    const actorSession = await requireSuperAdminSession(store, body.sessionToken, requestContext);
+    const targetUser = await findAdminUserById(body.staffUserId);
+
+    if (!targetUser?.id || !targetUser.email) {
+      throw new ValidationError('Staff user could not be found.');
+    }
+
+    const currentRoleKeys = Array.from(
+      new Set((targetUser.roles || []).map(roleKeyFromRole).filter(Boolean) as AdminRoleKey[])
+    );
+
+    if (String(targetUser.id) === actorSession.user.id && body.roleKey !== 'super_admin') {
+      throw new ValidationError('You cannot remove your own Super Admin access.');
+    }
+
+    const role = await getStaffRole(body.roleKey);
+    const roleId = role.id;
+
+    if (!roleId) {
+      throw new ApplicationError('Selected staff role is missing an ID.');
+    }
+
+    const updatedUser = await getAdminUserService().updateById(targetUser.id, {
+      roles: [roleId],
+    });
+
+    if (!updatedUser) {
+      throw new ValidationError('Staff user could not be updated.');
+    }
+
+    const invalidatedSessions = await invalidateUserSessions(store, String(targetUser.id));
+
+    await recordAuditEvent('admin.staff.role_updated', requestContext, {
+      actorEmail: actorSession.user.email,
+      actorId: actorSession.user.id,
+      actorDisplayName: actorSession.user.displayName,
+      eventCategory: 'admin',
+      metadata: {
+        invalidatedSessions,
+        nextRoleKey: body.roleKey,
+        previousRoleKeys: currentRoleKeys,
+      },
+      severity: currentRoleKeys.includes('super_admin') || body.roleKey === 'super_admin' ? 'warning' : 'info',
+      subjectDisplayName: displayName(targetUser),
+      subjectId: String(targetUser.id),
+      subjectType: 'admin_user',
+    });
 
     return {
       staffUser: staffUserSummaryPayload(updatedUser),

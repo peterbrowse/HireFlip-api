@@ -81,6 +81,15 @@ export default {
     },
     {
       method: 'POST',
+      path: '/internal/admin/staff/role',
+      handler: 'admin-auth.updateStaffUserRole',
+      config: {
+        auth: false,
+        policies: [adminDashboardServicePolicy],
+      },
+    },
+    {
+      method: 'POST',
       path: '/internal/admin/staff/delete',
       handler: 'admin-auth.deleteStaffUser',
       config: {

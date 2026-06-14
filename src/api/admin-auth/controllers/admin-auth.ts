@@ -16,6 +16,7 @@ type AdminAuthService = {
   logout(input: unknown, context: RequestContext): Promise<unknown>;
   requestStaffPasswordReset(input: unknown, context: RequestContext): Promise<unknown>;
   resendTwoFactorChallenge(input: unknown, context: RequestContext): Promise<unknown>;
+  updateStaffUserRole(input: unknown, context: RequestContext): Promise<unknown>;
   updateStaffUserStatus(input: unknown, context: RequestContext): Promise<unknown>;
   verifyTwoFactorChallenge(input: unknown, context: RequestContext): Promise<unknown>;
 };
@@ -116,6 +117,17 @@ export default ({ strapi }) => ({
 
   async updateStaffUserStatus(ctx) {
     const result = await adminAuthService(strapi).updateStaffUserStatus(
+      ctx.request.body,
+      getRequestContext(ctx)
+    );
+
+    ctx.body = {
+      data: result,
+    };
+  },
+
+  async updateStaffUserRole(ctx) {
+    const result = await adminAuthService(strapi).updateStaffUserRole(
       ctx.request.body,
       getRequestContext(ctx)
     );
