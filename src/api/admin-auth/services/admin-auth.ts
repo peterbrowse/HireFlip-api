@@ -36,8 +36,11 @@ type AdminUser = Record<string, unknown> & {
   id?: number | string;
   isActive?: boolean;
   lastname?: string;
+  blocked?: boolean;
+  createdAt?: string;
   registrationToken?: string;
   roles?: Array<Record<string, unknown>>;
+  updatedAt?: string;
   username?: string;
 };
 
@@ -432,6 +435,39 @@ const staffUserPayload = (user: AdminUser) => {
     id: sessionUser.id,
     roleKeys: sessionUser.roleKeys,
     roles: sessionUser.roles,
+  };
+};
+
+const staffUserSummaryPayload = (user: AdminUser) => {
+  if (!user.id || !user.email) {
+    return null;
+  }
+
+  const roleKeys = Array.from(
+    new Set((user.roles || []).map(roleKeyFromRole).filter(Boolean) as AdminRoleKey[])
+  );
+
+  if (roleKeys.length === 0) {
+    return null;
+  }
+
+  const status = user.blocked
+    ? 'blocked'
+    : user.isActive
+      ? 'active'
+      : user.registrationToken
+        ? 'pending_invite'
+        : 'inactive';
+
+  return {
+    createdAt: user.createdAt || null,
+    displayName: displayName(user),
+    email: user.email,
+    id: String(user.id),
+    roleKeys,
+    roles: roleKeys.map(roleLabel),
+    status,
+    updatedAt: user.updatedAt || null,
   };
 };
 
@@ -1010,6 +1046,27 @@ export default () => ({
         email: targetUser.email,
         id: String(targetUser.id),
       },
+    };
+  },
+
+  async listStaffUsers(input: unknown, requestContext: RequestContext = {}) {
+    const body = validateSessionToken(input);
+    const store = getStore();
+
+    await requireSuperAdminSession(store, body.sessionToken, requestContext);
+
+    const users = (await strapi.db.query('admin::user').findMany({
+      orderBy: [
+        {
+          createdAt: 'desc',
+        },
+      ],
+      populate: ['roles'],
+    })) as AdminUser[];
+    const staffUsers = users.map(staffUserSummaryPayload).filter(Boolean);
+
+    return {
+      staffUsers,
     };
   },
 

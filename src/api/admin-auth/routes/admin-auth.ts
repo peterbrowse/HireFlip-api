@@ -63,6 +63,15 @@ export default {
     },
     {
       method: 'POST',
+      path: '/internal/admin/staff/list',
+      handler: 'admin-auth.listStaffUsers',
+      config: {
+        auth: false,
+        policies: [adminDashboardServicePolicy],
+      },
+    },
+    {
+      method: 'POST',
       path: '/internal/admin/staff/invite',
       handler: 'admin-auth.inviteStaffUser',
       config: {
