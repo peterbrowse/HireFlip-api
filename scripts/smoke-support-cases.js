@@ -221,6 +221,23 @@ const main = async () => {
     assert(detailedCase, 'Expected support case detail to be returned.');
     assert(detailedCase.messages.length === 2, 'Expected support case detail to include messages.');
 
+    const candidateCase = await supportCaseService.getCaseForCandidate({
+      candidateDocumentId: candidate.documentId,
+      supportCaseDocumentId: ensured.supportCase.documentId,
+    });
+
+    assert(candidateCase, 'Expected candidate support case detail to be returned.');
+    assert(candidateCase.messages.length === 1, 'Expected candidate support case detail to hide internal messages.');
+    assert(!candidateCase.owner, 'Expected candidate support case detail to hide owner metadata.');
+
+    const candidateCases = await supportCaseService.casesForCandidate(candidate.documentId);
+    const listedCandidateCase = candidateCases.find(
+      (supportCase) => supportCase.documentId === ensured.supportCase.documentId
+    );
+
+    assert(listedCandidateCase, 'Expected candidate support case list to include the case.');
+    assert(listedCandidateCase.messages.length === 1, 'Expected candidate support case list to hide internal messages.');
+
     const messages = await findMessagesForCase(strapi, ensured.supportCase.documentId);
 
     assert(messages.length === 2, 'Expected two persisted support messages.');

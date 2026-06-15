@@ -3019,6 +3019,234 @@ export interface ApiStoredFileStoredFile extends Struct.CollectionTypeSchema {
   };
 }
 
+export interface ApiSupportCaseSupportCase extends Struct.CollectionTypeSchema {
+  collectionName: 'support_cases';
+  info: {
+    description: 'Reusable support/ticket case for candidate, refund, payment, and admin workflows.';
+    displayName: 'Support Case';
+    pluralName: 'support-cases';
+    singularName: 'support-case';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    assignedAt: Schema.Attribute.DateTime;
+    candidate: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::candidate.candidate'
+    >;
+    caseKey: Schema.Attribute.String &
+      Schema.Attribute.Required &
+      Schema.Attribute.Unique &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 180;
+      }>;
+    caseState: Schema.Attribute.Enumeration<
+      [
+        'open',
+        'awaiting_candidate',
+        'awaiting_staff',
+        'in_progress',
+        'resolved',
+        'closed',
+      ]
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'open'>;
+    caseType: Schema.Attribute.Enumeration<
+      [
+        'general',
+        'refund',
+        'payment',
+        'course',
+        'interview',
+        'account',
+        'privacy',
+        'other',
+      ]
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'general'>;
+    closedAt: Schema.Attribute.DateTime;
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    enrollment: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::enrollment.enrollment'
+    >;
+    lastMessageAt: Schema.Attribute.DateTime;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::support-case.support-case'
+    > &
+      Schema.Attribute.Private;
+    metadata: Schema.Attribute.JSON;
+    openedAt: Schema.Attribute.DateTime;
+    openedByDisplayName: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 240;
+      }>;
+    openedByEmail: Schema.Attribute.Email &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 254;
+      }>;
+    openedByStaffUserId: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 160;
+      }>;
+    openedByType: Schema.Attribute.Enumeration<
+      ['candidate', 'admin', 'service', 'system']
+    > &
+      Schema.Attribute.DefaultTo<'system'>;
+    ownerRoleKey: Schema.Attribute.Enumeration<
+      ['admin', 'sales', 'super_admin', 'support']
+    >;
+    ownerStaffDisplayName: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 240;
+      }>;
+    ownerStaffEmail: Schema.Attribute.Email &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 254;
+      }>;
+    ownerStaffUserId: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 160;
+      }>;
+    payment: Schema.Attribute.Relation<'manyToOne', 'api::payment.payment'>;
+    priority: Schema.Attribute.Enumeration<
+      ['low', 'normal', 'high', 'urgent']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'normal'>;
+    publishedAt: Schema.Attribute.DateTime;
+    refund: Schema.Attribute.Relation<'manyToOne', 'api::refund.refund'>;
+    resolvedAt: Schema.Attribute.DateTime;
+    source: Schema.Attribute.Enumeration<
+      [
+        'candidate_dashboard',
+        'admin_dashboard',
+        'payment_service',
+        'notification_service',
+        'core_api',
+        'system',
+        'other',
+      ]
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'core_api'>;
+    summary: Schema.Attribute.Text;
+    title: Schema.Attribute.String &
+      Schema.Attribute.Required &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 180;
+        minLength: 1;
+      }>;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+  };
+}
+
+export interface ApiSupportMessageSupportMessage
+  extends Struct.CollectionTypeSchema {
+  collectionName: 'support_messages';
+  info: {
+    description: 'Messages, notes, and system updates attached to support cases.';
+    displayName: 'Support Message';
+    pluralName: 'support-messages';
+    singularName: 'support-message';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    body: Schema.Attribute.Text & Schema.Attribute.Required;
+    candidate: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::candidate.candidate'
+    >;
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    deliveredAt: Schema.Attribute.DateTime;
+    deliveryState: Schema.Attribute.Enumeration<
+      ['not_required', 'queued', 'sent', 'delivered', 'failed']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'not_required'>;
+    direction: Schema.Attribute.Enumeration<
+      ['inbound', 'outbound', 'internal', 'system']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'system'>;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::support-message.support-message'
+    > &
+      Schema.Attribute.Private;
+    messageType: Schema.Attribute.Enumeration<
+      [
+        'candidate_message',
+        'staff_reply',
+        'staff_note',
+        'system_update',
+        'outbound_email',
+        'refund_refusal',
+        'refund_acceptance',
+        'refund_provider_update',
+      ]
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'system_update'>;
+    metadata: Schema.Attribute.JSON;
+    notificationEvent: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::notification-event.notification-event'
+    >;
+    payment: Schema.Attribute.Relation<'manyToOne', 'api::payment.payment'>;
+    publishedAt: Schema.Attribute.DateTime;
+    refund: Schema.Attribute.Relation<'manyToOne', 'api::refund.refund'>;
+    senderDisplayName: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 240;
+      }>;
+    senderEmail: Schema.Attribute.Email &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 254;
+      }>;
+    senderId: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 160;
+      }>;
+    senderType: Schema.Attribute.Enumeration<
+      ['candidate', 'admin', 'service', 'system']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'system'>;
+    sentAt: Schema.Attribute.DateTime;
+    subject: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 180;
+      }>;
+    supportCase: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::support-case.support-case'
+    > &
+      Schema.Attribute.Required;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    visibility: Schema.Attribute.Enumeration<['public', 'internal']> &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'internal'>;
+  };
+}
+
 export interface ApiTestAttemptTestAttempt extends Struct.CollectionTypeSchema {
   collectionName: 'test_attempts';
   info: {
@@ -3876,6 +4104,8 @@ declare module '@strapi/strapi' {
       'api::refund.refund': ApiRefundRefund;
       'api::reservation.reservation': ApiReservationReservation;
       'api::stored-file.stored-file': ApiStoredFileStoredFile;
+      'api::support-case.support-case': ApiSupportCaseSupportCase;
+      'api::support-message.support-message': ApiSupportMessageSupportMessage;
       'api::test-attempt.test-attempt': ApiTestAttemptTestAttempt;
       'api::test.test': ApiTestTest;
       'api::unlisted-interest.unlisted-interest': ApiUnlistedInterestUnlistedInterest;

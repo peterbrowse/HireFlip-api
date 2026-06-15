@@ -139,10 +139,22 @@ type AuditEventService = {
   record(input: Record<string, unknown>): Promise<unknown>;
 };
 
+type SupportCaseService = {
+  addMessage(input: unknown): Promise<DocumentRecord>;
+  casesForCandidate(candidateDocumentId: string): Promise<unknown[]>;
+  getCaseForCandidate(input: {
+    candidateDocumentId: string;
+    supportCaseDocumentId: string;
+  }): Promise<unknown | null>;
+  updateCaseState(input: unknown): Promise<DocumentRecord>;
+};
+
 const documents = (strapi: StrapiDocumentService, uid: string) =>
   strapi.documents(uid) as unknown as DocumentCollection;
 const auditEvents = (strapi: StrapiDocumentService) =>
   strapi.service('api::audit-event.audit-event') as unknown as AuditEventService;
+const supportCaseService = (strapi: StrapiDocumentService) =>
+  strapi.service('api::support-case.support-case') as unknown as SupportCaseService;
 
 const communicationChannels = ['email', 'sms', 'phone'] as const;
 const notListedPreferenceValue = 'not_listed';
@@ -418,6 +430,14 @@ const createUnlistedInterestSchema = z
 
 const validateCreateUnlistedInterest = validateZodSchema(createUnlistedInterestSchema);
 
+const supportCaseReplySchema = z
+  .object({
+    body: z.string().trim().min(1).max(12000),
+  })
+  .strict();
+
+const validateSupportCaseReply = validateZodSchema(supportCaseReplySchema);
+
 const recoverUploadPath = (file) => {
   if (!file?.url || file.path || !file.hash) {
     return file;
@@ -567,6 +587,14 @@ const sanitizeCandidate = async (strapi, candidate) => ({
   recruitmentPlatformVisibility: candidate.recruitmentPlatformVisibility,
   accountCreatedAt: candidate.accountCreatedAt,
 });
+
+const candidateMessageDisplayName = (candidate: DocumentRecord) => {
+  const firstName = typeof candidate.firstName === 'string' ? candidate.firstName.trim() : '';
+  const lastName = typeof candidate.lastName === 'string' ? candidate.lastName.trim() : '';
+  const fullName = `${firstName} ${lastName}`.trim();
+
+  return fullName || candidate.email || 'Candidate';
+};
 
 const getUploadedFilePath = (file?: UploadedFile) => file?.filepath || file?.path;
 
@@ -4060,6 +4088,140 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
     return {
       classAreas,
       workSectors,
+    };
+  },
+
+  async getCurrentCandidateSupportCases(auth: Auth0State | undefined) {
+    if (!auth || auth.type !== 'auth0' || !auth.subject) {
+      throw new UnauthorizedError('Auth0 authentication is required.');
+    }
+
+    const existingCandidate = await findCandidateByAuthIdentity(strapi, auth.subject);
+
+    if (!existingCandidate?.documentId) {
+      throw new ValidationError('Candidate account must be synced before support cases can be viewed.');
+    }
+
+    const cases = await supportCaseService(strapi).casesForCandidate(existingCandidate.documentId);
+
+    return {
+      cases,
+      counts: {
+        total: cases.length,
+      },
+      generatedAt: new Date().toISOString(),
+    };
+  },
+
+  async getCurrentCandidateSupportCase(
+    auth: Auth0State | undefined,
+    supportCaseDocumentId: string
+  ) {
+    if (!auth || auth.type !== 'auth0' || !auth.subject) {
+      throw new UnauthorizedError('Auth0 authentication is required.');
+    }
+
+    const existingCandidate = await findCandidateByAuthIdentity(strapi, auth.subject);
+
+    if (!existingCandidate?.documentId) {
+      throw new ValidationError('Candidate account must be synced before support cases can be viewed.');
+    }
+
+    const supportCase = await supportCaseService(strapi).getCaseForCandidate({
+      candidateDocumentId: existingCandidate.documentId,
+      supportCaseDocumentId,
+    });
+
+    if (!supportCase) {
+      throw new ValidationError('Support case could not be found.');
+    }
+
+    return {
+      generatedAt: new Date().toISOString(),
+      supportCase,
+    };
+  },
+
+  async replyToCurrentCandidateSupportCase(
+    auth: Auth0State | undefined,
+    supportCaseDocumentId: string,
+    input: unknown,
+    requestContext: RequestContext = {}
+  ) {
+    if (!auth || auth.type !== 'auth0' || !auth.subject) {
+      throw new UnauthorizedError('Auth0 authentication is required.');
+    }
+
+    const existingCandidate = await findCandidateByAuthIdentity(strapi, auth.subject);
+
+    if (!existingCandidate?.documentId) {
+      throw new ValidationError('Candidate account must be synced before support cases can be replied to.');
+    }
+
+    const payload = validateSupportCaseReply(input ?? {});
+    const existingCase = await supportCaseService(strapi).getCaseForCandidate({
+      candidateDocumentId: existingCandidate.documentId,
+      supportCaseDocumentId,
+    });
+
+    if (!existingCase) {
+      throw new ValidationError('Support case could not be found.');
+    }
+
+    const now = new Date().toISOString();
+    const message = await supportCaseService(strapi).addMessage({
+      body: payload.body,
+      candidate: existingCandidate,
+      direction: 'inbound',
+      messageType: 'candidate_message',
+      sender: {
+        displayName: candidateMessageDisplayName(existingCandidate),
+        email: existingCandidate.email,
+        id: existingCandidate.documentId,
+        type: 'candidate',
+      },
+      supportCase: {
+        documentId: supportCaseDocumentId,
+      },
+      visibility: 'public',
+    });
+    await supportCaseService(strapi).updateCaseState({
+      caseState: 'awaiting_staff',
+      metadata: {
+        lastCandidateReplyAt: now,
+      },
+      supportCase: {
+        documentId: supportCaseDocumentId,
+      },
+    });
+    await auditEvents(strapi).record({
+      actorEmail: existingCandidate.email,
+      actorId: auth.subject,
+      actorType: 'candidate',
+      eventCategory: 'support',
+      eventType: 'candidate.support_case_replied',
+      ipAddress: requestContext.ipAddress,
+      metadata: {
+        messageDocumentId: message.documentId,
+        supportCaseDocumentId,
+      },
+      occurredAt: now,
+      requestId: requestContext.requestId,
+      source: 'candidate_dashboard',
+      subjectDisplayName: (existingCase as DocumentRecord).title || existingCandidate.email,
+      subjectId: supportCaseDocumentId,
+      subjectType: 'support_case',
+      userAgent: requestContext.userAgent,
+    });
+
+    const supportCase = await supportCaseService(strapi).getCaseForCandidate({
+      candidateDocumentId: existingCandidate.documentId,
+      supportCaseDocumentId,
+    });
+
+    return {
+      replied: true,
+      supportCase,
     };
   },
 

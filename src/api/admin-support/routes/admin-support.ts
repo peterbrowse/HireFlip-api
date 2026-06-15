@@ -34,5 +34,23 @@ export default {
         policies: [adminDashboardServicePolicy],
       },
     },
+    {
+      method: 'POST',
+      path: '/internal/admin/support/cases/reply',
+      handler: 'admin-support.reply',
+      config: {
+        auth: false,
+        policies: [adminDashboardServicePolicy],
+      },
+    },
+    {
+      method: 'POST',
+      path: '/internal/admin/support/cases/note',
+      handler: 'admin-support.note',
+      config: {
+        auth: false,
+        policies: [adminDashboardServicePolicy],
+      },
+    },
   ],
 };

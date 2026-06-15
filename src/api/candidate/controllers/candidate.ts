@@ -46,7 +46,15 @@ type CandidateService = {
     reservationDocumentId: string,
     context: RequestContext
   ): Promise<unknown>;
+  getCurrentCandidateSupportCase(auth: unknown, supportCaseDocumentId: string): Promise<unknown>;
+  getCurrentCandidateSupportCases(auth: unknown): Promise<unknown>;
   registerCurrentCandidateClassInterest(auth: unknown, input: unknown, context: RequestContext): Promise<CreatedResponse>;
+  replyToCurrentCandidateSupportCase(
+    auth: unknown,
+    supportCaseDocumentId: string,
+    input: unknown,
+    context: RequestContext
+  ): Promise<unknown>;
   reserveCurrentCandidateClassPlace(auth: unknown, input: unknown, context: RequestContext): Promise<CreatedResponse>;
   syncCurrentCandidate(auth: unknown, input: unknown, context: RequestContext): Promise<unknown>;
   updateCurrentCandidateAccount(auth: unknown, input: unknown, context: RequestContext): Promise<unknown>;
@@ -212,6 +220,44 @@ export default factories.createCoreController('api::candidate.candidate', ({ str
   async preferenceOptions(ctx) {
     const result = await candidateService(strapi).getCandidatePreferenceOptions(
       ctx.state?.hireflipAuth
+    );
+
+    ctx.body = {
+      data: result,
+    };
+  },
+
+  async supportCases(ctx) {
+    const result = await candidateService(strapi).getCurrentCandidateSupportCases(
+      ctx.state?.hireflipAuth
+    );
+
+    ctx.body = {
+      data: result,
+    };
+  },
+
+  async supportCase(ctx) {
+    const result = await candidateService(strapi).getCurrentCandidateSupportCase(
+      ctx.state?.hireflipAuth,
+      ctx.params?.supportCaseDocumentId
+    );
+
+    ctx.body = {
+      data: result,
+    };
+  },
+
+  async replyToSupportCase(ctx) {
+    const result = await candidateService(strapi).replyToCurrentCandidateSupportCase(
+      ctx.state?.hireflipAuth,
+      ctx.params?.supportCaseDocumentId,
+      ctx.request.body,
+      {
+        ipAddress: getForwardedClientIp(ctx),
+        requestId: ctx.state?.requestId,
+        userAgent: ctx.request.get('x-hireflip-client-user-agent') || ctx.request.get('user-agent'),
+      }
     );
 
     ctx.body = {

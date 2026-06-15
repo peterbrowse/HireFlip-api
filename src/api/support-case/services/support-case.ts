@@ -8,7 +8,9 @@ type DocumentRecord = Record<string, unknown> & {
   candidate?: DocumentRecord;
   createdAt?: string;
   currency?: string;
+  deliveryState?: string;
   documentId?: string;
+  direction?: string;
   email?: string;
   enrollment?: DocumentRecord;
   firstName?: string;
@@ -16,6 +18,7 @@ type DocumentRecord = Record<string, unknown> & {
   lastMessageAt?: string;
   lastName?: string;
   metadata?: unknown;
+  messageType?: string;
   ownerRoleKey?: string;
   ownerStaffDisplayName?: string;
   ownerStaffEmail?: string;
@@ -23,10 +26,12 @@ type DocumentRecord = Record<string, unknown> & {
   payment?: DocumentRecord;
   refund?: DocumentRecord;
   refundState?: string;
+  senderType?: string;
   senderDisplayName?: string;
   subject?: string;
   title?: string;
   updatedAt?: string;
+  visibility?: string;
 };
 
 type DocumentCollection = {
@@ -220,6 +225,17 @@ const publicSupportMessage = (message: DocumentRecord) => ({
   visibility: message.visibility || null,
 });
 
+const candidateSupportMessage = (message: DocumentRecord) => ({
+  body: message.body || '',
+  createdAt: message.createdAt || null,
+  direction: message.direction || null,
+  documentId: getDocumentId(message) || null,
+  messageType: message.messageType || null,
+  senderDisplayName: message.senderDisplayName || null,
+  senderType: message.senderType || null,
+  subject: message.subject || null,
+});
+
 const publicSupportCase = (supportCase: DocumentRecord, messages: DocumentRecord[] = []) => ({
   caseKey: supportCase.caseKey || null,
   caseState: supportCase.caseState || null,
@@ -243,6 +259,28 @@ const publicSupportCase = (supportCase: DocumentRecord, messages: DocumentRecord
         roleKey: supportCase.ownerRoleKey || null,
       }
     : null,
+  priority: supportCase.priority || null,
+  refund: supportCase.refund
+    ? {
+        documentId: getDocumentId(supportCase.refund) || null,
+        refundState: supportCase.refund.refundState || null,
+      }
+    : null,
+  summary: supportCase.summary || null,
+  title: supportCase.title || null,
+  updatedAt: supportCase.updatedAt || null,
+});
+
+const candidateSupportCase = (supportCase: DocumentRecord, messages: DocumentRecord[] = []) => ({
+  caseKey: supportCase.caseKey || null,
+  caseState: supportCase.caseState || null,
+  caseType: supportCase.caseType || null,
+  createdAt: supportCase.createdAt || null,
+  documentId: getDocumentId(supportCase) || null,
+  lastMessageAt: supportCase.lastMessageAt || null,
+  messages: messages
+    .filter((message) => message.visibility === 'public')
+    .map(candidateSupportMessage),
   priority: supportCase.priority || null,
   refund: supportCase.refund
     ? {
@@ -489,6 +527,57 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
     }
 
     return publicSupportCase(
+      supportCase,
+      await messagesForCase(strapi, getDocumentId(supportCase))
+    );
+  },
+
+  async casesForCandidate(candidateDocumentId: string) {
+    const cases = await documents(strapi, 'api::support-case.support-case').findMany({
+      filters: {
+        candidate: {
+          documentId: candidateDocumentId,
+        },
+      },
+      limit: 50,
+      populate: ['candidate', 'refund', 'payment', 'enrollment'],
+      sort: ['lastMessageAt:desc', 'createdAt:desc'],
+    });
+
+    return Promise.all(
+      cases.map(async (supportCase) =>
+        candidateSupportCase(
+          supportCase,
+          await messagesForCase(strapi, getDocumentId(supportCase))
+        )
+      )
+    );
+  },
+
+  async getCaseForCandidate({
+    candidateDocumentId,
+    supportCaseDocumentId,
+  }: {
+    candidateDocumentId: string;
+    supportCaseDocumentId: string;
+  }) {
+    const cases = await documents(strapi, 'api::support-case.support-case').findMany({
+      filters: {
+        candidate: {
+          documentId: candidateDocumentId,
+        },
+        documentId: supportCaseDocumentId,
+      },
+      limit: 1,
+      populate: ['candidate', 'refund', 'payment', 'enrollment'],
+    });
+    const supportCase = cases[0];
+
+    if (!supportCase) {
+      return null;
+    }
+
+    return candidateSupportCase(
       supportCase,
       await messagesForCase(strapi, getDocumentId(supportCase))
     );

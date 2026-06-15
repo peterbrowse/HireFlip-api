@@ -79,6 +79,45 @@ export default {
       },
     },
     {
+      method: 'GET',
+      path: '/candidates/me/support-cases',
+      handler: 'candidate.supportCases',
+      config: {
+        auth: false,
+        middlewares: [
+          {
+            name: 'global::auth0-jwt',
+          },
+        ],
+      },
+    },
+    {
+      method: 'GET',
+      path: '/candidates/me/support-cases/:supportCaseDocumentId',
+      handler: 'candidate.supportCase',
+      config: {
+        auth: false,
+        middlewares: [
+          {
+            name: 'global::auth0-jwt',
+          },
+        ],
+      },
+    },
+    {
+      method: 'POST',
+      path: '/candidates/me/support-cases/:supportCaseDocumentId/reply',
+      handler: 'candidate.replyToSupportCase',
+      config: {
+        auth: false,
+        middlewares: [
+          {
+            name: 'global::auth0-jwt',
+          },
+        ],
+      },
+    },
+    {
       method: 'POST',
       path: '/candidates/me/class-interest',
       handler: 'candidate.registerClassInterest',
