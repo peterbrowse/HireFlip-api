@@ -53,6 +53,16 @@ type PaymentServiceRefundResponse = {
   };
 };
 
+type SupportCaseService = {
+  addMessage(input: unknown): Promise<DocumentRecord>;
+  casesForRefund(refundDocumentId: string): Promise<unknown[]>;
+  ensureRefundCase(input: unknown): Promise<{
+    created: boolean;
+    supportCase: DocumentRecord;
+  }>;
+  updateCaseState(input: unknown): Promise<DocumentRecord>;
+};
+
 type DocumentRecord = Record<string, unknown> & {
   amountPence?: number;
   approvedAt?: string;
@@ -160,6 +170,9 @@ const adminAuthService = (strapi: StrapiDocumentService) =>
 
 const auditEvents = (strapi: StrapiDocumentService) =>
   strapi.service('api::audit-event.audit-event') as unknown as AuditEventService;
+
+const supportCaseService = (strapi: StrapiDocumentService) =>
+  strapi.service('api::support-case.support-case') as unknown as SupportCaseService;
 
 const trimTrailingSlash = (value: string) => value.replace(/\/+$/, '');
 
@@ -845,6 +858,16 @@ const auditEventsForReview = async (strapi: StrapiDocumentService, review: Refun
   }));
 };
 
+const supportCasesForReview = async (strapi: StrapiDocumentService, review: RefundReviewItem) => {
+  const refundDocumentId = review.refund?.documentId;
+
+  if (!refundDocumentId) {
+    return [];
+  }
+
+  return supportCaseService(strapi).casesForRefund(refundDocumentId);
+};
+
 const reviewByTaskKey = async (strapi: StrapiDocumentService, taskKey: string) => {
   const reviews = await collectReviews(strapi);
   const review = reviews.find((candidateReview) => candidateReview.taskKey === taskKey);
@@ -1047,6 +1070,109 @@ const providerRefundState = (status?: string | null) => {
   return 'processing';
 };
 
+const adminSender = (session: AdminSession) => ({
+  displayName: session.user.displayName,
+  email: session.user.email,
+  id: session.user.id,
+  type: 'admin',
+});
+
+const ensureRefundSupportCase = async ({
+  candidate,
+  payment,
+  refund,
+  session,
+  state,
+  strapi,
+  summary,
+}: {
+  candidate: DocumentRecord;
+  payment?: DocumentRecord;
+  refund: DocumentRecord;
+  session: AdminSession;
+  state: 'awaiting_candidate' | 'awaiting_staff' | 'in_progress' | 'resolved';
+  strapi: StrapiDocumentService;
+  summary?: string;
+}) =>
+  supportCaseService(strapi).ensureRefundCase({
+    assignedTo: {
+      displayName: session.user.displayName,
+      email: session.user.email,
+      id: session.user.id,
+      roleKey: session.user.roleKeys[0],
+    },
+    candidate,
+    createdBy: adminSender(session),
+    enrollment: refund.enrollment || payment?.enrollment,
+    payment,
+    priority: state === 'awaiting_candidate' ? 'high' : 'normal',
+    refund,
+    source: 'admin_dashboard',
+    state,
+    summary,
+  });
+
+const updateRefundSupportCaseState = async ({
+  caseState,
+  supportCase,
+  strapi,
+}: {
+  caseState: 'awaiting_candidate' | 'awaiting_staff' | 'in_progress' | 'resolved';
+  supportCase: DocumentRecord;
+  strapi: StrapiDocumentService;
+}) =>
+  supportCaseService(strapi).updateCaseState({
+    caseState,
+    supportCase,
+  });
+
+const addRefundSupportMessage = async ({
+  body,
+  candidate,
+  deliveryState = 'not_required',
+  direction,
+  messageType,
+  metadata,
+  payment,
+  refund,
+  sender,
+  sentAt,
+  strapi,
+  subject,
+  supportCase,
+  visibility = 'public',
+}: {
+  body: string;
+  candidate: DocumentRecord;
+  deliveryState?: 'not_required' | 'queued' | 'sent' | 'delivered' | 'failed';
+  direction: 'outbound' | 'system' | 'internal';
+  messageType: 'refund_acceptance' | 'refund_provider_update' | 'refund_refusal' | 'system_update';
+  metadata?: Record<string, unknown>;
+  payment?: DocumentRecord;
+  refund: DocumentRecord;
+  sender?: Record<string, unknown>;
+  sentAt?: string;
+  strapi: StrapiDocumentService;
+  subject?: string;
+  supportCase: DocumentRecord;
+  visibility?: 'public' | 'internal';
+}) =>
+  supportCaseService(strapi).addMessage({
+    body,
+    candidate,
+    deliveryState,
+    direction,
+    messageType,
+    metadata,
+    payment,
+    refund,
+    sender: sender || { type: 'system' },
+    sentAt,
+    subject,
+    supportCase,
+    visibility,
+  });
+
 const updatePaymentAfterProviderRefund = async ({
   payment,
   refund,
@@ -1128,6 +1254,7 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
       review: {
         ...review,
         auditEvents: await auditEventsForReview(strapi, review),
+        supportCases: await supportCasesForReview(strapi, review),
       },
     };
   },
@@ -1135,7 +1262,7 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
   async refuseReview(input: unknown, requestContext: RequestContext = {}) {
     const body = validateReviewRefuse(input);
     const session = await assertRefundReviewSession(strapi, body.sessionToken, requestContext);
-    const { candidate, refund } = await refundActionContext(strapi, body.taskKey);
+    const { candidate, payment, refund } = await refundActionContext(strapi, body.taskKey);
     const currentState = String(refund.refundState || '');
 
     if (!['requested', 'failed'].includes(currentState)) {
@@ -1170,6 +1297,39 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
         refundState: 'rejected',
       },
     });
+    const { supportCase } = await ensureRefundSupportCase({
+      candidate,
+      payment,
+      refund: updatedRefund,
+      session,
+      state: 'awaiting_candidate',
+      strapi,
+      summary: 'Refund refused; waiting for candidate response or further evidence.',
+    });
+
+    await updateRefundSupportCaseState({
+      caseState: 'awaiting_candidate',
+      strapi,
+      supportCase,
+    });
+    await addRefundSupportMessage({
+      body: body.message,
+      candidate,
+      deliveryState: 'queued',
+      direction: 'outbound',
+      messageType: 'refund_refusal',
+      metadata: {
+        notificationServiceJobId: queueResult.data?.jobId ?? null,
+      },
+      payment,
+      refund: updatedRefund,
+      sender: adminSender(session),
+      sentAt: now,
+      strapi,
+      subject: email.subject,
+      supportCase,
+      visibility: 'public',
+    });
 
     await auditRefundAction({
       eventType: 'admin.refund_refused',
@@ -1196,7 +1356,7 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
   async escalateReview(input: unknown, requestContext: RequestContext = {}) {
     const body = validateReviewEscalate(input);
     const session = await assertRefundReviewSession(strapi, body.sessionToken, requestContext);
-    const { candidate, refund, review } = await refundActionContext(strapi, body.taskKey);
+    const { candidate, payment, refund, review } = await refundActionContext(strapi, body.taskKey);
     const currentState = String(refund.refundState || '');
 
     if (!['requested', 'failed'].includes(currentState)) {
@@ -1242,6 +1402,43 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
         refundPercentage: body.refundPercentage,
         refundState: 'approved',
       },
+    });
+    const { supportCase } = await ensureRefundSupportCase({
+      candidate,
+      payment,
+      refund: updatedRefund,
+      session,
+      state: 'awaiting_staff',
+      strapi,
+      summary: 'Refund accepted and waiting for Super Admin provider execution.',
+    });
+
+    await updateRefundSupportCaseState({
+      caseState: 'awaiting_staff',
+      strapi,
+      supportCase,
+    });
+    await addRefundSupportMessage({
+      body:
+        body.message ||
+        `Refund accepted for ${formattedAmount || 'the approved amount'} and waiting for Super Admin execution.`,
+      candidate,
+      deliveryState: 'queued',
+      direction: 'outbound',
+      messageType: 'refund_acceptance',
+      metadata: {
+        amountPence,
+        notificationServiceJobId: queueResult.data?.jobId ?? null,
+        refundPercentage: body.refundPercentage,
+      },
+      payment,
+      refund: updatedRefund,
+      sender: adminSender(session),
+      sentAt: now,
+      strapi,
+      subject: email.subject,
+      supportCase,
+      visibility: 'public',
     });
 
     await auditRefundAction({
@@ -1298,6 +1495,35 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
         },
         refundState: 'submitted_to_provider',
       },
+    });
+    const { supportCase } = await ensureRefundSupportCase({
+      candidate,
+      payment,
+      refund: submittedRefund,
+      session,
+      state: 'in_progress',
+      strapi,
+      summary: 'Refund submitted to the payment provider.',
+    });
+
+    await updateRefundSupportCaseState({
+      caseState: 'in_progress',
+      strapi,
+      supportCase,
+    });
+    await addRefundSupportMessage({
+      body: 'Refund submitted to the payment provider.',
+      candidate,
+      direction: 'system',
+      messageType: 'refund_provider_update',
+      metadata: {
+        refundState: 'submitted_to_provider',
+      },
+      payment,
+      refund: submittedRefund,
+      strapi,
+      supportCase,
+      visibility: 'public',
     });
 
     await auditRefundAction({
@@ -1360,6 +1586,29 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
         subjectId: refund.documentId,
       });
 
+      await updateRefundSupportCaseState({
+        caseState: 'awaiting_staff',
+        strapi,
+        supportCase,
+      });
+      await addRefundSupportMessage({
+        body:
+          error instanceof Error
+            ? `Refund provider submission failed: ${error.message}`
+            : 'Refund provider submission failed.',
+        candidate,
+        direction: 'system',
+        messageType: 'refund_provider_update',
+        metadata: {
+          failedAt: new Date().toISOString(),
+        },
+        payment,
+        refund: failedRefund,
+        strapi,
+        supportCase,
+        visibility: 'internal',
+      });
+
       throw error;
     }
 
@@ -1402,6 +1651,37 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
       strapi,
       subjectDisplayName: candidateDisplayName(candidate),
       subjectId: refund.documentId,
+    });
+
+    await updateRefundSupportCaseState({
+      caseState:
+        finalRefundState === 'completed'
+          ? 'resolved'
+          : finalRefundState === 'failed'
+            ? 'awaiting_staff'
+            : 'in_progress',
+      strapi,
+      supportCase,
+    });
+    await addRefundSupportMessage({
+      body:
+        finalRefundState === 'completed'
+          ? 'Refund completed by the payment provider.'
+          : finalRefundState === 'failed'
+            ? 'Refund failed at the payment provider and needs staff review.'
+            : 'Refund is processing with the payment provider.',
+      candidate,
+      direction: 'system',
+      messageType: 'refund_provider_update',
+      metadata: {
+        providerRefund,
+        refundState: finalRefundState,
+      },
+      payment: updatedPayment || payment,
+      refund: updatedRefund,
+      strapi,
+      supportCase,
+      visibility: finalRefundState === 'failed' ? 'internal' : 'public',
     });
 
     return {

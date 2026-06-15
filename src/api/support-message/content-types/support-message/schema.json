@@ -1,0 +1,128 @@
+{
+  "kind": "collectionType",
+  "collectionName": "support_messages",
+  "info": {
+    "singularName": "support-message",
+    "pluralName": "support-messages",
+    "displayName": "Support Message",
+    "description": "Messages, notes, and system updates attached to support cases."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "supportCase": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::support-case.support-case",
+      "required": true
+    },
+    "messageType": {
+      "type": "enumeration",
+      "enum": [
+        "candidate_message",
+        "staff_reply",
+        "staff_note",
+        "system_update",
+        "outbound_email",
+        "refund_refusal",
+        "refund_acceptance",
+        "refund_provider_update"
+      ],
+      "default": "system_update",
+      "required": true
+    },
+    "direction": {
+      "type": "enumeration",
+      "enum": [
+        "inbound",
+        "outbound",
+        "internal",
+        "system"
+      ],
+      "default": "system",
+      "required": true
+    },
+    "visibility": {
+      "type": "enumeration",
+      "enum": [
+        "public",
+        "internal"
+      ],
+      "default": "internal",
+      "required": true
+    },
+    "subject": {
+      "type": "string",
+      "maxLength": 180
+    },
+    "body": {
+      "type": "text",
+      "required": true
+    },
+    "senderType": {
+      "type": "enumeration",
+      "enum": [
+        "candidate",
+        "admin",
+        "service",
+        "system"
+      ],
+      "default": "system",
+      "required": true
+    },
+    "senderId": {
+      "type": "string",
+      "maxLength": 160
+    },
+    "senderEmail": {
+      "type": "email",
+      "maxLength": 254
+    },
+    "senderDisplayName": {
+      "type": "string",
+      "maxLength": 240
+    },
+    "deliveryState": {
+      "type": "enumeration",
+      "enum": [
+        "not_required",
+        "queued",
+        "sent",
+        "delivered",
+        "failed"
+      ],
+      "default": "not_required",
+      "required": true
+    },
+    "sentAt": {
+      "type": "datetime"
+    },
+    "deliveredAt": {
+      "type": "datetime"
+    },
+    "candidate": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::candidate.candidate"
+    },
+    "refund": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::refund.refund"
+    },
+    "payment": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::payment.payment"
+    },
+    "notificationEvent": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::notification-event.notification-event"
+    },
+    "metadata": {
+      "type": "json"
+    }
+  }
+}

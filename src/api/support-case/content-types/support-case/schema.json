@@ -1,0 +1,164 @@
+{
+  "kind": "collectionType",
+  "collectionName": "support_cases",
+  "info": {
+    "singularName": "support-case",
+    "pluralName": "support-cases",
+    "displayName": "Support Case",
+    "description": "Reusable support/ticket case for candidate, refund, payment, and admin workflows."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "caseKey": {
+      "type": "string",
+      "maxLength": 180,
+      "unique": true,
+      "required": true
+    },
+    "caseType": {
+      "type": "enumeration",
+      "enum": [
+        "general",
+        "refund",
+        "payment",
+        "course",
+        "interview",
+        "account",
+        "privacy",
+        "other"
+      ],
+      "default": "general",
+      "required": true
+    },
+    "caseState": {
+      "type": "enumeration",
+      "enum": [
+        "open",
+        "awaiting_candidate",
+        "awaiting_staff",
+        "in_progress",
+        "resolved",
+        "closed"
+      ],
+      "default": "open",
+      "required": true
+    },
+    "priority": {
+      "type": "enumeration",
+      "enum": [
+        "low",
+        "normal",
+        "high",
+        "urgent"
+      ],
+      "default": "normal",
+      "required": true
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 180,
+      "required": true
+    },
+    "summary": {
+      "type": "text"
+    },
+    "source": {
+      "type": "enumeration",
+      "enum": [
+        "candidate_dashboard",
+        "admin_dashboard",
+        "payment_service",
+        "notification_service",
+        "core_api",
+        "system",
+        "other"
+      ],
+      "default": "core_api",
+      "required": true
+    },
+    "openedAt": {
+      "type": "datetime"
+    },
+    "lastMessageAt": {
+      "type": "datetime"
+    },
+    "resolvedAt": {
+      "type": "datetime"
+    },
+    "closedAt": {
+      "type": "datetime"
+    },
+    "openedByType": {
+      "type": "enumeration",
+      "enum": [
+        "candidate",
+        "admin",
+        "service",
+        "system"
+      ],
+      "default": "system"
+    },
+    "openedByStaffUserId": {
+      "type": "string",
+      "maxLength": 160
+    },
+    "openedByEmail": {
+      "type": "email",
+      "maxLength": 254
+    },
+    "openedByDisplayName": {
+      "type": "string",
+      "maxLength": 240
+    },
+    "ownerStaffUserId": {
+      "type": "string",
+      "maxLength": 160
+    },
+    "ownerStaffEmail": {
+      "type": "email",
+      "maxLength": 254
+    },
+    "ownerStaffDisplayName": {
+      "type": "string",
+      "maxLength": 240
+    },
+    "ownerRoleKey": {
+      "type": "enumeration",
+      "enum": [
+        "admin",
+        "sales",
+        "super_admin",
+        "support"
+      ]
+    },
+    "assignedAt": {
+      "type": "datetime"
+    },
+    "candidate": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::candidate.candidate"
+    },
+    "refund": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::refund.refund"
+    },
+    "payment": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::payment.payment"
+    },
+    "enrollment": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::enrollment.enrollment"
+    },
+    "metadata": {
+      "type": "json"
+    }
+  }
+}
