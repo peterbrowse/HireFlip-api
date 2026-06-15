@@ -240,7 +240,10 @@ const findExistingTask = async (strapi: StrapiDocumentService, taskKey: string) 
 const taskData = (draft: AdminTaskDraft, detectedAt: string) => ({
   actionLabel: draft.actionLabel,
   actionPath: draft.actionPath,
-  lastDetectedAt: detectedAt,
+  lastDetectedAt:
+    typeof draft.metadata.sourceDetectedAt === 'string'
+      ? draft.metadata.sourceDetectedAt
+      : detectedAt,
   metadata: draft.metadata,
   priority: draft.priority,
   relatedDocumentId: draft.relatedDocumentId,
@@ -371,6 +374,7 @@ const paymentTask = (payment: DocumentRecord): AdminTaskDraft | null => {
       amountPence: payment.amountPence,
       currency: payment.currency || 'GBP',
       sourceCreatedAt: payment.createdAt,
+      sourceDetectedAt: sourceTimestamp(payment),
     },
     priority: 'high',
     relatedDocumentId: documentId,
@@ -408,6 +412,7 @@ const reservationTask = (reservation: DocumentRecord): AdminTaskDraft | null => 
       amountPence: reservation.amountPence,
       currency: reservation.currency || 'GBP',
       sourceCreatedAt: reservation.createdAt,
+      sourceDetectedAt: sourceTimestamp(reservation),
     },
     priority: 'high',
     relatedDocumentId: documentId,
@@ -443,6 +448,7 @@ const enrollmentTask = (enrollment: DocumentRecord): AdminTaskDraft | null => {
     metadata: {
       paymentStatus: enrollment.paymentStatus,
       sourceCreatedAt: enrollment.createdAt,
+      sourceDetectedAt: sourceTimestamp(enrollment),
     },
     priority: 'high',
     relatedDocumentId: documentId,
@@ -482,6 +488,7 @@ const refundTask = (refund: DocumentRecord): AdminTaskDraft | null => {
       currency: refund.currency || 'GBP',
       refundState: refund.refundState,
       sourceCreatedAt: refund.createdAt,
+      sourceDetectedAt: sourceTimestamp(refund),
     },
     priority: isFailed ? 'urgent' : 'high',
     relatedDocumentId: documentId,
@@ -520,6 +527,8 @@ const notificationTask = (event: DocumentRecord): AdminTaskDraft | null => {
       relatedId: event.relatedId,
       relatedType: event.relatedType,
       sourceCreatedAt: event.createdAt,
+      sourceDetectedAt: sourceTimestamp(event),
+      sourceFailedAt: event.failedAt,
       templateKey: event.templateKey,
     },
     priority: event.priority === 'urgent' ? 'urgent' : event.priority === 'high' ? 'high' : 'normal',
@@ -559,6 +568,7 @@ const auditTask = (event: DocumentRecord): AdminTaskDraft | null => {
       occurredAt: event.occurredAt,
       severity: event.severity,
       sourceCreatedAt: event.createdAt,
+      sourceDetectedAt: sourceTimestamp(event),
       subjectId: event.subjectId,
       subjectType: event.subjectType,
     },
