@@ -16,5 +16,23 @@ export default {
         policies: [adminDashboardServicePolicy],
       },
     },
+    {
+      method: 'POST',
+      path: '/internal/admin/tasks/detail',
+      handler: 'admin-task.detail',
+      config: {
+        auth: false,
+        policies: [adminDashboardServicePolicy],
+      },
+    },
+    {
+      method: 'POST',
+      path: '/internal/admin/tasks/clear',
+      handler: 'admin-task.clear',
+      config: {
+        auth: false,
+        policies: [adminDashboardServicePolicy],
+      },
+    },
   ],
 };

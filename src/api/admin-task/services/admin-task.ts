@@ -1,7 +1,7 @@
 import { factories } from '@strapi/strapi';
 import { errors, validateZodSchema, z } from '@strapi/utils';
 
-const { ForbiddenError } = errors;
+const { ForbiddenError, ValidationError } = errors;
 
 type RequestContext = {
   ipAddress?: string;
@@ -116,8 +116,14 @@ const overviewSchema = z
     sessionToken: z.string().trim().min(32).max(512),
   })
   .strict();
+const taskActionSchema = overviewSchema
+  .extend({
+    taskKey: z.string().trim().min(1).max(220),
+  })
+  .strict();
 
 const validateOverview = validateZodSchema(overviewSchema);
+const validateTaskAction = validateZodSchema(taskActionSchema);
 
 const documents = (strapi: StrapiDocumentService, uid: string) =>
   strapi.documents(uid) as unknown as DocumentCollection;
@@ -140,8 +146,9 @@ const getDocumentId = (record?: DocumentRecord | null) => {
 const trimToLength = (value: string, maxLength: number) =>
   value.length > maxLength ? `${value.slice(0, maxLength - 1)}…` : value;
 
+const taskRouteSegment = (taskKey: string) => encodeURIComponent(taskKey);
+const taskDetailPath = (taskKey: string) => `/tasks/${taskRouteSegment(taskKey)}`;
 const taskQuery = (taskKey: string) => encodeURIComponent(taskKey);
-const overviewTaskPath = (taskKey: string) => `/?task=${taskQuery(taskKey)}`;
 const refundTaskPath = (taskKey: string) => `/refunds?task=${taskQuery(taskKey)}`;
 
 const candidateDisplayName = (candidate?: DocumentRecord) => {
@@ -190,6 +197,17 @@ const monitoredTaskTypes: AdminTaskType[] = [
   'notification_failure',
   'system_alert',
 ];
+const clearableTaskTypes = new Set<AdminTaskType>(['notification_failure', 'system_alert']);
+const isClearableTask = (task?: Pick<DocumentRecord, 'taskType'> | null) =>
+  Boolean(task?.taskType && clearableTaskTypes.has(task.taskType));
+
+const objectValue = (value: unknown) => {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+
+  return {};
+};
 
 const assertOperationsSession = async (
   strapi: StrapiDocumentService,
@@ -243,6 +261,10 @@ const upsertTask = async (
   detectedAt: string
 ) => {
   const existingTask = await findExistingTask(strapi, draft.taskKey);
+
+  if (existingTask?.status === 'dismissed' && isClearableTask(existingTask)) {
+    return existingTask;
+  }
 
   if (existingTask?.documentId) {
     return documents(strapi, 'api::admin-task.admin-task').update({
@@ -489,8 +511,8 @@ const notificationTask = (event: DocumentRecord): AdminTaskDraft | null => {
   const taskKey = `notification:${documentId}:failed`;
 
   return {
-    actionLabel: 'Review notification',
-    actionPath: overviewTaskPath(taskKey),
+    actionLabel: 'Review event',
+    actionPath: taskDetailPath(taskKey),
     metadata: {
       channel: event.channel,
       eventType: event.eventType,
@@ -530,7 +552,7 @@ const auditTask = (event: DocumentRecord): AdminTaskDraft | null => {
 
   return {
     actionLabel: 'Review event',
-    actionPath: overviewTaskPath(taskKey),
+    actionPath: taskDetailPath(taskKey),
     metadata: {
       eventCategory: event.eventCategory,
       eventType: event.eventType,
@@ -708,6 +730,7 @@ const collectTaskDrafts = async (strapi: StrapiDocumentService) => {
 const publicTask = (task: DocumentRecord) => ({
   actionLabel: task.actionLabel || 'Review task',
   actionPath: task.actionPath || '/',
+  canClear: isClearableTask(task) && ['acknowledged', 'open'].includes(task.status || 'open'),
   createdAt: task.createdAt || null,
   documentId: getDocumentId(task) || '',
   lastDetectedAt: task.lastDetectedAt || null,
@@ -723,6 +746,11 @@ const publicTask = (task: DocumentRecord) => ({
   taskTypeLabel: task.taskType ? taskTypeLabels[task.taskType] : 'Task',
   title: task.title || 'Task',
   updatedAt: task.updatedAt || null,
+});
+
+const publicTaskDetail = (task: DocumentRecord) => ({
+  ...publicTask(task),
+  metadata: objectValue(task.metadata),
 });
 
 const compareTasks = (left: DocumentRecord, right: DocumentRecord) => {
@@ -781,6 +809,52 @@ export default factories.createCoreService('api::admin-task.admin-task', ({ stra
       generatedAt: new Date().toISOString(),
       tasks,
       user: session.user,
+    };
+  },
+
+  async getTaskDetail(input: unknown, requestContext: RequestContext = {}) {
+    const body = validateTaskAction(input);
+
+    await assertOperationsSession(strapi, body.sessionToken, requestContext);
+    await syncTasks(strapi);
+
+    const task = await findExistingTask(strapi, body.taskKey);
+
+    if (!task) {
+      throw new ValidationError('Admin task could not be found.');
+    }
+
+    return {
+      task: publicTaskDetail(task),
+    };
+  },
+
+  async clearTask(input: unknown, requestContext: RequestContext = {}) {
+    const body = validateTaskAction(input);
+
+    await assertOperationsSession(strapi, body.sessionToken, requestContext);
+
+    const task = await findExistingTask(strapi, body.taskKey);
+
+    if (!task?.documentId) {
+      throw new ValidationError('Admin task could not be found.');
+    }
+
+    if (!isClearableTask(task)) {
+      throw new ValidationError('This task type cannot be cleared from Timely Tasks.');
+    }
+
+    const clearedTask = await documents(strapi, 'api::admin-task.admin-task').update({
+      documentId: task.documentId,
+      data: {
+        resolvedAt: new Date().toISOString(),
+        status: 'dismissed',
+      },
+    });
+
+    return {
+      cleared: true,
+      task: publicTaskDetail(clearedTask),
     };
   },
 }));

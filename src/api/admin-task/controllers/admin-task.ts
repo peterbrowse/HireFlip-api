@@ -8,6 +8,8 @@ type RequestContext = {
 };
 
 type AdminTaskService = {
+  clearTask(input: unknown, context: RequestContext): Promise<unknown>;
+  getTaskDetail(input: unknown, context: RequestContext): Promise<unknown>;
   getOverview(input: unknown, context: RequestContext): Promise<unknown>;
 };
 
@@ -30,6 +32,28 @@ const getRequestContext = (ctx): RequestContext => ({
 export default factories.createCoreController('api::admin-task.admin-task', ({ strapi }) => ({
   async overview(ctx) {
     const result = await adminTaskService(strapi).getOverview(
+      ctx.request.body,
+      getRequestContext(ctx)
+    );
+
+    ctx.body = {
+      data: result,
+    };
+  },
+
+  async detail(ctx) {
+    const result = await adminTaskService(strapi).getTaskDetail(
+      ctx.request.body,
+      getRequestContext(ctx)
+    );
+
+    ctx.body = {
+      data: result,
+    };
+  },
+
+  async clear(ctx) {
+    const result = await adminTaskService(strapi).clearTask(
       ctx.request.body,
       getRequestContext(ctx)
     );
