@@ -154,8 +154,7 @@ const trimToLength = (value: string, maxLength: number) =>
 
 const taskRouteSegment = (taskKey: string) => encodeURIComponent(taskKey);
 const taskDetailPath = (taskKey: string) => `/tasks/${taskRouteSegment(taskKey)}`;
-const taskQuery = (taskKey: string) => encodeURIComponent(taskKey);
-const refundTaskPath = (taskKey: string) => `/refunds?task=${taskQuery(taskKey)}`;
+const refundTaskPath = (taskKey: string) => `/refunds/${taskRouteSegment(taskKey)}`;
 
 const candidateDisplayName = (candidate?: DocumentRecord) => {
   if (!candidate) {
@@ -490,6 +489,7 @@ const refundTask = (refund: DocumentRecord): AdminTaskDraft | null => {
   const taskKey = `refund:${documentId}:${refund.refundState || 'review'}`;
   const amount = formatMoney(refund.amountPence, refund.currency || 'GBP');
   const isFailed = refund.refundState === 'failed';
+  const isApproved = refund.refundState === 'approved';
   const candidateName = candidateDisplayName(refund.candidate);
 
   return {
@@ -509,14 +509,16 @@ const refundTask = (refund: DocumentRecord): AdminTaskDraft | null => {
     sourceType: 'refund',
     summary: trimToLength(
       [
-        amount ? `${amount} refund is ${isFailed ? 'failed' : 'requested'}.` : `Refund is ${isFailed ? 'failed' : 'requested'}.`,
+        amount
+          ? `${amount} refund is ${isFailed ? 'failed' : isApproved ? 'approved' : 'requested'}.`
+          : `Refund is ${isFailed ? 'failed' : isApproved ? 'approved' : 'requested'}.`,
         candidateName ? `Candidate: ${candidateName}.` : '',
       ].filter(Boolean).join(' '),
       500
     ),
     taskKey,
     taskType: 'refund_review',
-    title: isFailed ? 'Refund failed' : 'Refund requested',
+    title: isFailed ? 'Refund failed' : isApproved ? 'Refund approved' : 'Refund requested',
   };
 };
 
@@ -681,7 +683,7 @@ const collectRefundTasks = async (strapi: StrapiDocumentService) => {
   const refunds = await documents(strapi, 'api::refund.refund').findMany({
     filters: {
       refundState: {
-        $in: ['requested', 'failed'],
+        $in: ['requested', 'approved', 'failed'],
       },
     },
     limit: 100,
