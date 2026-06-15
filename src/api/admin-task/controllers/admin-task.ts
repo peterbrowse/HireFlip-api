@@ -11,6 +11,7 @@ type AdminTaskService = {
   clearTask(input: unknown, context: RequestContext): Promise<unknown>;
   getTaskDetail(input: unknown, context: RequestContext): Promise<unknown>;
   getOverview(input: unknown, context: RequestContext): Promise<unknown>;
+  updateTaskState(input: unknown, context: RequestContext): Promise<unknown>;
 };
 
 const adminTaskService = (strapi: { service(uid: string): unknown }): AdminTaskService =>
@@ -54,6 +55,17 @@ export default factories.createCoreController('api::admin-task.admin-task', ({ s
 
   async clear(ctx) {
     const result = await adminTaskService(strapi).clearTask(
+      ctx.request.body,
+      getRequestContext(ctx)
+    );
+
+    ctx.body = {
+      data: result,
+    };
+  },
+
+  async updateState(ctx) {
+    const result = await adminTaskService(strapi).updateTaskState(
       ctx.request.body,
       getRequestContext(ctx)
     );

@@ -121,9 +121,15 @@ const taskActionSchema = overviewSchema
     taskKey: z.string().trim().min(1).max(220),
   })
   .strict();
+const taskStateActionSchema = taskActionSchema
+  .extend({
+    taskState: z.enum(['acknowledged', 'dismissed']),
+  })
+  .strict();
 
 const validateOverview = validateZodSchema(overviewSchema);
 const validateTaskAction = validateZodSchema(taskActionSchema);
+const validateTaskStateAction = validateZodSchema(taskStateActionSchema);
 
 const documents = (strapi: StrapiDocumentService, uid: string) =>
   strapi.documents(uid) as unknown as DocumentCollection;
@@ -197,6 +203,7 @@ const monitoredTaskTypes: AdminTaskType[] = [
   'notification_failure',
   'system_alert',
 ];
+const activeTaskStates: AdminTaskState[] = ['acknowledged', 'open'];
 const clearableTaskTypes = new Set<AdminTaskType>(['notification_failure', 'system_alert']);
 const isClearableTask = (task?: Pick<DocumentRecord, 'taskType'> | null) =>
   Boolean(task?.taskType && clearableTaskTypes.has(task.taskType));
@@ -237,7 +244,11 @@ const findExistingTask = async (strapi: StrapiDocumentService, taskKey: string) 
   return tasks[0];
 };
 
-const taskData = (draft: AdminTaskDraft, detectedAt: string) => ({
+const taskData = (
+  draft: AdminTaskDraft,
+  detectedAt: string,
+  existingTaskState: AdminTaskState = 'open'
+) => ({
   actionLabel: draft.actionLabel,
   actionPath: draft.actionPath,
   lastDetectedAt:
@@ -253,7 +264,7 @@ const taskData = (draft: AdminTaskDraft, detectedAt: string) => ({
   sourceType: draft.sourceType,
   summary: draft.summary,
   taskKey: draft.taskKey,
-  taskState: 'open',
+  taskState: existingTaskState === 'acknowledged' ? 'acknowledged' : 'open',
   taskType: draft.taskType,
   title: draft.title,
 });
@@ -272,7 +283,7 @@ const upsertTask = async (
   if (existingTask?.documentId) {
     return documents(strapi, 'api::admin-task.admin-task').update({
       documentId: existingTask.documentId,
-      data: taskData(draft, detectedAt),
+      data: taskData(draft, detectedAt, existingTask.taskState),
     });
   }
 
@@ -288,7 +299,9 @@ const resolveStaleTasks = async (
 ) => {
   const openTasks = await documents(strapi, 'api::admin-task.admin-task').findMany({
     filters: {
-      taskState: 'open',
+      taskState: {
+        $in: activeTaskStates,
+      },
       taskType: {
         $in: monitoredTaskTypes,
       },
@@ -737,26 +750,33 @@ const collectTaskDrafts = async (strapi: StrapiDocumentService) => {
   ];
 };
 
-const publicTask = (task: DocumentRecord) => ({
-  actionLabel: task.actionLabel || 'Review task',
-  actionPath: task.actionPath || '/',
-  canClear: isClearableTask(task) && ['acknowledged', 'open'].includes(task.taskState || 'open'),
-  createdAt: task.createdAt || null,
-  documentId: getDocumentId(task) || '',
-  lastDetectedAt: task.lastDetectedAt || null,
-  priority: task.priority || 'normal',
-  relatedDocumentId: task.relatedDocumentId || null,
-  relatedType: task.relatedType || null,
-  sourceDocumentId: task.sourceDocumentId || null,
-  sourceType: task.sourceType || null,
-  summary: task.summary || '',
-  taskKey: task.taskKey || '',
-  taskState: task.taskState || 'open',
-  taskType: task.taskType || 'system_alert',
-  taskTypeLabel: task.taskType ? taskTypeLabels[task.taskType] : 'Task',
-  title: task.title || 'Task',
-  updatedAt: task.updatedAt || null,
-});
+const publicTask = (task: DocumentRecord) => {
+  const taskState = task.taskState || 'open';
+  const canDismiss = isClearableTask(task) && activeTaskStates.includes(taskState);
+
+  return {
+    actionLabel: task.actionLabel || 'Review task',
+    actionPath: task.actionPath || '/',
+    canAcknowledge: taskState === 'open',
+    canClear: canDismiss,
+    canDismiss,
+    createdAt: task.createdAt || null,
+    documentId: getDocumentId(task) || '',
+    lastDetectedAt: task.lastDetectedAt || null,
+    priority: task.priority || 'normal',
+    relatedDocumentId: task.relatedDocumentId || null,
+    relatedType: task.relatedType || null,
+    sourceDocumentId: task.sourceDocumentId || null,
+    sourceType: task.sourceType || null,
+    summary: task.summary || '',
+    taskKey: task.taskKey || '',
+    taskState,
+    taskType: task.taskType || 'system_alert',
+    taskTypeLabel: task.taskType ? taskTypeLabels[task.taskType] : 'Task',
+    title: task.title || 'Task',
+    updatedAt: task.updatedAt || null,
+  };
+};
 
 const publicTaskDetail = (task: DocumentRecord) => ({
   ...publicTask(task),
@@ -777,14 +797,19 @@ const compareTasks = (left: DocumentRecord, right: DocumentRecord) => {
   );
 };
 
-const taskCounts = (tasks: ReturnType<typeof publicTask>[]) => ({
-  criticalEvents: tasks.filter((task) => task.taskType === 'system_alert').length,
-  notificationFailures: tasks.filter((task) => task.taskType === 'notification_failure').length,
-  paymentChecks: tasks.filter((task) =>
-    ['payment_review', 'refund_review'].includes(task.taskType)
-  ).length,
-  totalOpenTasks: tasks.length,
-});
+const taskCounts = (tasks: ReturnType<typeof publicTask>[]) => {
+  const totalActiveTasks = tasks.length;
+
+  return {
+    criticalEvents: tasks.filter((task) => task.taskType === 'system_alert').length,
+    notificationFailures: tasks.filter((task) => task.taskType === 'notification_failure').length,
+    paymentChecks: tasks.filter((task) =>
+      ['payment_review', 'refund_review'].includes(task.taskType)
+    ).length,
+    totalActiveTasks,
+    totalOpenTasks: totalActiveTasks,
+  };
+};
 
 const syncTasks = async (strapi: StrapiDocumentService) => {
   const detectedAt = new Date().toISOString();
@@ -796,7 +821,9 @@ const syncTasks = async (strapi: StrapiDocumentService) => {
 
   const openTasks = await documents(strapi, 'api::admin-task.admin-task').findMany({
     filters: {
-      taskState: 'open',
+      taskState: {
+        $in: activeTaskStates,
+      },
       taskType: {
         $in: monitoredTaskTypes,
       },
@@ -839,8 +866,8 @@ export default factories.createCoreService('api::admin-task.admin-task', ({ stra
     };
   },
 
-  async clearTask(input: unknown, requestContext: RequestContext = {}) {
-    const body = validateTaskAction(input);
+  async updateTaskState(input: unknown, requestContext: RequestContext = {}) {
+    const body = validateTaskStateAction(input);
 
     await assertOperationsSession(strapi, body.sessionToken, requestContext);
 
@@ -850,11 +877,39 @@ export default factories.createCoreService('api::admin-task.admin-task', ({ stra
       throw new ValidationError('Admin task could not be found.');
     }
 
-    if (!isClearableTask(task)) {
-      throw new ValidationError('This task type cannot be cleared from Timely Tasks.');
+    const currentTaskState = task.taskState || 'open';
+
+    if (!activeTaskStates.includes(currentTaskState)) {
+      throw new ValidationError('Only active tasks can be updated.');
     }
 
-    const clearedTask = await documents(strapi, 'api::admin-task.admin-task').update({
+    if (body.taskState === 'acknowledged') {
+      if (currentTaskState === 'acknowledged') {
+        return {
+          task: publicTaskDetail(task),
+          updated: false,
+        };
+      }
+
+      const acknowledgedTask = await documents(strapi, 'api::admin-task.admin-task').update({
+        documentId: task.documentId,
+        data: {
+          resolvedAt: null,
+          taskState: 'acknowledged',
+        },
+      });
+
+      return {
+        task: publicTaskDetail(acknowledgedTask),
+        updated: true,
+      };
+    }
+
+    if (!isClearableTask(task)) {
+      throw new ValidationError('Only clearable event tasks can be dismissed from Timely Tasks.');
+    }
+
+    const dismissedTask = await documents(strapi, 'api::admin-task.admin-task').update({
       documentId: task.documentId,
       data: {
         resolvedAt: new Date().toISOString(),
@@ -863,8 +918,24 @@ export default factories.createCoreService('api::admin-task.admin-task', ({ stra
     });
 
     return {
+      task: publicTaskDetail(dismissedTask),
+      updated: true,
+    };
+  },
+
+  async clearTask(input: unknown, requestContext: RequestContext = {}) {
+    const body = validateTaskAction(input);
+    const result = await this.updateTaskState(
+      {
+        ...body,
+        taskState: 'dismissed',
+      },
+      requestContext
+    );
+
+    return {
       cleared: true,
-      task: publicTaskDetail(clearedTask),
+      task: result.task,
     };
   },
 }));
