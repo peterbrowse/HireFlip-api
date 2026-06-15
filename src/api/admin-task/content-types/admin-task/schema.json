@@ -1,0 +1,108 @@
+{
+  "kind": "collectionType",
+  "collectionName": "admin_tasks",
+  "info": {
+    "singularName": "admin-task",
+    "pluralName": "admin-tasks",
+    "displayName": "Admin Task",
+    "description": "Operational tasks surfaced in the custom admin dashboard."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "taskKey": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 220,
+      "required": true,
+      "unique": true
+    },
+    "taskType": {
+      "type": "enumeration",
+      "enum": [
+        "payment_review",
+        "refund_review",
+        "notification_failure",
+        "system_alert"
+      ],
+      "required": true
+    },
+    "status": {
+      "type": "enumeration",
+      "enum": [
+        "open",
+        "acknowledged",
+        "resolved",
+        "dismissed"
+      ],
+      "default": "open",
+      "required": true
+    },
+    "priority": {
+      "type": "enumeration",
+      "enum": [
+        "low",
+        "normal",
+        "high",
+        "urgent"
+      ],
+      "default": "normal",
+      "required": true
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 180,
+      "required": true
+    },
+    "summary": {
+      "type": "text"
+    },
+    "sourceType": {
+      "type": "enumeration",
+      "enum": [
+        "payment",
+        "refund",
+        "reservation",
+        "enrollment",
+        "notification_event",
+        "audit_event"
+      ],
+      "required": true
+    },
+    "sourceDocumentId": {
+      "type": "string",
+      "maxLength": 160
+    },
+    "relatedType": {
+      "type": "string",
+      "maxLength": 120
+    },
+    "relatedDocumentId": {
+      "type": "string",
+      "maxLength": 160
+    },
+    "actionLabel": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "required": true
+    },
+    "actionPath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "required": true
+    },
+    "lastDetectedAt": {
+      "type": "datetime"
+    },
+    "resolvedAt": {
+      "type": "datetime"
+    },
+    "metadata": {
+      "type": "json"
+    }
+  }
+}

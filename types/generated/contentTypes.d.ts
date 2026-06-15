@@ -440,6 +440,105 @@ export interface AdminUser extends Struct.CollectionTypeSchema {
   };
 }
 
+export interface ApiAdminTaskAdminTask extends Struct.CollectionTypeSchema {
+  collectionName: 'admin_tasks';
+  info: {
+    description: 'Operational tasks surfaced in the custom admin dashboard.';
+    displayName: 'Admin Task';
+    pluralName: 'admin-tasks';
+    singularName: 'admin-task';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    actionLabel: Schema.Attribute.String &
+      Schema.Attribute.Required &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 80;
+        minLength: 1;
+      }>;
+    actionPath: Schema.Attribute.String &
+      Schema.Attribute.Required &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 500;
+        minLength: 1;
+      }>;
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    lastDetectedAt: Schema.Attribute.DateTime;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::admin-task.admin-task'
+    > &
+      Schema.Attribute.Private;
+    metadata: Schema.Attribute.JSON;
+    priority: Schema.Attribute.Enumeration<
+      ['low', 'normal', 'high', 'urgent']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'normal'>;
+    publishedAt: Schema.Attribute.DateTime;
+    relatedDocumentId: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 160;
+      }>;
+    relatedType: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 120;
+      }>;
+    resolvedAt: Schema.Attribute.DateTime;
+    sourceDocumentId: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 160;
+      }>;
+    sourceType: Schema.Attribute.Enumeration<
+      [
+        'payment',
+        'refund',
+        'reservation',
+        'enrollment',
+        'notification_event',
+        'audit_event',
+      ]
+    > &
+      Schema.Attribute.Required;
+    status: Schema.Attribute.Enumeration<
+      ['open', 'acknowledged', 'resolved', 'dismissed']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'open'>;
+    summary: Schema.Attribute.Text;
+    taskKey: Schema.Attribute.String &
+      Schema.Attribute.Required &
+      Schema.Attribute.Unique &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 220;
+        minLength: 1;
+      }>;
+    taskType: Schema.Attribute.Enumeration<
+      [
+        'payment_review',
+        'refund_review',
+        'notification_failure',
+        'system_alert',
+      ]
+    > &
+      Schema.Attribute.Required;
+    title: Schema.Attribute.String &
+      Schema.Attribute.Required &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 180;
+        minLength: 1;
+      }>;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+  };
+}
+
 export interface ApiAnswerSubmissionAnswerSubmission
   extends Struct.CollectionTypeSchema {
   collectionName: 'answer_submissions';
@@ -3746,6 +3845,7 @@ declare module '@strapi/strapi' {
       'admin::transfer-token': AdminTransferToken;
       'admin::transfer-token-permission': AdminTransferTokenPermission;
       'admin::user': AdminUser;
+      'api::admin-task.admin-task': ApiAdminTaskAdminTask;
       'api::answer-submission.answer-submission': ApiAnswerSubmissionAnswerSubmission;
       'api::assessment-appeal.assessment-appeal': ApiAssessmentAppealAssessmentAppeal;
       'api::audit-event.audit-event': ApiAuditEventAuditEvent;
