@@ -203,7 +203,7 @@ const monitoredTaskTypes: AdminTaskType[] = [
   'notification_failure',
   'system_alert',
 ];
-const activeTaskStates: AdminTaskState[] = ['acknowledged', 'open'];
+const activeTaskStates: AdminTaskState[] = ['open'];
 const clearableTaskTypes = new Set<AdminTaskType>(['notification_failure', 'system_alert']);
 const isClearableTask = (task?: Pick<DocumentRecord, 'taskType'> | null) =>
   Boolean(task?.taskType && clearableTaskTypes.has(task.taskType));
@@ -244,11 +244,7 @@ const findExistingTask = async (strapi: StrapiDocumentService, taskKey: string) 
   return tasks[0];
 };
 
-const taskData = (
-  draft: AdminTaskDraft,
-  detectedAt: string,
-  existingTaskState: AdminTaskState = 'open'
-) => ({
+const taskData = (draft: AdminTaskDraft, detectedAt: string) => ({
   actionLabel: draft.actionLabel,
   actionPath: draft.actionPath,
   lastDetectedAt:
@@ -264,7 +260,7 @@ const taskData = (
   sourceType: draft.sourceType,
   summary: draft.summary,
   taskKey: draft.taskKey,
-  taskState: existingTaskState === 'acknowledged' ? 'acknowledged' : 'open',
+  taskState: 'open',
   taskType: draft.taskType,
   title: draft.title,
 });
@@ -276,14 +272,17 @@ const upsertTask = async (
 ) => {
   const existingTask = await findExistingTask(strapi, draft.taskKey);
 
-  if (existingTask?.taskState === 'dismissed' && isClearableTask(existingTask)) {
+  if (
+    ['acknowledged', 'dismissed'].includes(existingTask?.taskState || '') &&
+    isClearableTask(existingTask)
+  ) {
     return existingTask;
   }
 
   if (existingTask?.documentId) {
     return documents(strapi, 'api::admin-task.admin-task').update({
       documentId: existingTask.documentId,
-      data: taskData(draft, detectedAt, existingTask.taskState),
+      data: taskData(draft, detectedAt),
     });
   }
 
@@ -752,14 +751,12 @@ const collectTaskDrafts = async (strapi: StrapiDocumentService) => {
 
 const publicTask = (task: DocumentRecord) => {
   const taskState = task.taskState || 'open';
-  const canDismiss = isClearableTask(task) && activeTaskStates.includes(taskState);
+  const canAcknowledge = isClearableTask(task) && taskState === 'open';
 
   return {
     actionLabel: task.actionLabel || 'Review task',
     actionPath: task.actionPath || '/',
-    canAcknowledge: taskState === 'open',
-    canClear: canDismiss,
-    canDismiss,
+    canAcknowledge,
     createdAt: task.createdAt || null,
     documentId: getDocumentId(task) || '',
     lastDetectedAt: task.lastDetectedAt || null,
@@ -884,17 +881,16 @@ export default factories.createCoreService('api::admin-task.admin-task', ({ stra
     }
 
     if (body.taskState === 'acknowledged') {
-      if (currentTaskState === 'acknowledged') {
-        return {
-          task: publicTaskDetail(task),
-          updated: false,
-        };
+      if (!isClearableTask(task)) {
+        throw new ValidationError(
+          'Only clearable event tasks can be acknowledged from Timely Tasks.'
+        );
       }
 
       const acknowledgedTask = await documents(strapi, 'api::admin-task.admin-task').update({
         documentId: task.documentId,
         data: {
-          resolvedAt: null,
+          resolvedAt: new Date().toISOString(),
           taskState: 'acknowledged',
         },
       });
