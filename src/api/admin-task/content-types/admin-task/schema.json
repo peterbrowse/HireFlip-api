@@ -28,7 +28,7 @@
       ],
       "required": true
     },
-    "status": {
+    "taskState": {
       "type": "enumeration",
       "enum": [
         "open",

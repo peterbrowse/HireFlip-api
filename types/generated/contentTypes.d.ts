@@ -505,11 +505,6 @@ export interface ApiAdminTaskAdminTask extends Struct.CollectionTypeSchema {
       ]
     > &
       Schema.Attribute.Required;
-    status: Schema.Attribute.Enumeration<
-      ['open', 'acknowledged', 'resolved', 'dismissed']
-    > &
-      Schema.Attribute.Required &
-      Schema.Attribute.DefaultTo<'open'>;
     summary: Schema.Attribute.Text;
     taskKey: Schema.Attribute.String &
       Schema.Attribute.Required &
@@ -518,6 +513,11 @@ export interface ApiAdminTaskAdminTask extends Struct.CollectionTypeSchema {
         maxLength: 220;
         minLength: 1;
       }>;
+    taskState: Schema.Attribute.Enumeration<
+      ['open', 'acknowledged', 'resolved', 'dismissed']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'open'>;
     taskType: Schema.Attribute.Enumeration<
       [
         'payment_review',

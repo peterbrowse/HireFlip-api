@@ -62,12 +62,12 @@ type DocumentRecord = Record<string, unknown> & {
   severity?: string;
   sourceDocumentId?: string;
   sourceType?: AdminTaskSourceType;
-  status?: AdminTaskStatus;
   subjectDisplayName?: string;
   subjectId?: string;
   subjectType?: string;
   summary?: string;
   taskKey?: string;
+  taskState?: AdminTaskState;
   taskType?: AdminTaskType;
   templateKey?: string;
   title?: string;
@@ -93,7 +93,7 @@ type AdminTaskSourceType =
   | 'payment'
   | 'refund'
   | 'reservation';
-type AdminTaskStatus = 'acknowledged' | 'dismissed' | 'open' | 'resolved';
+type AdminTaskState = 'acknowledged' | 'dismissed' | 'open' | 'resolved';
 type AdminTaskType = 'notification_failure' | 'payment_review' | 'refund_review' | 'system_alert';
 
 type AdminTaskDraft = {
@@ -251,9 +251,9 @@ const taskData = (draft: AdminTaskDraft, detectedAt: string) => ({
   resolvedAt: null,
   sourceDocumentId: draft.sourceDocumentId,
   sourceType: draft.sourceType,
-  status: 'open',
   summary: draft.summary,
   taskKey: draft.taskKey,
+  taskState: 'open',
   taskType: draft.taskType,
   title: draft.title,
 });
@@ -265,7 +265,7 @@ const upsertTask = async (
 ) => {
   const existingTask = await findExistingTask(strapi, draft.taskKey);
 
-  if (existingTask?.status === 'dismissed' && isClearableTask(existingTask)) {
+  if (existingTask?.taskState === 'dismissed' && isClearableTask(existingTask)) {
     return existingTask;
   }
 
@@ -288,7 +288,7 @@ const resolveStaleTasks = async (
 ) => {
   const openTasks = await documents(strapi, 'api::admin-task.admin-task').findMany({
     filters: {
-      status: 'open',
+      taskState: 'open',
       taskType: {
         $in: monitoredTaskTypes,
       },
@@ -305,7 +305,7 @@ const resolveStaleTasks = async (
               documentId: task.documentId,
               data: {
                 resolvedAt,
-                status: 'resolved',
+                taskState: 'resolved',
               },
             })
           : Promise.resolve(task)
@@ -740,7 +740,7 @@ const collectTaskDrafts = async (strapi: StrapiDocumentService) => {
 const publicTask = (task: DocumentRecord) => ({
   actionLabel: task.actionLabel || 'Review task',
   actionPath: task.actionPath || '/',
-  canClear: isClearableTask(task) && ['acknowledged', 'open'].includes(task.status || 'open'),
+  canClear: isClearableTask(task) && ['acknowledged', 'open'].includes(task.taskState || 'open'),
   createdAt: task.createdAt || null,
   documentId: getDocumentId(task) || '',
   lastDetectedAt: task.lastDetectedAt || null,
@@ -749,9 +749,9 @@ const publicTask = (task: DocumentRecord) => ({
   relatedType: task.relatedType || null,
   sourceDocumentId: task.sourceDocumentId || null,
   sourceType: task.sourceType || null,
-  status: task.status || 'open',
   summary: task.summary || '',
   taskKey: task.taskKey || '',
+  taskState: task.taskState || 'open',
   taskType: task.taskType || 'system_alert',
   taskTypeLabel: task.taskType ? taskTypeLabels[task.taskType] : 'Task',
   title: task.title || 'Task',
@@ -796,7 +796,7 @@ const syncTasks = async (strapi: StrapiDocumentService) => {
 
   const openTasks = await documents(strapi, 'api::admin-task.admin-task').findMany({
     filters: {
-      status: 'open',
+      taskState: 'open',
       taskType: {
         $in: monitoredTaskTypes,
       },
@@ -858,7 +858,7 @@ export default factories.createCoreService('api::admin-task.admin-task', ({ stra
       documentId: task.documentId,
       data: {
         resolvedAt: new Date().toISOString(),
-        status: 'dismissed',
+        taskState: 'dismissed',
       },
     });
 
