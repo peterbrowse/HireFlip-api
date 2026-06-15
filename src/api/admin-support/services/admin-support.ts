@@ -1,7 +1,7 @@
 import { errors, validateZodSchema, z } from '@strapi/utils';
 import { publishAdminRealtimeEvent } from '../../../utils/admin-realtime-events';
 
-const { ForbiddenError } = errors;
+const { ForbiddenError, ValidationError } = errors;
 
 type RequestContext = {
   ipAddress?: string;
@@ -18,6 +18,19 @@ type AdminSession = {
     roleKeys: string[];
     roles: string[];
   };
+};
+
+type AdminRoleKey = 'admin' | 'sales' | 'super_admin' | 'support';
+
+type AdminUser = Record<string, unknown> & {
+  blocked?: boolean;
+  email?: string;
+  firstname?: string;
+  id?: number | string;
+  isActive?: boolean;
+  lastname?: string;
+  roles?: Array<Record<string, unknown>>;
+  username?: string;
 };
 
 type AdminAuthService = {
@@ -66,7 +79,15 @@ type DocumentCollection = {
   findMany(input: Record<string, unknown>): Promise<DocumentRecord[]>;
 };
 
+type StrapiQuery = {
+  findMany(input: Record<string, unknown>): Promise<AdminUser[]>;
+  findOne(input: Record<string, unknown>): Promise<AdminUser | null>;
+};
+
 type StrapiService = {
+  db: {
+    query(uid: string): StrapiQuery;
+  };
   documents(uid: string): unknown;
   service(uid: string): unknown;
 };
@@ -97,18 +118,32 @@ const caseDetailSchema = z
     supportCaseDocumentId: z.string().trim().min(1).max(120),
   })
   .strict();
+const assignableStaffSchema = z
+  .object({
+    sessionToken: z.string().trim().min(32).max(512),
+  })
+  .strict();
 const assignCaseSchema = z
   .object({
-    assignedTo: z.object({
-      displayName: z.string().trim().min(1).max(240),
-      email: z.string().trim().email().max(254),
-      id: z.string().trim().min(1).max(160),
-      roleKey: z.enum(['admin', 'sales', 'super_admin', 'support']).optional(),
-    }),
+    assignedTo: z
+      .object({
+        displayName: z.string().trim().min(1).max(240),
+        email: z.string().trim().email().max(254),
+        id: z.string().trim().min(1).max(160),
+        roleKey: z.enum(['admin', 'sales', 'super_admin', 'support']).optional(),
+      })
+      .optional(),
+    assignedToStaffUserId: z
+      .union([z.number().int().positive(), z.string().trim().min(1).max(160)])
+      .optional(),
+    reviewClaimToken: z.string().trim().min(32).max(160).optional(),
     sessionToken: z.string().trim().min(32).max(512),
     supportCaseDocumentId: z.string().trim().min(1).max(120),
   })
-  .strict();
+  .strict()
+  .refine((value) => Boolean(value.assignedTo || value.assignedToStaffUserId), {
+    message: 'Assigned staff user is required.',
+  });
 const messageCaseSchema = z
   .object({
     body: z.string().trim().min(1).max(12000),
@@ -120,6 +155,7 @@ const messageCaseSchema = z
 
 const validateListCases = validateZodSchema(listCasesSchema);
 const validateCaseDetail = validateZodSchema(caseDetailSchema);
+const validateAssignableStaff = validateZodSchema(assignableStaffSchema);
 const validateAssignCase = validateZodSchema(assignCaseSchema);
 const validateMessageCase = validateZodSchema(messageCaseSchema);
 
@@ -134,6 +170,8 @@ const supportCaseService = (strapi: StrapiService) =>
 
 const documents = (strapi: StrapiService, uid: string) =>
   strapi.documents(uid) as unknown as DocumentCollection;
+
+const assignableRoleKeys = new Set<AdminRoleKey>(['admin', 'super_admin', 'support']);
 
 const trimTrailingSlash = (value: string) => value.replace(/\/+$/, '');
 
@@ -155,6 +193,127 @@ const objectValue = (value: unknown) =>
   value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+
+const normalizeRole = (value: unknown) =>
+  typeof value === 'string'
+    ? value.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')
+    : '';
+
+const roleKeyFromRole = (role: Record<string, unknown>): AdminRoleKey | undefined => {
+  const name = normalizeRole(role.name);
+  const code = normalizeRole(role.code);
+  const type = normalizeRole(role.type);
+  const values = new Set([name, code, type]);
+
+  if (values.has('super_admin') || values.has('strapi_super_admin')) {
+    return 'super_admin';
+  }
+
+  if (values.has('admin') || values.has('hireflip_admin')) {
+    return 'admin';
+  }
+
+  if (values.has('sales') || values.has('hireflip_sales')) {
+    return 'sales';
+  }
+
+  if (values.has('support') || values.has('hireflip_support')) {
+    return 'support';
+  }
+
+  return undefined;
+};
+
+const roleLabel = (roleKey: AdminRoleKey) => {
+  if (roleKey === 'super_admin') {
+    return 'Super Admin';
+  }
+
+  return `${roleKey.charAt(0).toUpperCase()}${roleKey.slice(1)}`;
+};
+
+const staffDisplayName = (user: AdminUser) => {
+  const firstName = typeof user.firstname === 'string' ? user.firstname.trim() : '';
+  const lastName = typeof user.lastname === 'string' ? user.lastname.trim() : '';
+  const fullName = `${firstName} ${lastName}`.trim();
+
+  return fullName || String(user.username || user.email || 'Staff user');
+};
+
+const assignableStaffPayload = (user: AdminUser) => {
+  if (!user.id || !user.email || !user.isActive || user.blocked) {
+    return null;
+  }
+
+  const roleKeys = Array.from(
+    new Set((user.roles || []).map(roleKeyFromRole).filter(Boolean) as AdminRoleKey[])
+  );
+  const primaryAssignableRole = roleKeys.find((roleKey) => assignableRoleKeys.has(roleKey));
+
+  if (!primaryAssignableRole) {
+    return null;
+  }
+
+  return {
+    displayName: staffDisplayName(user),
+    email: user.email,
+    id: String(user.id),
+    roleKey: primaryAssignableRole,
+    roleKeys,
+    roles: roleKeys.map(roleLabel),
+  };
+};
+
+const compareStaffUsers = (
+  left: NonNullable<ReturnType<typeof assignableStaffPayload>>,
+  right: NonNullable<ReturnType<typeof assignableStaffPayload>>
+) => {
+  const collator = new Intl.Collator('en-GB', {
+    numeric: true,
+    sensitivity: 'base',
+  });
+
+  return collator.compare(left.displayName || left.email, right.displayName || right.email);
+};
+
+const listAssignableStaffUsers = async (strapi: StrapiService) => {
+  const users = await strapi.db.query('admin::user').findMany({
+    orderBy: [
+      {
+        firstname: 'asc',
+      },
+      {
+        lastname: 'asc',
+      },
+      {
+        email: 'asc',
+      },
+    ],
+    populate: ['roles'],
+    where: {
+      blocked: false,
+      isActive: true,
+    },
+  });
+
+  return users
+    .map(assignableStaffPayload)
+    .filter((user): user is NonNullable<ReturnType<typeof assignableStaffPayload>> =>
+      Boolean(user)
+    )
+    .sort(compareStaffUsers);
+};
+
+const findAssignableStaffUser = async (strapi: StrapiService, staffUserId: string | number) => {
+  const user = await strapi.db.query('admin::user').findOne({
+    populate: ['roles'],
+    where: {
+      id: staffUserId,
+    },
+  });
+
+  return user ? assignableStaffPayload(user) : null;
+};
 
 const getDocumentId = (record?: DocumentRecord | null) => {
   if (!record) {
@@ -477,6 +636,21 @@ const publishSupportChange = (strapi: StrapiService, supportCaseDocumentId?: str
   );
 
 export default ({ strapi }: { strapi: StrapiService }) => ({
+  async listAssignableStaff(input: unknown, requestContext: RequestContext = {}) {
+    const body = validateAssignableStaff(input);
+    const session = await assertSupportSession(strapi, body.sessionToken, requestContext);
+    const staffUsers = await listAssignableStaffUsers(strapi);
+
+    return {
+      counts: {
+        total: staffUsers.length,
+      },
+      generatedAt: new Date().toISOString(),
+      staffUsers,
+      user: session.user,
+    };
+  },
+
   async listCases(input: unknown, requestContext: RequestContext = {}) {
     const body = validateListCases(input);
     const session = await assertSupportSession(strapi, body.sessionToken, requestContext);
@@ -529,16 +703,43 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
   async assignCase(input: unknown, requestContext: RequestContext = {}) {
     const body = validateAssignCase(input);
     const session = await assertSupportSession(strapi, body.sessionToken, requestContext);
+    const supportCaseRecord = await findSupportCaseRecord(strapi, body.supportCaseDocumentId);
+    const assignedTo = body.assignedTo || (body.assignedToStaffUserId
+      ? await findAssignableStaffUser(strapi, body.assignedToStaffUserId)
+      : null);
+
+    if (!supportCaseRecord) {
+      throw new ValidationError('Support case could not be found.');
+    }
+
+    if (!assignedTo) {
+      throw new ValidationError('Assigned staff user could not be found.');
+    }
+
+    if (assignedTo.roleKey && !assignableRoleKeys.has(assignedTo.roleKey)) {
+      throw new ValidationError('Assigned staff user cannot own support cases.');
+    }
+
+    await reviewClaimService(strapi).assertActiveClaimForSession(
+      {
+        claimToken: body.reviewClaimToken,
+        resourceDocumentId: body.supportCaseDocumentId,
+        resourceKey: body.supportCaseDocumentId,
+        resourceLabel: supportCaseRecord.title,
+        resourceType: 'support_case',
+      },
+      session
+    );
+
     const supportCase = await supportCaseService(strapi).assignCase({
-      assignedTo: body.assignedTo,
+      assignedTo,
       metadata: {
         assignedByAdminEmail: session.user.email,
         assignedByAdminId: session.user.id,
       },
-      supportCase: {
-        documentId: body.supportCaseDocumentId,
-      },
+      supportCase: supportCaseRecord,
     });
+    await publishSupportChange(strapi, body.supportCaseDocumentId);
 
     return {
       assigned: true,

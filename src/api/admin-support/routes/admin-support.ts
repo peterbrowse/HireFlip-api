@@ -27,6 +27,15 @@ export default {
     },
     {
       method: 'POST',
+      path: '/internal/admin/support/assignable-staff',
+      handler: 'admin-support.assignableStaff',
+      config: {
+        auth: false,
+        policies: [adminDashboardServicePolicy],
+      },
+    },
+    {
+      method: 'POST',
       path: '/internal/admin/support/cases/assign',
       handler: 'admin-support.assign',
       config: {

@@ -82,6 +82,7 @@ type DocumentRecord = Record<string, unknown> & {
   introCopy?: string;
   lastName?: string;
   level?: string;
+  lastMessageAt?: string;
   marketingConsentCapturedAt?: string;
   marketingConsentState?: string;
   marketingConsentWordingVersion?: string;
@@ -90,6 +91,10 @@ type DocumentRecord = Record<string, unknown> & {
   notificationPreferences?: unknown;
   offerState?: string;
   offeredAt?: string;
+  ownerRoleKey?: string;
+  ownerStaffDisplayName?: string;
+  ownerStaffEmail?: string;
+  ownerStaffUserId?: string;
   passStatus?: string;
   paidAt?: string;
   paymentState?: string;
@@ -1974,6 +1979,143 @@ const htmlEscape = (value: string) =>
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+
+const adminDashboardSupportCaseUrl = (supportCaseDocumentId: string) =>
+  `${trimTrailingSlash(process.env.ADMIN_DASHBOARD_PUBLIC_URL || 'http://localhost:3003')}/support/${encodeURIComponent(supportCaseDocumentId)}`;
+
+const findSupportCaseRecordForCandidate = async ({
+  candidateDocumentId,
+  strapi,
+  supportCaseDocumentId,
+}: {
+  candidateDocumentId: string;
+  strapi: StrapiDocumentService;
+  supportCaseDocumentId: string;
+}) => {
+  const cases = await documents(strapi, 'api::support-case.support-case').findMany({
+    filters: {
+      candidate: {
+        documentId: candidateDocumentId,
+      },
+      documentId: supportCaseDocumentId,
+    },
+    limit: 1,
+    populate: ['candidate', 'refund', 'payment', 'enrollment'],
+  });
+
+  return cases[0];
+};
+
+const buildAssignedOwnerSupportEmail = ({
+  candidate,
+  supportCase,
+}: {
+  candidate: DocumentRecord;
+  supportCase: DocumentRecord;
+}) => {
+  const supportCaseDocumentId = String(supportCase.documentId);
+  const url = adminDashboardSupportCaseUrl(supportCaseDocumentId);
+  const ownerName =
+    typeof supportCase.ownerStaffDisplayName === 'string' && supportCase.ownerStaffDisplayName.trim()
+      ? supportCase.ownerStaffDisplayName.trim().split(/\s+/)[0]
+      : 'there';
+  const candidateName = candidateMessageDisplayName(candidate);
+  const caseTitle = typeof supportCase.title === 'string' && supportCase.title.trim()
+    ? supportCase.title.trim()
+    : 'Support case';
+
+  return {
+    html: [
+      `<p>Hi ${htmlEscape(ownerName)},</p>`,
+      `<p>${htmlEscape(candidateName)} has replied to an assigned support case.</p>`,
+      `<p><strong>${htmlEscape(caseTitle)}</strong></p>`,
+      `<p><a href="${htmlEscape(url)}">Open the support case</a></p>`,
+      '<p>HireFlip</p>',
+    ].join(''),
+    subject: 'New reply on an assigned HireFlip support case',
+    text: [
+      `Hi ${ownerName},`,
+      '',
+      `${candidateName} has replied to an assigned support case.`,
+      '',
+      caseTitle,
+      '',
+      `Open the support case: ${url}`,
+      '',
+      'HireFlip',
+    ].join('\n'),
+    url,
+  };
+};
+
+const queueAssignedOwnerSupportNotification = async ({
+  candidate,
+  requestContext,
+  strapi,
+  supportCase,
+}: {
+  candidate: DocumentRecord;
+  requestContext: RequestContext;
+  strapi: StrapiDocumentService;
+  supportCase: DocumentRecord;
+}) => {
+  const supportCaseDocumentId = supportCase.documentId;
+
+  if (!supportCaseDocumentId || !supportCase.ownerStaffEmail) {
+    return {
+      emailQueued: false,
+    };
+  }
+
+  try {
+    const content = buildAssignedOwnerSupportEmail({ candidate, supportCase });
+    const emailQueueResult = await requestNotificationServiceEmail({
+      correlationId: supportCaseDocumentId,
+      html: content.html,
+      subject: content.subject,
+      text: content.text,
+      to: supportCase.ownerStaffEmail,
+      type: 'admin_support_case_candidate_reply',
+    });
+    const emailQueued = emailQueueResult?.data?.queued === true;
+
+    await documents(strapi, 'api::notification-event.notification-event').create({
+      data: {
+        channel: 'email',
+        deliveryState: emailQueued ? 'queued' : 'failed',
+        eventType: 'admin.support_case_candidate_reply',
+        metadata: {
+          candidateDocumentId: candidate.documentId,
+          notificationServiceJobId:
+            typeof emailQueueResult?.data?.jobId === 'string'
+              ? emailQueueResult.data.jobId
+              : undefined,
+          ownerStaffUserId: supportCase.ownerStaffUserId,
+          requestId: requestContext.requestId,
+          supportCaseDocumentId,
+          url: content.url,
+        },
+        priority: 'normal',
+        recipientEmail: supportCase.ownerStaffEmail,
+        recipientId: supportCase.ownerStaffUserId,
+        recipientType: 'admin',
+        relatedId: supportCaseDocumentId,
+        relatedType: 'support_case',
+        templateKey: 'admin_support_case_candidate_reply',
+      },
+    });
+
+    return {
+      emailQueued,
+    };
+  } catch (error) {
+    strapi.log?.error?.('Assigned support owner notification failed.', error);
+
+    return {
+      emailQueued: false,
+    };
+  }
+};
 
 const splitPolicyBodyIntoParagraphs = (body?: string) =>
   (body || '')
@@ -4163,8 +4305,9 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
     }
 
     const payload = validateSupportCaseReply(input ?? {});
-    const existingCase = await supportCaseService(strapi).getCaseForCandidate({
+    const existingCase = await findSupportCaseRecordForCandidate({
       candidateDocumentId: existingCandidate.documentId,
+      strapi,
       supportCaseDocumentId,
     });
 
@@ -4198,6 +4341,12 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
         documentId: supportCaseDocumentId,
       },
     });
+    const ownerNotificationResult = await queueAssignedOwnerSupportNotification({
+      candidate: existingCandidate,
+      requestContext,
+      strapi,
+      supportCase: existingCase,
+    });
     await auditEvents(strapi).record({
       actorEmail: existingCandidate.email,
       actorId: auth.subject,
@@ -4206,6 +4355,8 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       eventType: 'candidate.support_case_replied',
       ipAddress: requestContext.ipAddress,
       metadata: {
+        assignedOwnerNotificationQueued: ownerNotificationResult.emailQueued,
+        ownerStaffUserId: existingCase.ownerStaffUserId,
         messageDocumentId: message.documentId,
         supportCaseDocumentId,
       },
