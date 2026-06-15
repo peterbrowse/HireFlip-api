@@ -29,6 +29,31 @@ const getRequestContext = (ctx): RequestContext => ({
   userAgent: ctx.request.get('x-hireflip-client-user-agent') || ctx.request.get('user-agent'),
 });
 
+const isConflictError = (error: unknown) =>
+  Boolean(error && typeof error === 'object' && 'status' in error && error.status === 409);
+
+const writeResult = async (ctx, action: () => Promise<unknown>) => {
+  try {
+    ctx.body = {
+      data: await action(),
+    };
+  } catch (error) {
+    if (isConflictError(error)) {
+      ctx.status = 409;
+      ctx.body = {
+        error: {
+          message: error instanceof Error ? error.message : 'Review claim conflict.',
+          name: 'ReviewClaimConflictError',
+          status: 409,
+        },
+      };
+      return;
+    }
+
+    throw error;
+  }
+};
+
 export default ({ strapi }) => ({
   async list(ctx) {
     const result = await adminSupportService(strapi).listCases(
@@ -64,24 +89,14 @@ export default ({ strapi }) => ({
   },
 
   async reply(ctx) {
-    const result = await adminSupportService(strapi).replyToCase(
-      ctx.request.body,
-      getRequestContext(ctx)
+    await writeResult(ctx, () =>
+      adminSupportService(strapi).replyToCase(ctx.request.body, getRequestContext(ctx))
     );
-
-    ctx.body = {
-      data: result,
-    };
   },
 
   async note(ctx) {
-    const result = await adminSupportService(strapi).addInternalNote(
-      ctx.request.body,
-      getRequestContext(ctx)
+    await writeResult(ctx, () =>
+      adminSupportService(strapi).addInternalNote(ctx.request.body, getRequestContext(ctx))
     );
-
-    ctx.body = {
-      data: result,
-    };
   },
 });

@@ -1,4 +1,5 @@
 import { errors, validateZodSchema, z } from '@strapi/utils';
+import { publishAdminRealtimeEvent } from '../../../utils/admin-realtime-events';
 
 const { ForbiddenError } = errors;
 
@@ -21,6 +22,15 @@ type AdminSession = {
 
 type AdminAuthService = {
   getSession(input: unknown, context: RequestContext): Promise<AdminSession>;
+};
+
+type AdminReviewClaimService = {
+  assertActiveClaimForSession(input: unknown, session: AdminSession): Promise<unknown>;
+  claimForSession(
+    input: unknown,
+    session: AdminSession,
+    context: RequestContext
+  ): Promise<{ reviewClaim: unknown }>;
 };
 
 type SupportCaseService = {
@@ -102,6 +112,7 @@ const assignCaseSchema = z
 const messageCaseSchema = z
   .object({
     body: z.string().trim().min(1).max(12000),
+    reviewClaimToken: z.string().trim().min(32).max(160).optional(),
     sessionToken: z.string().trim().min(32).max(512),
     supportCaseDocumentId: z.string().trim().min(1).max(120),
   })
@@ -114,6 +125,9 @@ const validateMessageCase = validateZodSchema(messageCaseSchema);
 
 const adminAuthService = (strapi: StrapiService) =>
   strapi.service('api::admin-auth.admin-auth') as unknown as AdminAuthService;
+
+const reviewClaimService = (strapi: StrapiService) =>
+  strapi.service('api::admin-review-claim.admin-review-claim') as unknown as AdminReviewClaimService;
 
 const supportCaseService = (strapi: StrapiService) =>
   strapi.service('api::support-case.support-case') as unknown as SupportCaseService;
@@ -451,6 +465,17 @@ const assertSupportSession = async (
   return session;
 };
 
+const publishSupportChange = (strapi: StrapiService, supportCaseDocumentId?: string) =>
+  publishAdminRealtimeEvent(
+    {
+      channels: ['support'],
+      resourceKey: supportCaseDocumentId,
+      resourceType: 'support_case',
+      type: 'support_cases_changed',
+    },
+    (strapi as { log?: { error?: (message: string, error?: unknown) => void } }).log
+  );
+
 export default ({ strapi }: { strapi: StrapiService }) => ({
   async listCases(input: unknown, requestContext: RequestContext = {}) {
     const body = validateListCases(input);
@@ -477,9 +502,25 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
     const supportCase = await supportCaseService(strapi).getCase({
       supportCaseDocumentId: body.supportCaseDocumentId,
     });
+    const claimResult = supportCase
+      ? await reviewClaimService(strapi).claimForSession(
+          {
+            resourceDocumentId: body.supportCaseDocumentId,
+            resourceKey: body.supportCaseDocumentId,
+            resourceLabel:
+              typeof (supportCase as DocumentRecord).title === 'string'
+                ? (supportCase as DocumentRecord).title
+                : 'Support case',
+            resourceType: 'support_case',
+          },
+          session,
+          requestContext
+        )
+      : { reviewClaim: null };
 
     return {
       generatedAt: new Date().toISOString(),
+      reviewClaim: claimResult.reviewClaim,
       supportCase,
       user: session.user,
     };
@@ -514,6 +555,17 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
     if (!supportCaseRecord) {
       throw new ForbiddenError('Support case could not be found.');
     }
+
+    await reviewClaimService(strapi).assertActiveClaimForSession(
+      {
+        claimToken: body.reviewClaimToken,
+        resourceDocumentId: body.supportCaseDocumentId,
+        resourceKey: body.supportCaseDocumentId,
+        resourceLabel: supportCaseRecord.title,
+        resourceType: 'support_case',
+      },
+      session
+    );
 
     const notificationResult = await queueCandidateSupportPrompt({
       requestContext,
@@ -560,6 +612,7 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
     const supportCase = await supportCaseService(strapi).getCase({
       supportCaseDocumentId: body.supportCaseDocumentId,
     });
+    await publishSupportChange(strapi, body.supportCaseDocumentId);
 
     return {
       notificationQueued: notificationResult.emailQueued || notificationResult.smsQueued,
@@ -577,6 +630,17 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
     if (!supportCaseRecord) {
       throw new ForbiddenError('Support case could not be found.');
     }
+
+    await reviewClaimService(strapi).assertActiveClaimForSession(
+      {
+        claimToken: body.reviewClaimToken,
+        resourceDocumentId: body.supportCaseDocumentId,
+        resourceKey: body.supportCaseDocumentId,
+        resourceLabel: supportCaseRecord.title,
+        resourceType: 'support_case',
+      },
+      session
+    );
 
     await supportCaseService(strapi).addMessage({
       body: body.body,
@@ -598,6 +662,7 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
     const supportCase = await supportCaseService(strapi).getCase({
       supportCaseDocumentId: body.supportCaseDocumentId,
     });
+    await publishSupportChange(strapi, body.supportCaseDocumentId);
 
     return {
       noted: true,

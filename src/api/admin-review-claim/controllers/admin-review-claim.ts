@@ -5,16 +5,14 @@ type RequestContext = {
   userAgent?: string;
 };
 
-type AdminRefundService = {
-  escalateReview(input: unknown, context: RequestContext): Promise<unknown>;
-  executeReviewRefund(input: unknown, context: RequestContext): Promise<unknown>;
-  getReviewDetail(input: unknown, context: RequestContext): Promise<unknown>;
-  listReviews(input: unknown, context: RequestContext): Promise<unknown>;
-  refuseReview(input: unknown, context: RequestContext): Promise<unknown>;
+type AdminReviewClaimService = {
+  claim(input: unknown, context: RequestContext): Promise<unknown>;
+  heartbeat(input: unknown, context: RequestContext): Promise<unknown>;
+  release(input: unknown, context: RequestContext): Promise<unknown>;
 };
 
-const adminRefundService = (strapi: { service(uid: string): unknown }): AdminRefundService =>
-  strapi.service('api::admin-refund.admin-refund') as unknown as AdminRefundService;
+const adminReviewClaimService = (strapi: { service(uid: string): unknown }) =>
+  strapi.service('api::admin-review-claim.admin-review-claim') as unknown as AdminReviewClaimService;
 
 const getForwardedClientIp = (ctx) =>
   ctx.request.get('x-hireflip-client-ip') ||
@@ -55,43 +53,21 @@ const writeResult = async (ctx, action: () => Promise<unknown>) => {
 };
 
 export default ({ strapi }) => ({
-  async list(ctx) {
-    const result = await adminRefundService(strapi).listReviews(
-      ctx.request.body,
-      getRequestContext(ctx)
-    );
-
-    ctx.body = {
-      data: result,
-    };
-  },
-
-  async detail(ctx) {
-    const result = await adminRefundService(strapi).getReviewDetail(
-      ctx.request.body,
-      getRequestContext(ctx)
-    );
-
-    ctx.body = {
-      data: result,
-    };
-  },
-
-  async refuse(ctx) {
+  async claim(ctx) {
     await writeResult(ctx, () =>
-      adminRefundService(strapi).refuseReview(ctx.request.body, getRequestContext(ctx))
+      adminReviewClaimService(strapi).claim(ctx.request.body, getRequestContext(ctx))
     );
   },
 
-  async escalate(ctx) {
+  async heartbeat(ctx) {
     await writeResult(ctx, () =>
-      adminRefundService(strapi).escalateReview(ctx.request.body, getRequestContext(ctx))
+      adminReviewClaimService(strapi).heartbeat(ctx.request.body, getRequestContext(ctx))
     );
   },
 
-  async execute(ctx) {
+  async release(ctx) {
     await writeResult(ctx, () =>
-      adminRefundService(strapi).executeReviewRefund(ctx.request.body, getRequestContext(ctx))
+      adminReviewClaimService(strapi).release(ctx.request.body, getRequestContext(ctx))
     );
   },
 });

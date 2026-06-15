@@ -1,5 +1,6 @@
 import { factories } from '@strapi/strapi';
 import { errors, validateZodSchema, z } from '@strapi/utils';
+import { publishAdminRealtimeEvent } from '../../../utils/admin-realtime-events';
 
 const { ForbiddenError, ValidationError } = errors;
 
@@ -22,6 +23,15 @@ type AdminSession = {
 
 type AdminAuthService = {
   getSession(input: unknown, context: RequestContext): Promise<AdminSession>;
+};
+
+type AdminReviewClaimService = {
+  assertActiveClaimForSession(input: unknown, session: AdminSession): Promise<unknown>;
+  claimForSession(
+    input: unknown,
+    session: AdminSession,
+    context: RequestContext
+  ): Promise<{ reviewClaim: unknown }>;
 };
 
 type DocumentRecord = Record<string, unknown> & {
@@ -118,6 +128,7 @@ const overviewSchema = z
   .strict();
 const taskActionSchema = overviewSchema
   .extend({
+    reviewClaimToken: z.string().trim().min(32).max(160).optional(),
     taskKey: z.string().trim().min(1).max(220),
   })
   .strict();
@@ -136,6 +147,9 @@ const documents = (strapi: StrapiDocumentService, uid: string) =>
 
 const adminAuthService = (strapi: StrapiDocumentService) =>
   strapi.service('api::admin-auth.admin-auth') as unknown as AdminAuthService;
+
+const reviewClaimService = (strapi: StrapiDocumentService) =>
+  strapi.service('api::admin-review-claim.admin-review-claim') as unknown as AdminReviewClaimService;
 
 const getDocumentId = (record?: DocumentRecord | null) => {
   if (!record) {
@@ -782,6 +796,17 @@ const publicTaskDetail = (task: DocumentRecord) => ({
   metadata: objectValue(task.metadata),
 });
 
+const publishTaskChange = (strapi: StrapiDocumentService, task?: DocumentRecord) =>
+  publishAdminRealtimeEvent(
+    {
+      channels: ['operations'],
+      resourceKey: task?.taskKey,
+      resourceType: 'admin_task',
+      type: 'admin_tasks_changed',
+    },
+    (strapi as { log?: { error?: (message: string, error?: unknown) => void } }).log
+  );
+
 const compareTasks = (left: DocumentRecord, right: DocumentRecord) => {
   const priorityDifference =
     priorityRank[left.priority || 'normal'] - priorityRank[right.priority || 'normal'];
@@ -851,7 +876,7 @@ export default factories.createCoreService('api::admin-task.admin-task', ({ stra
   async getTaskDetail(input: unknown, requestContext: RequestContext = {}) {
     const body = validateTaskAction(input);
 
-    await assertOperationsSession(strapi, body.sessionToken, requestContext);
+    const session = await assertOperationsSession(strapi, body.sessionToken, requestContext);
     await syncTasks(strapi);
 
     const task = await findExistingTask(strapi, body.taskKey);
@@ -859,16 +884,27 @@ export default factories.createCoreService('api::admin-task.admin-task', ({ stra
     if (!task) {
       throw new ValidationError('Admin task could not be found.');
     }
+    const { reviewClaim } = await reviewClaimService(strapi).claimForSession(
+      {
+        resourceDocumentId: task.documentId,
+        resourceKey: task.taskKey,
+        resourceLabel: task.title,
+        resourceType: 'admin_task',
+      },
+      session,
+      requestContext
+    );
 
     return {
       task: publicTaskDetail(task),
+      reviewClaim,
     };
   },
 
   async updateTaskState(input: unknown, requestContext: RequestContext = {}) {
     const body = validateTaskStateAction(input);
 
-    await assertOperationsSession(strapi, body.sessionToken, requestContext);
+    const session = await assertOperationsSession(strapi, body.sessionToken, requestContext);
 
     const task = await findExistingTask(strapi, body.taskKey);
 
@@ -881,6 +917,17 @@ export default factories.createCoreService('api::admin-task.admin-task', ({ stra
     if (!activeTaskStates.includes(currentTaskState)) {
       throw new ValidationError('Only active tasks can be updated.');
     }
+
+    await reviewClaimService(strapi).assertActiveClaimForSession(
+      {
+        claimToken: body.reviewClaimToken,
+        resourceDocumentId: task.documentId,
+        resourceKey: task.taskKey,
+        resourceLabel: task.title,
+        resourceType: 'admin_task',
+      },
+      session
+    );
 
     if (body.taskState === 'acknowledged') {
       if (!isClearableTask(task)) {
@@ -896,6 +943,7 @@ export default factories.createCoreService('api::admin-task.admin-task', ({ stra
           taskState: 'acknowledged',
         },
       });
+      await publishTaskChange(strapi, acknowledgedTask);
 
       return {
         task: publicTaskDetail(acknowledgedTask),
@@ -914,6 +962,7 @@ export default factories.createCoreService('api::admin-task.admin-task', ({ stra
         taskState: 'dismissed',
       },
     });
+    await publishTaskChange(strapi, dismissedTask);
 
     return {
       task: publicTaskDetail(dismissedTask),

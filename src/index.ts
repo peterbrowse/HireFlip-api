@@ -5,6 +5,7 @@ import {
   stopClassWorkflowQueue,
   syncWaitingListOfferExpiryJobs,
 } from './utils/class-workflow-queue';
+import { disconnectAdminRealtimePublisher } from './utils/admin-realtime-events';
 
 const backgroundBootstrapEnabled = () => {
   const value = (process.env.CLASS_WORKFLOW_BOOTSTRAP_ENABLED || 'true').toLowerCase();
@@ -126,6 +127,9 @@ export default {
   },
 
   async destroy({ strapi }: { strapi: Core.Strapi }) {
+    await disconnectAdminRealtimePublisher().catch((error) => {
+      strapi.log.error('Admin realtime publisher shutdown failed.', error);
+    });
     await stopClassWorkflowQueue().catch((error) => {
       strapi.log.error('Class workflow queue shutdown failed.', error);
     });

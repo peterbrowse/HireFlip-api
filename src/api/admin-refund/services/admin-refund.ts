@@ -1,4 +1,5 @@
 import { errors, validateZodSchema, z } from '@strapi/utils';
+import { publishAdminRealtimeEvent } from '../../../utils/admin-realtime-events';
 
 const { ApplicationError, ForbiddenError, ValidationError } = errors;
 
@@ -21,6 +22,15 @@ type AdminSession = {
 
 type AdminAuthService = {
   getSession(input: unknown, context: RequestContext): Promise<AdminSession>;
+};
+
+type AdminReviewClaimService = {
+  assertActiveClaimForSession(input: unknown, session: AdminSession): Promise<unknown>;
+  claimForSession(
+    input: unknown,
+    session: AdminSession,
+    context: RequestContext
+  ): Promise<{ reviewClaim: unknown }>;
 };
 
 type AuditEventService = {
@@ -148,12 +158,19 @@ const reviewDetailSchema = reviewListSchema
 const reviewRefuseSchema = reviewDetailSchema
   .extend({
     message: z.string().trim().min(10).max(4000),
+    reviewClaimToken: z.string().trim().min(32).max(160).optional(),
   })
   .strict();
 const reviewEscalateSchema = reviewDetailSchema
   .extend({
     message: z.string().trim().max(4000).optional(),
     refundPercentage: z.enum(['25', '50']).transform((value) => Number(value)),
+    reviewClaimToken: z.string().trim().min(32).max(160).optional(),
+  })
+  .strict();
+const reviewExecuteSchema = reviewDetailSchema
+  .extend({
+    reviewClaimToken: z.string().trim().min(32).max(160).optional(),
   })
   .strict();
 
@@ -161,6 +178,7 @@ const validateReviewList = validateZodSchema(reviewListSchema);
 const validateReviewDetail = validateZodSchema(reviewDetailSchema);
 const validateReviewRefuse = validateZodSchema(reviewRefuseSchema);
 const validateReviewEscalate = validateZodSchema(reviewEscalateSchema);
+const validateReviewExecute = validateZodSchema(reviewExecuteSchema);
 
 const documents = (strapi: StrapiDocumentService, uid: string) =>
   strapi.documents(uid) as unknown as DocumentCollection;
@@ -168,11 +186,25 @@ const documents = (strapi: StrapiDocumentService, uid: string) =>
 const adminAuthService = (strapi: StrapiDocumentService) =>
   strapi.service('api::admin-auth.admin-auth') as unknown as AdminAuthService;
 
+const reviewClaimService = (strapi: StrapiDocumentService) =>
+  strapi.service('api::admin-review-claim.admin-review-claim') as unknown as AdminReviewClaimService;
+
 const auditEvents = (strapi: StrapiDocumentService) =>
   strapi.service('api::audit-event.audit-event') as unknown as AuditEventService;
 
 const supportCaseService = (strapi: StrapiDocumentService) =>
   strapi.service('api::support-case.support-case') as unknown as SupportCaseService;
+
+const publishRefundReviewChange = (strapi: StrapiDocumentService, taskKey?: string) =>
+  publishAdminRealtimeEvent(
+    {
+      channels: ['operations', 'refunds', 'support'],
+      resourceKey: taskKey,
+      resourceType: 'refund_review',
+      type: 'refund_reviews_changed',
+    },
+    (strapi as { log?: { error?: (message: string, error?: unknown) => void } }).log
+  );
 
 const trimTrailingSlash = (value: string) => value.replace(/\/+$/, '');
 
@@ -1245,9 +1277,19 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
   async getReviewDetail(input: unknown, requestContext: RequestContext = {}) {
     const body = validateReviewDetail(input);
 
-    await assertRefundReviewSession(strapi, body.sessionToken, requestContext);
+    const session = await assertRefundReviewSession(strapi, body.sessionToken, requestContext);
 
     const review = await reviewByTaskKey(strapi, body.taskKey);
+    const { reviewClaim } = await reviewClaimService(strapi).claimForSession(
+      {
+        resourceDocumentId: review.sourceDocumentId,
+        resourceKey: review.taskKey,
+        resourceLabel: review.title,
+        resourceType: 'refund_review',
+      },
+      session,
+      requestContext
+    );
 
     return {
       generatedAt: new Date().toISOString(),
@@ -1256,18 +1298,30 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
         auditEvents: await auditEventsForReview(strapi, review),
         supportCases: await supportCasesForReview(strapi, review),
       },
+      reviewClaim,
     };
   },
 
   async refuseReview(input: unknown, requestContext: RequestContext = {}) {
     const body = validateReviewRefuse(input);
     const session = await assertRefundReviewSession(strapi, body.sessionToken, requestContext);
-    const { candidate, payment, refund } = await refundActionContext(strapi, body.taskKey);
+    const { candidate, payment, refund, review } = await refundActionContext(strapi, body.taskKey);
     const currentState = String(refund.refundState || '');
 
     if (!['requested', 'failed'].includes(currentState)) {
       throw new ValidationError('Only requested or failed refunds can be refused.');
     }
+
+    await reviewClaimService(strapi).assertActiveClaimForSession(
+      {
+        claimToken: body.reviewClaimToken,
+        resourceDocumentId: review.sourceDocumentId,
+        resourceKey: body.taskKey,
+        resourceLabel: review.title,
+        resourceType: 'refund_review',
+      },
+      session
+    );
 
     const email = buildRefundRefusedEmail({
       candidate,
@@ -1345,6 +1399,7 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
       subjectDisplayName: candidateDisplayName(candidate),
       subjectId: refund.documentId,
     });
+    await publishRefundReviewChange(strapi, body.taskKey);
 
     return {
       notificationQueued: true,
@@ -1366,6 +1421,17 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
     if (typeof review.originalAmountPence !== 'number') {
       throw new ValidationError('The original payment amount is required before a refund can be accepted.');
     }
+
+    await reviewClaimService(strapi).assertActiveClaimForSession(
+      {
+        claimToken: body.reviewClaimToken,
+        resourceDocumentId: review.sourceDocumentId,
+        resourceKey: body.taskKey,
+        resourceLabel: review.title,
+        resourceType: 'refund_review',
+      },
+      session
+    );
 
     const amountPence = Math.round((review.originalAmountPence * body.refundPercentage) / 100);
     const currency = refund.currency || review.payment?.currency || 'GBP';
@@ -1457,6 +1523,7 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
       subjectDisplayName: candidateDisplayName(candidate),
       subjectId: refund.documentId,
     });
+    await publishRefundReviewChange(strapi, body.taskKey);
 
     return {
       escalated: true,
@@ -1466,9 +1533,9 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
   },
 
   async executeReviewRefund(input: unknown, requestContext: RequestContext = {}) {
-    const body = validateReviewDetail(input);
+    const body = validateReviewExecute(input);
     const session = await assertSuperAdminSession(strapi, body.sessionToken, requestContext);
-    const { candidate, payment, refund } = await refundActionContext(strapi, body.taskKey);
+    const { candidate, payment, refund, review } = await refundActionContext(strapi, body.taskKey);
     const currentState = String(refund.refundState || '');
 
     if (!['approved', 'failed'].includes(currentState)) {
@@ -1482,6 +1549,17 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
     if (typeof refund.amountPence !== 'number' || refund.amountPence <= 0) {
       throw new ValidationError('A positive refund amount is required before a refund can be executed.');
     }
+
+    await reviewClaimService(strapi).assertActiveClaimForSession(
+      {
+        claimToken: body.reviewClaimToken,
+        resourceDocumentId: review.sourceDocumentId,
+        resourceKey: body.taskKey,
+        resourceLabel: review.title,
+        resourceType: 'refund_review',
+      },
+      session
+    );
 
     const now = new Date().toISOString();
     const submittedRefund = await documents(strapi, 'api::refund.refund').update({
@@ -1608,6 +1686,7 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
         supportCase,
         visibility: 'internal',
       });
+      await publishRefundReviewChange(strapi, body.taskKey);
 
       throw error;
     }
@@ -1683,6 +1762,7 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
       supportCase,
       visibility: finalRefundState === 'failed' ? 'internal' : 'public',
     });
+    await publishRefundReviewChange(strapi, body.taskKey);
 
     return {
       executed: true,

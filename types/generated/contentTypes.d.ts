@@ -440,6 +440,101 @@ export interface AdminUser extends Struct.CollectionTypeSchema {
   };
 }
 
+export interface ApiAdminReviewClaimAdminReviewClaim
+  extends Struct.CollectionTypeSchema {
+  collectionName: 'admin_review_claims';
+  info: {
+    description: 'Short-lived staff review claims that prevent overlapping admin actions.';
+    displayName: 'Admin Review Claim';
+    pluralName: 'admin-review-claims';
+    singularName: 'admin-review-claim';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    claimedAt: Schema.Attribute.DateTime & Schema.Attribute.Required;
+    claimedByDisplayName: Schema.Attribute.String &
+      Schema.Attribute.Required &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 240;
+        minLength: 1;
+      }>;
+    claimedByEmail: Schema.Attribute.Email &
+      Schema.Attribute.Required &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 254;
+      }>;
+    claimedByRoleKeys: Schema.Attribute.JSON;
+    claimedByStaffUserId: Schema.Attribute.String &
+      Schema.Attribute.Required &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 160;
+        minLength: 1;
+      }>;
+    claimKey: Schema.Attribute.String &
+      Schema.Attribute.Required &
+      Schema.Attribute.Unique &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 360;
+        minLength: 1;
+      }>;
+    claimToken: Schema.Attribute.String &
+      Schema.Attribute.Required &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 160;
+        minLength: 32;
+      }>;
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    expiresAt: Schema.Attribute.DateTime & Schema.Attribute.Required;
+    heartbeatAt: Schema.Attribute.DateTime;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::admin-review-claim.admin-review-claim'
+    > &
+      Schema.Attribute.Private;
+    metadata: Schema.Attribute.JSON;
+    publishedAt: Schema.Attribute.DateTime;
+    releasedAt: Schema.Attribute.DateTime;
+    releaseReason: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 80;
+      }>;
+    resourceDocumentId: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 160;
+      }>;
+    resourceKey: Schema.Attribute.String &
+      Schema.Attribute.Required &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 300;
+        minLength: 1;
+      }>;
+    resourceLabel: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 240;
+      }>;
+    resourceType: Schema.Attribute.Enumeration<
+      ['admin_task', 'refund_review', 'support_case']
+    > &
+      Schema.Attribute.Required;
+    takeoverCount: Schema.Attribute.Integer &
+      Schema.Attribute.SetMinMax<
+        {
+          min: 0;
+        },
+        number
+      > &
+      Schema.Attribute.DefaultTo<0>;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+  };
+}
+
 export interface ApiAdminTaskAdminTask extends Struct.CollectionTypeSchema {
   collectionName: 'admin_tasks';
   info: {
@@ -4073,6 +4168,7 @@ declare module '@strapi/strapi' {
       'admin::transfer-token': AdminTransferToken;
       'admin::transfer-token-permission': AdminTransferTokenPermission;
       'admin::user': AdminUser;
+      'api::admin-review-claim.admin-review-claim': ApiAdminReviewClaimAdminReviewClaim;
       'api::admin-task.admin-task': ApiAdminTaskAdminTask;
       'api::answer-submission.answer-submission': ApiAnswerSubmissionAnswerSubmission;
       'api::assessment-appeal.assessment-appeal': ApiAssessmentAppealAssessmentAppeal;

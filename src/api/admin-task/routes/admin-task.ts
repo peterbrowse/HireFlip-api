@@ -43,5 +43,14 @@ export default {
         policies: [adminDashboardServicePolicy],
       },
     },
+    {
+      method: 'GET',
+      path: '/internal/admin/events',
+      handler: 'admin-task.events',
+      config: {
+        auth: false,
+        policies: [adminDashboardServicePolicy],
+      },
+    },
   ],
 };

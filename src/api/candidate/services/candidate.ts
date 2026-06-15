@@ -20,6 +20,7 @@ import {
   publishCandidateClassRealtimeEvent,
   publishClassRealtimeEvent,
 } from '../../../utils/class-realtime-events';
+import { publishAdminRealtimeEvent } from '../../../utils/admin-realtime-events';
 
 const { ApplicationError, UnauthorizedError, ValidationError } = errors;
 
@@ -39,6 +40,9 @@ type RequestContext = {
 
 type StrapiDocumentService = {
   documents(uid: string): unknown;
+  log?: {
+    error?: (message: string, error?: unknown) => void;
+  };
   service(uid: string): unknown;
 };
 
@@ -4213,6 +4217,15 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       subjectType: 'support_case',
       userAgent: requestContext.userAgent,
     });
+    await publishAdminRealtimeEvent(
+      {
+        channels: ['support'],
+        resourceKey: supportCaseDocumentId,
+        resourceType: 'support_case',
+        type: 'support_cases_changed',
+      },
+      strapi.log
+    );
 
     const supportCase = await supportCaseService(strapi).getCaseForCandidate({
       candidateDocumentId: existingCandidate.documentId,

@@ -1,0 +1,97 @@
+{
+  "kind": "collectionType",
+  "collectionName": "admin_review_claims",
+  "info": {
+    "singularName": "admin-review-claim",
+    "pluralName": "admin-review-claims",
+    "displayName": "Admin Review Claim",
+    "description": "Short-lived staff review claims that prevent overlapping admin actions."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "claimKey": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 360,
+      "required": true,
+      "unique": true
+    },
+    "resourceType": {
+      "type": "enumeration",
+      "enum": [
+        "admin_task",
+        "refund_review",
+        "support_case"
+      ],
+      "required": true
+    },
+    "resourceKey": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 300,
+      "required": true
+    },
+    "resourceDocumentId": {
+      "type": "string",
+      "maxLength": 160
+    },
+    "resourceLabel": {
+      "type": "string",
+      "maxLength": 240
+    },
+    "claimToken": {
+      "type": "string",
+      "minLength": 32,
+      "maxLength": 160,
+      "required": true
+    },
+    "claimedByStaffUserId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "required": true
+    },
+    "claimedByEmail": {
+      "type": "email",
+      "maxLength": 254,
+      "required": true
+    },
+    "claimedByDisplayName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "required": true
+    },
+    "claimedByRoleKeys": {
+      "type": "json"
+    },
+    "claimedAt": {
+      "type": "datetime",
+      "required": true
+    },
+    "heartbeatAt": {
+      "type": "datetime"
+    },
+    "expiresAt": {
+      "type": "datetime",
+      "required": true
+    },
+    "releasedAt": {
+      "type": "datetime"
+    },
+    "releaseReason": {
+      "type": "string",
+      "maxLength": 80
+    },
+    "takeoverCount": {
+      "type": "integer",
+      "default": 0,
+      "min": 0
+    },
+    "metadata": {
+      "type": "json"
+    }
+  }
+}
