@@ -59,13 +59,18 @@ const main = async () => {
   try {
     const webhookEventService = strapi.service('api::payment-webhook-event.payment-webhook-event');
     const candidateService = strapi.service('api::candidate.candidate');
+    const adminRefundService = strapi.service('api::admin-refund.admin-refund');
     const webhookSummary = await webhookEventService.retryFailedStripeEvents(limit);
     const checkoutSummary = await candidateService.reconcileProviderCheckoutPayments(limit, {
       serviceName: 'payment-reconciliation',
     });
+    const refundSummary = await adminRefundService.reconcileProviderRefunds(limit, {
+      serviceName: 'refund-reconciliation',
+    });
 
     strapi.log.info(`Retried failed Stripe payment webhook events: ${JSON.stringify(webhookSummary)}`);
     strapi.log.info(`Reconciled pending Stripe checkout payments: ${JSON.stringify(checkoutSummary)}`);
+    strapi.log.info(`Reconciled pending Stripe refunds: ${JSON.stringify(refundSummary)}`);
   } finally {
     await strapi.destroy();
   }

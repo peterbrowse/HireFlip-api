@@ -49,11 +49,13 @@ type PaymentServiceRefundResult = {
   amountPence: number;
   createdAt: string;
   currency: string;
+  failureReason?: string | null;
   metadata: Record<string, unknown>;
   paymentProvider: string;
   providerPaymentIntentId: string | null;
   providerRefundId: string;
   providerRefundStatus?: string | null;
+  reason?: string | null;
 };
 
 type PaymentServiceRefundResponse = {
@@ -201,12 +203,36 @@ const reviewExecuteSchema = reviewDetailSchema
     reviewClaimToken: z.string().trim().min(32).max(160).optional(),
   })
   .strict();
+const providerRefundSchema = z
+  .object({
+    amountPence: z.number().int().nonnegative(),
+    createdAt: z.string().datetime(),
+    currency: z.string().trim().min(3).max(3),
+    failureReason: z.string().trim().max(255).nullable().optional(),
+    metadata: z.unknown().optional(),
+    paymentProvider: z.literal('stripe').default('stripe'),
+    providerPaymentIntentId: z.string().trim().max(255).nullable().optional(),
+    providerRefundId: z.string().trim().min(1).max(255),
+    providerRefundStatus: z.string().trim().max(80).nullable().optional(),
+    reason: z.string().trim().max(120).nullable().optional(),
+  })
+  .strict();
+const providerRefundUpdateSchema = z
+  .object({
+    createdAt: z.string().datetime().optional(),
+    eventType: z.string().trim().min(1).max(160).optional(),
+    livemode: z.boolean().optional(),
+    providerEventId: z.string().trim().min(1).max(255).optional(),
+    providerRefund: providerRefundSchema,
+  })
+  .strict();
 
 const validateReviewList = validateZodSchema(reviewListSchema);
 const validateReviewDetail = validateZodSchema(reviewDetailSchema);
 const validateReviewRefuse = validateZodSchema(reviewRefuseSchema);
 const validateReviewEscalate = validateZodSchema(reviewEscalateSchema);
 const validateReviewExecute = validateZodSchema(reviewExecuteSchema);
+const validateProviderRefundUpdate = validateZodSchema(providerRefundUpdateSchema);
 
 const documents = (strapi: StrapiDocumentService, uid: string) =>
   strapi.documents(uid) as unknown as DocumentCollection;
@@ -441,6 +467,74 @@ const requestPaymentServiceRefund = async ({
         typeof payload.data.providerRefundStatus === 'string'
           ? payload.data.providerRefundStatus
           : null,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
+const requestPaymentServiceRefundStatus = async (
+  providerRefundId: string
+): Promise<PaymentServiceRefundResult | undefined> => {
+  const baseUrl = process.env.PAYMENT_SERVICE_URL;
+  const serviceToken = process.env.PAYMENT_SERVICE_TOKEN;
+
+  if (!baseUrl || !serviceToken) {
+    return undefined;
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    getIntegerEnv('PAYMENT_SERVICE_TIMEOUT_MS', 5000)
+  );
+
+  try {
+    const response = await fetch(
+      `${trimTrailingSlash(baseUrl)}/internal/refunds/${encodeURIComponent(providerRefundId)}`,
+      {
+        headers: {
+          'x-hireflip-service-name': 'core-api',
+          'x-hireflip-service-token': serviceToken,
+        },
+        method: 'GET',
+        signal: controller.signal,
+      }
+    );
+    const payload = (await response.json().catch(() => null)) as PaymentServiceRefundResponse | null;
+
+    if (
+      !response.ok ||
+      typeof payload?.data?.providerRefundId !== 'string' ||
+      typeof payload.data.amountPence !== 'number' ||
+      typeof payload.data.currency !== 'string'
+    ) {
+      return undefined;
+    }
+
+    return {
+      amountPence: payload.data.amountPence,
+      createdAt:
+        typeof payload.data.createdAt === 'string' ? payload.data.createdAt : new Date().toISOString(),
+      currency: payload.data.currency,
+      failureReason:
+        typeof payload.data.failureReason === 'string' ? payload.data.failureReason : null,
+      metadata:
+        payload.data.metadata && typeof payload.data.metadata === 'object'
+          ? payload.data.metadata
+          : {},
+      paymentProvider:
+        typeof payload.data.paymentProvider === 'string' ? payload.data.paymentProvider : 'stripe',
+      providerPaymentIntentId:
+        typeof payload.data.providerPaymentIntentId === 'string'
+          ? payload.data.providerPaymentIntentId
+          : null,
+      providerRefundId: payload.data.providerRefundId,
+      providerRefundStatus:
+        typeof payload.data.providerRefundStatus === 'string'
+          ? payload.data.providerRefundStatus
+          : null,
+      reason: typeof payload.data.reason === 'string' ? payload.data.reason : null,
     };
   } finally {
     clearTimeout(timeout);
@@ -1296,6 +1390,171 @@ const refundActionContext = async (strapi: StrapiDocumentService, taskKey: strin
   };
 };
 
+const refundsByProviderRefundId = async (
+  strapi: StrapiDocumentService,
+  providerRefundId?: string | null
+) => {
+  if (!providerRefundId) {
+    return [];
+  }
+
+  return documents(strapi, 'api::refund.refund').findMany({
+    filters: {
+      providerRefundId,
+    },
+    limit: 1,
+    populate: ['candidate', 'enrollment', 'payment'],
+  });
+};
+
+const refundsByProviderMetadata = async (
+  strapi: StrapiDocumentService,
+  providerRefund: PaymentServiceRefundResult
+) => {
+  const providerMetadata = objectValue(providerRefund.metadata);
+  const refundDocumentId =
+    typeof providerMetadata.refundDocumentId === 'string'
+      ? providerMetadata.refundDocumentId
+      : undefined;
+
+  if (refundDocumentId) {
+    const refund = await byDocumentId(strapi, 'api::refund.refund', refundDocumentId, [
+      'candidate',
+      'enrollment',
+      'payment',
+    ]);
+
+    if (refund) {
+      return [refund];
+    }
+  }
+
+  if (!providerRefund.providerPaymentIntentId) {
+    return [];
+  }
+
+  return documents(strapi, 'api::refund.refund').findMany({
+    filters: {
+      amountPence: providerRefund.amountPence,
+      payment: {
+        providerPaymentIntentId: providerRefund.providerPaymentIntentId,
+      },
+      refundState: {
+        $in: ['approved', 'submitted_to_provider', 'processing', 'failed'],
+      },
+    },
+    limit: 1,
+    populate: ['candidate', 'enrollment', 'payment'],
+    sort: ['updatedAt:desc', 'createdAt:desc'],
+  });
+};
+
+const providerRefundContext = async (
+  strapi: StrapiDocumentService,
+  providerRefund: PaymentServiceRefundResult
+) => {
+  const [refundById] = await refundsByProviderRefundId(strapi, providerRefund.providerRefundId);
+  const [fallbackRefund] = refundById
+    ? [undefined]
+    : await refundsByProviderMetadata(strapi, providerRefund);
+  const refund = refundById || fallbackRefund;
+
+  if (!refund) {
+    return {
+      candidate: undefined,
+      payment: undefined,
+      providerMetadata: objectValue(providerRefund.metadata),
+      refund: undefined,
+    };
+  }
+
+  const payment = refund.payment?.documentId
+    ? await byDocumentId(strapi, 'api::payment.payment', getDocumentId(refund.payment), [
+        'candidate',
+        'enrollment',
+        'reservation',
+      ])
+    : undefined;
+  const candidate = refund.candidate || payment?.candidate || refund.enrollment?.candidate;
+
+  return {
+    candidate,
+    payment: payment || refund.payment,
+    providerMetadata: objectValue(providerRefund.metadata),
+    refund,
+  };
+};
+
+const providerRefundHasMaterialChange = ({
+  finalRefundState,
+  providerRefund,
+  refund,
+}: {
+  finalRefundState: string;
+  providerRefund: PaymentServiceRefundResult;
+  refund: DocumentRecord;
+}) => {
+  const metadata = objectValue(refund.metadata);
+
+  return (
+    refund.refundState !== finalRefundState ||
+    refund.providerRefundId !== providerRefund.providerRefundId ||
+    metadata.providerRefundStatus !== providerRefund.providerRefundStatus ||
+    metadata.providerRefundFailureReason !== (providerRefund.failureReason || null)
+  );
+};
+
+const providerRefundSystemActor = (requestContext: RequestContext) => ({
+  displayName: 'Payment service',
+  id: requestContext.serviceName || 'payment-service',
+  type: 'service',
+});
+
+const ensureProviderRefundSupportCase = async ({
+  candidate,
+  payment,
+  refund,
+  state,
+  strapi,
+  summary,
+}: {
+  candidate?: DocumentRecord;
+  payment?: DocumentRecord;
+  refund: DocumentRecord;
+  state: 'awaiting_candidate' | 'awaiting_staff' | 'in_progress' | 'resolved';
+  strapi: StrapiDocumentService;
+  summary?: string;
+}) =>
+  supportCaseService(strapi).ensureRefundCase({
+    candidate,
+    createdBy: {
+      displayName: 'Payment service',
+      id: 'payment-service',
+      type: 'service',
+    },
+    enrollment: refund.enrollment || payment?.enrollment,
+    payment,
+    priority: state === 'awaiting_staff' ? 'high' : 'normal',
+    refund,
+    source: 'payment_service',
+    state,
+    summary,
+  });
+
+const providerRefundCaseState = (refundState: string) =>
+  refundState === 'completed'
+    ? 'resolved'
+    : refundState === 'failed'
+      ? 'awaiting_staff'
+      : 'in_progress';
+
+const providerRefundMessageBody = (refundState: string) =>
+  refundState === 'completed'
+    ? 'Refund completed by the payment provider.'
+    : refundState === 'failed'
+      ? 'Refund failed at the payment provider and needs staff review.'
+      : 'Refund is processing with the payment provider.';
+
 const refundSnapshot = (refund?: DocumentRecord | null) =>
   refund
     ? {
@@ -1436,6 +1695,56 @@ const auditRefundAction = async ({
     userAgent: requestContext.userAgent,
   });
 
+const auditProviderRefundAction = async ({
+  eventType,
+  metadata,
+  newRefund,
+  previousRefund,
+  providerRefund,
+  requestContext,
+  severity = 'info',
+  strapi,
+  subjectDisplayName,
+  subjectId,
+}: {
+  eventType: string;
+  metadata?: Record<string, unknown>;
+  newRefund?: DocumentRecord | null;
+  previousRefund?: DocumentRecord | null;
+  providerRefund: PaymentServiceRefundResult;
+  requestContext: RequestContext;
+  severity?: 'critical' | 'error' | 'info' | 'warning';
+  strapi: StrapiDocumentService;
+  subjectDisplayName?: string;
+  subjectId?: string;
+}) =>
+  auditEvents(strapi).record({
+    actorDisplayName: 'Payment service',
+    actorId: requestContext.serviceName || 'payment-service',
+    actorType: 'service',
+    eventCategory: 'refund',
+    eventType,
+    ipAddress: requestContext.ipAddress,
+    metadata: {
+      providerRefund,
+      ...metadata,
+    },
+    newState: {
+      refund: refundSnapshot(newRefund),
+    },
+    previousState: {
+      refund: refundSnapshot(previousRefund),
+    },
+    requestId: requestContext.requestId,
+    serviceName: requestContext.serviceName || 'payment-service',
+    severity,
+    source: 'payment_service',
+    subjectDisplayName,
+    subjectId,
+    subjectType: 'refund',
+    userAgent: requestContext.userAgent,
+  });
+
 const providerRefundState = (status?: string | null) => {
   if (status === 'succeeded') {
     return 'completed';
@@ -1521,7 +1830,7 @@ const addRefundSupportMessage = async ({
   visibility = 'public',
 }: {
   body: string;
-  candidate: DocumentRecord;
+  candidate?: DocumentRecord;
   deliveryState?: 'not_required' | 'queued' | 'sent' | 'delivered' | 'failed';
   direction: 'outbound' | 'system' | 'internal';
   messageType: 'refund_acceptance' | 'refund_provider_update' | 'refund_refusal' | 'system_update';
@@ -1602,6 +1911,226 @@ const updatePaymentAfterProviderRefund = async ({
 };
 
 export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
+  async recordProviderRefundUpdate(input: unknown, requestContext: RequestContext = {}) {
+    const body = validateProviderRefundUpdate(input);
+    const providerRefund: PaymentServiceRefundResult = {
+      ...body.providerRefund,
+      metadata: objectValue(body.providerRefund.metadata),
+      paymentProvider: 'stripe',
+      providerPaymentIntentId: body.providerRefund.providerPaymentIntentId || null,
+      providerRefundStatus: body.providerRefund.providerRefundStatus || null,
+    };
+    const context = {
+      ...requestContext,
+      serviceName: requestContext.serviceName || 'payment-service',
+    };
+    const { candidate, payment, providerMetadata, refund } = await providerRefundContext(
+      strapi,
+      providerRefund
+    );
+
+    if (!refund?.documentId) {
+      await auditProviderRefundAction({
+        eventType: 'payment.refund.provider_unmatched',
+        metadata: {
+          eventType: body.eventType,
+          livemode: body.livemode,
+          providerEventId: body.providerEventId,
+          providerMetadata,
+        },
+        providerRefund,
+        requestContext: context,
+        severity: 'error',
+        strapi,
+        subjectDisplayName: providerRefund.providerRefundId,
+        subjectId: providerRefund.providerRefundId,
+      });
+
+      return {
+        ignored: true,
+        providerRefundId: providerRefund.providerRefundId,
+        reason: 'unmatched_provider_refund',
+      };
+    }
+
+    const finalRefundState = providerRefundState(providerRefund.providerRefundStatus);
+    const hasMaterialChange = providerRefundHasMaterialChange({
+      finalRefundState,
+      providerRefund,
+      refund,
+    });
+
+    if (!hasMaterialChange) {
+      return {
+        payment: payment?.documentId ? { documentId: payment.documentId } : null,
+        providerRefundId: providerRefund.providerRefundId,
+        refund: { documentId: refund.documentId },
+        unchanged: true,
+      };
+    }
+
+    const now = new Date().toISOString();
+    const updatedRefund = await documents(strapi, 'api::refund.refund').update({
+      documentId: refund.documentId,
+      data: {
+        metadata: {
+          ...(objectValue(refund.metadata)),
+          providerRefundFailureReason: providerRefund.failureReason || null,
+          providerRefundLastEventCreatedAt: body.createdAt || null,
+          providerRefundLastEventType: body.eventType || null,
+          providerRefundLastProviderEventId: body.providerEventId || null,
+          providerRefundLastSyncedAt: now,
+          providerRefundLivemode: body.livemode ?? null,
+          providerRefundReason: providerRefund.reason || null,
+          providerRefundStatus: providerRefund.providerRefundStatus || null,
+        },
+        processedAt:
+          finalRefundState === 'completed'
+            ? refund.processedAt || providerRefund.createdAt || now
+            : refund.processedAt || null,
+        providerRefundId: providerRefund.providerRefundId,
+        refundState: finalRefundState,
+      },
+      populate: ['candidate', 'enrollment', 'payment'],
+    });
+    const updatedPayment =
+      finalRefundState === 'completed'
+        ? await updatePaymentAfterProviderRefund({
+            payment,
+            refund: updatedRefund,
+            strapi,
+          })
+        : undefined;
+    const caseState = providerRefundCaseState(finalRefundState);
+    const { supportCase } = await ensureProviderRefundSupportCase({
+      candidate,
+      payment: updatedPayment || payment,
+      refund: updatedRefund,
+      state: caseState,
+      strapi,
+      summary: providerRefundMessageBody(finalRefundState),
+    });
+
+    await updateRefundSupportCaseState({
+      caseState,
+      strapi,
+      supportCase,
+    });
+    await addRefundSupportMessage({
+      body: providerRefundMessageBody(finalRefundState),
+      candidate,
+      direction: 'system',
+      messageType: 'refund_provider_update',
+      metadata: {
+        eventType: body.eventType,
+        livemode: body.livemode,
+        providerEventId: body.providerEventId,
+        providerRefund,
+        refundState: finalRefundState,
+      },
+      payment: updatedPayment || payment,
+      refund: updatedRefund,
+      strapi,
+      supportCase,
+      visibility: finalRefundState === 'failed' ? 'internal' : 'public',
+    });
+
+    await auditProviderRefundAction({
+      eventType:
+        finalRefundState === 'completed'
+          ? 'payment.refund.completed'
+          : finalRefundState === 'failed'
+            ? 'payment.refund.failed'
+            : 'payment.refund.provider_update',
+      metadata: {
+        eventType: body.eventType,
+        livemode: body.livemode,
+        payment: paymentSnapshot(updatedPayment || payment),
+        providerEventId: body.providerEventId,
+      },
+      newRefund: updatedRefund,
+      previousRefund: refund,
+      providerRefund,
+      requestContext: context,
+      severity: finalRefundState === 'failed' ? 'error' : 'info',
+      strapi,
+      subjectDisplayName: candidateDisplayName(candidate),
+      subjectId: refund.documentId,
+    });
+    await publishRefundReviewChange(strapi, `refund:${refund.documentId}:${finalRefundState}`);
+
+    return {
+      payment: (updatedPayment || payment)?.documentId
+        ? { documentId: (updatedPayment || payment)?.documentId }
+        : null,
+      providerRefundId: providerRefund.providerRefundId,
+      refund: { documentId: updatedRefund.documentId },
+      refundState: finalRefundState,
+    };
+  },
+
+  async reconcileProviderRefunds(limit = 50, requestContext: RequestContext = {}) {
+    const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 200);
+    const refunds = await documents(strapi, 'api::refund.refund').findMany({
+      filters: {
+        paymentProvider: 'stripe',
+        providerRefundId: {
+          $notNull: true,
+        },
+        refundState: {
+          $in: ['submitted_to_provider', 'processing'],
+        },
+      },
+      limit: safeLimit,
+      populate: ['payment'],
+      sort: ['updatedAt:asc', 'createdAt:asc'],
+    });
+    const summary = {
+      failed: 0,
+      processed: 0,
+      providerUnavailable: 0,
+      skipped: 0,
+      total: refunds.length,
+    };
+
+    for (const refund of refunds) {
+      if (!refund.providerRefundId) {
+        summary.skipped += 1;
+        continue;
+      }
+
+      const providerRefund = await requestPaymentServiceRefundStatus(refund.providerRefundId);
+
+      if (!providerRefund) {
+        summary.providerUnavailable += 1;
+        continue;
+      }
+
+      try {
+        const service = strapi.service('api::admin-refund.admin-refund') as {
+          recordProviderRefundUpdate(input: unknown, context?: RequestContext): Promise<unknown>;
+        };
+
+        await service.recordProviderRefundUpdate(
+          {
+            createdAt: new Date().toISOString(),
+            eventType: 'stripe.refund.reconciled',
+            providerRefund,
+          },
+          {
+            ...requestContext,
+            serviceName: requestContext.serviceName || 'refund-reconciliation',
+          }
+        );
+        summary.processed += 1;
+      } catch (error) {
+        summary.failed += 1;
+      }
+    }
+
+    return summary;
+  },
+
   async listReviews(input: unknown, requestContext: RequestContext = {}) {
     const body = validateReviewList(input);
     const session = await assertRefundReviewSession(strapi, body.sessionToken, requestContext);

@@ -33,6 +33,16 @@ type PaymentConfirmationResult = {
   } | null;
 };
 
+type RefundProviderUpdateResult = {
+  ignored?: boolean;
+  payment?: {
+    documentId?: string;
+  } | null;
+  refund?: {
+    documentId?: string;
+  } | null;
+};
+
 type CandidateService = {
   confirmClassReservationPaymentFromProvider(
     input: unknown,
@@ -45,6 +55,13 @@ type CandidateService = {
   ): Promise<PaymentConfirmationResult>;
 };
 
+type AdminRefundService = {
+  recordProviderRefundUpdate(
+    input: unknown,
+    context: RequestContext
+  ): Promise<RefundProviderUpdateResult>;
+};
+
 type PaymentWebhookEventService = {
   receiveStripeEvent(input: unknown, context: RequestContext): Promise<unknown>;
 };
@@ -54,6 +71,9 @@ const documents = (strapi: StrapiDocumentService, uid: string) =>
 
 const candidateService = (strapi: StrapiDocumentService) =>
   strapi.service('api::candidate.candidate') as unknown as CandidateService;
+
+const adminRefundService = (strapi: StrapiDocumentService) =>
+  strapi.service('api::admin-refund.admin-refund') as unknown as AdminRefundService;
 
 const objectValue = (value: unknown) => {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
@@ -81,15 +101,46 @@ const checkoutSessionSchema = z
   })
   .strict();
 
-const stripeWebhookEventSchema = z
+const providerRefundSchema = z
   .object({
-    checkoutSession: checkoutSessionSchema,
+    amountPence: z.number().int().nonnegative(),
+    createdAt: z.string().datetime(),
+    currency: z.string().trim().min(3).max(3),
+    failureReason: z.string().trim().max(255).nullable().optional(),
+    metadata: z.unknown().optional().transform((value) => objectValue(value)),
+    paymentProvider: z.literal('stripe').default('stripe'),
+    providerPaymentIntentId: z.string().trim().max(255).nullable().optional(),
+    providerRefundId: z.string().trim().min(1).max(255),
+    providerRefundStatus: z.string().trim().max(80).nullable().optional(),
+    reason: z.string().trim().max(120).nullable().optional(),
+  })
+  .strict();
+
+const stripeWebhookEventBaseSchema = z
+  .object({
     createdAt: z.string().datetime().optional(),
     eventType: z.string().trim().min(1).max(160),
     livemode: z.boolean().optional(),
     providerEventId: z.string().trim().min(1).max(255),
   })
   .strict();
+
+const stripeCheckoutWebhookEventSchema = stripeWebhookEventBaseSchema
+  .extend({
+    checkoutSession: checkoutSessionSchema,
+  })
+  .strict();
+
+const stripeRefundWebhookEventSchema = stripeWebhookEventBaseSchema
+  .extend({
+    providerRefund: providerRefundSchema,
+  })
+  .strict();
+
+const stripeWebhookEventSchema = z.union([
+  stripeCheckoutWebhookEventSchema,
+  stripeRefundWebhookEventSchema,
+]);
 
 const validateStripeWebhookEvent = validateZodSchema(stripeWebhookEventSchema);
 
@@ -186,7 +237,9 @@ export default factories.createCoreService('api::payment-webhook-event.payment-w
           data: {
             eventType: payload.eventType,
             metadata: {
-              checkoutSessionId: payload.checkoutSession.checkoutSessionId,
+              ...('checkoutSession' in payload
+                ? { checkoutSessionId: payload.checkoutSession.checkoutSessionId }
+                : { providerRefundId: payload.providerRefund.providerRefundId }),
               livemode: payload.livemode,
               providerCreatedAt: payload.createdAt,
             },
@@ -203,20 +256,44 @@ export default factories.createCoreService('api::payment-webhook-event.payment-w
     }
 
     try {
-      const service = candidateService(strapi);
-      const confirmationResult =
-        completionEventTypes.has(payload.eventType) &&
-        payload.checkoutSession.status === 'complete' &&
-        payload.checkoutSession.paymentStatus === 'paid'
-          ? await service.confirmClassReservationPaymentFromProvider(payload.checkoutSession, {
-              ...requestContext,
-              serviceName: requestContext.serviceName || 'payment-service',
-            })
-          : await service.recordClassReservationPaymentProviderOutcome(payload.checkoutSession, payload.eventType, {
-              ...requestContext,
-              serviceName: requestContext.serviceName || 'payment-service',
-            });
-      const paymentDocumentId = confirmationResult.payment?.documentId;
+      let paymentDocumentId: string | undefined;
+      let refundDocumentId: string | undefined;
+
+      if ('providerRefund' in payload) {
+        const refundResult = await adminRefundService(strapi).recordProviderRefundUpdate(
+          {
+            createdAt: payload.createdAt,
+            eventType: payload.eventType,
+            livemode: payload.livemode,
+            providerEventId: payload.providerEventId,
+            providerRefund: payload.providerRefund,
+          },
+          {
+            ...requestContext,
+            serviceName: requestContext.serviceName || 'payment-service',
+          }
+        );
+
+        paymentDocumentId = refundResult.payment?.documentId;
+        refundDocumentId = refundResult.refund?.documentId;
+      } else {
+        const service = candidateService(strapi);
+        const confirmationResult =
+          completionEventTypes.has(payload.eventType) &&
+          payload.checkoutSession.status === 'complete' &&
+          payload.checkoutSession.paymentStatus === 'paid'
+            ? await service.confirmClassReservationPaymentFromProvider(payload.checkoutSession, {
+                ...requestContext,
+                serviceName: requestContext.serviceName || 'payment-service',
+              })
+            : await service.recordClassReservationPaymentProviderOutcome(payload.checkoutSession, payload.eventType, {
+                ...requestContext,
+                serviceName: requestContext.serviceName || 'payment-service',
+              });
+
+        paymentDocumentId = confirmationResult.payment?.documentId;
+      }
+
       const processedEvent = await documents(strapi, 'api::payment-webhook-event.payment-webhook-event').update({
         documentId: webhookEvent.documentId,
         data: {
@@ -227,9 +304,16 @@ export default factories.createCoreService('api::payment-webhook-event.payment-w
                 },
               }
             : {}),
+          ...(refundDocumentId
+            ? {
+                refund: {
+                  connect: [{ documentId: refundDocumentId }],
+                },
+              }
+            : {}),
           processedAt: new Date().toISOString(),
           processingError: null,
-          processingState: paymentDocumentId ? 'processed' : 'ignored',
+          processingState: paymentDocumentId || refundDocumentId ? 'processed' : 'ignored',
         },
         populate: ['payment', 'refund'],
       });
