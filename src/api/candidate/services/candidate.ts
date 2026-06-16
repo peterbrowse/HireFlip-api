@@ -1215,17 +1215,19 @@ const sanitizeWaitingListOffer = (offer?: DocumentRecord | null) => {
 };
 
 const requestNotificationServiceEmail = async ({
+  correlationId,
   html,
   subject,
+  template,
   text,
   to,
   type,
-  correlationId,
 }: {
   correlationId?: string;
-  html: string;
-  subject: string;
-  text: string;
+  html?: string;
+  subject?: string;
+  template?: NotificationTemplatePayload;
+  text?: string;
   to: string;
   type: string;
 }): Promise<NotificationServiceQueueResponse | undefined> => {
@@ -1246,11 +1248,12 @@ const requestNotificationServiceEmail = async ({
     const response = await fetch(`${trimTrailingSlash(baseUrl)}/api/internal/notifications/email`, {
       body: JSON.stringify({
         correlationId,
-        html,
+        ...(html ? { html } : {}),
         priority: 'critical',
         source: 'core-api',
-        subject,
-        text,
+        ...(subject ? { subject } : {}),
+        ...(template ? { template } : {}),
+        ...(text ? { text } : {}),
         to,
         type,
       }),
@@ -1269,6 +1272,8 @@ const requestNotificationServiceEmail = async ({
     }
 
     return payload;
+  } catch {
+    return undefined;
   } finally {
     clearTimeout(timeout);
   }
@@ -1291,30 +1296,22 @@ const buildWaitingListOfferEmail = (offer: DocumentRecord) => {
         timeZone: 'Europe/London',
       }).format(new Date(offer.expiresAt))
     : 'soon';
-  const escapedCandidateName = htmlEscape(candidateName);
-  const escapedClassName = htmlEscape(String(className));
-  const escapedClaimUrl = htmlEscape(claimUrl);
-  const escapedExpiresAt = htmlEscape(expiresAt);
+  const bodyLines = [
+    `Hi ${candidateName},`,
+    `A place may be available on ${className}.`,
+    `You have until ${expiresAt} to claim it. The place is not reserved until you click through and complete the checkout reservation step.`,
+    'If you do not want the place, you can decline it from your dashboard and we will offer it to the next person on the waiting list.',
+  ];
 
   return {
-    html: [
-      `<p>Hi ${escapedCandidateName},</p>`,
-      `<p>A place may be available on ${escapedClassName}.</p>`,
-      `<p>You have until ${escapedExpiresAt} to claim it. The place is not reserved until you click through and complete the checkout reservation step.</p>`,
-      `<p><a href="${escapedClaimUrl}">Claim your place</a></p>`,
-      `<p>If you do not want the place, you can decline it from your dashboard and we will offer it to the next person on the waiting list.</p>`,
-      '<p>HireFlip</p>',
-    ].join(''),
+    bodyLines,
+    ctaLabel: 'Claim your place',
+    ctaUrl: claimUrl,
     subject: 'A HireFlip class place may be available',
     text: [
-      `Hi ${candidateName},`,
-      '',
-      `A place may be available on ${className}.`,
-      `You have until ${expiresAt} to claim it. The place is not reserved until you click through and complete the checkout reservation step.`,
+      ...bodyLines,
       '',
       `Claim your place: ${claimUrl}`,
-      '',
-      'If you do not want the place, you can decline it from your dashboard and we will offer it to the next person on the waiting list.',
       '',
       'HireFlip',
     ].join('\n'),
@@ -1367,9 +1364,17 @@ const queueWaitingListOfferNotifications = async (
     candidate?.email && emailContent
       ? await requestNotificationServiceEmail({
           correlationId: offer.documentId,
-          html: emailContent.html,
           subject: emailContent.subject,
-          text: emailContent.text,
+          template: {
+            key: 'generic_branded_message',
+            variables: {
+              bodyLines: emailContent.bodyLines,
+              ctaLabel: emailContent.ctaLabel,
+              ctaUrl: emailContent.ctaUrl,
+              heading: emailContent.subject,
+              subject: emailContent.subject,
+            },
+          },
           to: candidate.email,
           type: 'candidate_waiting_list_offer_created',
         })
@@ -1938,6 +1943,11 @@ type NotificationServiceQueueResponse = {
   };
 };
 
+type NotificationTemplatePayload = {
+  key: string;
+  variables?: Record<string, unknown>;
+};
+
 type PaymentServiceCheckoutConfirmation = {
   amountTotal?: number;
   checkoutSessionId: string;
@@ -1971,14 +1981,6 @@ const classPaymentAmount = (classRecord?: DocumentRecord) =>
   classRecord?.discountedPricePence ?? classRecord?.pricePence ?? 0;
 
 const trimTrailingSlash = (value: string) => value.replace(/\/+$/, '');
-
-const htmlEscape = (value: string) =>
-  value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
 
 const adminDashboardSupportCaseUrl = (supportCaseDocumentId: string) =>
   `${trimTrailingSlash(process.env.ADMIN_DASHBOARD_PUBLIC_URL || 'http://localhost:3003')}/support/${encodeURIComponent(supportCaseDocumentId)}`;
@@ -2023,22 +2025,20 @@ const buildAssignedOwnerSupportEmail = ({
   const caseTitle = typeof supportCase.title === 'string' && supportCase.title.trim()
     ? supportCase.title.trim()
     : 'Support case';
+  const subject = 'New reply on an assigned HireFlip support case';
+  const bodyLines = [
+    `Hi ${ownerName},`,
+    `${candidateName} has replied to an assigned support case.`,
+    caseTitle,
+  ];
 
   return {
-    html: [
-      `<p>Hi ${htmlEscape(ownerName)},</p>`,
-      `<p>${htmlEscape(candidateName)} has replied to an assigned support case.</p>`,
-      `<p><strong>${htmlEscape(caseTitle)}</strong></p>`,
-      `<p><a href="${htmlEscape(url)}">Open the support case</a></p>`,
-      '<p>HireFlip</p>',
-    ].join(''),
-    subject: 'New reply on an assigned HireFlip support case',
+    bodyLines,
+    ctaLabel: 'Open the support case',
+    ctaUrl: url,
+    subject,
     text: [
-      `Hi ${ownerName},`,
-      '',
-      `${candidateName} has replied to an assigned support case.`,
-      '',
-      caseTitle,
+      ...bodyLines,
       '',
       `Open the support case: ${url}`,
       '',
@@ -2071,9 +2071,17 @@ const queueAssignedOwnerSupportNotification = async ({
     const content = buildAssignedOwnerSupportEmail({ candidate, supportCase });
     const emailQueueResult = await requestNotificationServiceEmail({
       correlationId: supportCaseDocumentId,
-      html: content.html,
       subject: content.subject,
-      text: content.text,
+      template: {
+        key: 'generic_branded_message',
+        variables: {
+          bodyLines: content.bodyLines,
+          ctaLabel: content.ctaLabel,
+          ctaUrl: content.ctaUrl,
+          heading: content.subject,
+          subject: content.subject,
+        },
+      },
       to: supportCase.ownerStaffEmail,
       type: 'admin_support_case_candidate_reply',
     });

@@ -20,6 +20,36 @@ const compactPayload = (payload) =>
 
 const createEndpoint = (baseUrl) => `${normalizeUrl(baseUrl)}/api/internal/notifications/email`;
 
+const stripHtml = (value) =>
+  String(value || '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>/gi, '\n\n')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n\s+/g, '\n')
+    .trim();
+
+const bodyLinesFromOptions = (options) => {
+  const source = options.text || stripHtml(options.html);
+
+  return String(source || 'HireFlip has sent you a new notification.')
+    .split(/\n{2,}/)
+    .map((line) => line.replace(/\s*\n\s*/g, ' ').trim())
+    .filter(Boolean);
+};
+
+const firstUrlFromLines = (lines) => {
+  const match = lines.join('\n').match(/https?:\/\/[^\s<>"']+/i);
+
+  return match?.[0];
+};
+
 module.exports = {
   init(providerOptions, settings = {}) {
     const baseUrl = providerOptions.baseUrl;
@@ -34,6 +64,9 @@ module.exports = {
       async send(options) {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), timeoutMs);
+        const subject = options.subject || 'HireFlip notification';
+        const bodyLines = bodyLinesFromOptions(options);
+        const ctaUrl = firstUrlFromLines(bodyLines);
 
         try {
           const response = await fetch(createEndpoint(baseUrl), {
@@ -43,12 +76,20 @@ module.exports = {
                 bcc: normalizeRecipients(options.bcc),
                 cc: normalizeRecipients(options.cc),
                 from: options.from || settings.defaultFrom,
-                html: options.html,
                 priority: 'transactional',
-                replyTo: options.replyTo || settings.defaultReplyTo,
                 source: 'strapi',
-                subject: options.subject || 'HireFlip notification',
-                text: options.text,
+                subject,
+                template: {
+                  key: 'generic_branded_message',
+                  variables: compactPayload({
+                    bodyLines,
+                    ctaLabel: ctaUrl ? 'Open HireFlip' : undefined,
+                    ctaUrl,
+                    heading: subject,
+                    replyTo: options.replyTo || settings.defaultReplyTo,
+                    subject,
+                  }),
+                },
                 to: normalizeRecipients(options.to),
                 type: 'strapi_system_email',
               }),

@@ -418,8 +418,8 @@ const main = async () => {
     process.env.CLASS_ALLOCATION_REDIS_ENABLED || 'true';
 
   if (process.env.WAITING_LIST_SMOKE_NOTIFICATION_MODE !== 'enabled') {
-    process.env.NOTIFICATION_SERVICE_URL = '';
-    process.env.NOTIFICATION_SERVICE_TOKEN = '';
+    process.env.NOTIFICATION_SERVICE_URL = process.env.NOTIFICATION_SERVICE_URL || 'http://127.0.0.1:1';
+    process.env.NOTIFICATION_SERVICE_TOKEN = process.env.NOTIFICATION_SERVICE_TOKEN || 'waiting-list-smoke-token';
   }
 
   const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
