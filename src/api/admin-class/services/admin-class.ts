@@ -158,6 +158,7 @@ const classStates = [
 const openingModes = ['admin_scheduled', 'admin_immediate', 'automatic'] as const;
 const announcementPriorities = ['normal', 'important', 'urgent'] as const;
 const announcementStates = ['draft', 'published', 'archived'] as const;
+const editableAnnouncementStates = ['draft', 'published'] as const;
 
 const listSchema = z
   .object({
@@ -291,12 +292,34 @@ const postAnnouncementSchema = z
   .object({
     body: z.string().trim().min(1).max(12000),
     classDocumentId: z.string().trim().min(1).max(160),
-    announcementState: z.enum(announcementStates).default('published'),
+    announcementState: z.enum(editableAnnouncementStates).default('published'),
     expiresAt: optionalDateTime(),
     priority: z.enum(announcementPriorities).default('normal'),
     sessionToken: z.string().trim().min(32).max(512),
     title: z.string().trim().min(1).max(160),
     visibleFrom: optionalDateTime(),
+  })
+  .strict();
+
+const updateAnnouncementSchema = z
+  .object({
+    announcementDocumentId: z.string().trim().min(1).max(160),
+    announcementState: z.enum(editableAnnouncementStates).default('published'),
+    body: z.string().trim().min(1).max(12000),
+    classDocumentId: z.string().trim().min(1).max(160),
+    expiresAt: optionalDateTime(),
+    priority: z.enum(announcementPriorities).default('normal'),
+    sessionToken: z.string().trim().min(32).max(512),
+    title: z.string().trim().min(1).max(160),
+    visibleFrom: optionalDateTime(),
+  })
+  .strict();
+
+const deleteAnnouncementSchema = z
+  .object({
+    announcementDocumentId: z.string().trim().min(1).max(160),
+    classDocumentId: z.string().trim().min(1).max(160),
+    sessionToken: z.string().trim().min(32).max(512),
   })
   .strict();
 
@@ -307,6 +330,8 @@ const validateCreate = validateZodSchema(createSchema);
 const validateUpdate = validateZodSchema(updateSchema);
 const validateLifecycle = validateZodSchema(lifecycleSchema);
 const validatePostAnnouncement = validateZodSchema(postAnnouncementSchema);
+const validateUpdateAnnouncement = validateZodSchema(updateAnnouncementSchema);
+const validateDeleteAnnouncement = validateZodSchema(deleteAnnouncementSchema);
 
 const documents = (strapi: StrapiService, uid: string) =>
   strapi.documents(uid) as unknown as DocumentCollection;
@@ -1098,6 +1123,24 @@ const findClassAnnouncements = async (strapi: StrapiService, classDocumentId: st
     sort: ['visibleFrom:desc', 'createdAt:desc'],
   });
 
+const findClassAnnouncementByDocumentId = async (
+  strapi: StrapiService,
+  classDocumentId: string,
+  announcementDocumentId: string
+) => {
+  const announcements = await documents(strapi, 'api::class-announcement.class-announcement').findMany({
+    filters: {
+      class: {
+        documentId: classDocumentId,
+      },
+      documentId: announcementDocumentId,
+    },
+    limit: 1,
+  });
+
+  return announcements[0];
+};
+
 const publicClassSummary = (
   classRecord: DocumentRecord,
   enrollments: DocumentRecord[],
@@ -1232,7 +1275,11 @@ const publishClassCandidateChanges = async (
   strapi: StrapiService,
   classRecord: DocumentRecord,
   enrollments: DocumentRecord[],
-  eventType: 'class_announcement_posted' | 'class_state_changed' = 'class_state_changed'
+  eventType:
+    | 'class_announcement_deleted'
+    | 'class_announcement_posted'
+    | 'class_announcement_updated'
+    | 'class_state_changed' = 'class_state_changed'
 ) => {
   const classDocumentId = getDocumentId(classRecord);
 
@@ -1928,6 +1975,140 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
     return {
       announcement: publicClassAnnouncement(announcement),
       created: true,
+      user: session.user,
+    };
+  },
+
+  async updateClassAnnouncement(input: unknown, requestContext: RequestContext = {}) {
+    const body = validateUpdateAnnouncement(input);
+    const session = await assertClassManageSession(strapi, body.sessionToken, requestContext);
+    const [classRecord, existingAnnouncement] = await Promise.all([
+      findClassByDocumentId(strapi, body.classDocumentId),
+      findClassAnnouncementByDocumentId(strapi, body.classDocumentId, body.announcementDocumentId),
+    ]);
+
+    if (!classRecord) {
+      throw new ValidationError('Class could not be found.');
+    }
+
+    if (!existingAnnouncement || existingAnnouncement.announcementState === 'archived') {
+      throw new ValidationError('Class announcement could not be found.');
+    }
+
+    const updatedAnnouncement = await documents(strapi, 'api::class-announcement.class-announcement').update({
+      documentId: body.announcementDocumentId,
+      data: {
+        announcementState: body.announcementState,
+        body: body.body,
+        expiresAt: body.expiresAt || null,
+        metadata: {
+          ...objectValue(existingAnnouncement.metadata),
+          lastUpdatedAt: new Date().toISOString(),
+          lastUpdatedByStaffUserId: session.user.id,
+          lastUpdatedRequestId: requestContext.requestId,
+          source: 'admin_dashboard',
+        },
+        priority: body.priority,
+        title: body.title,
+        visibleFrom: body.visibleFrom || null,
+      },
+    });
+    const enrollments = await findEnrollmentsForClasses(strapi, [body.classDocumentId]);
+
+    await recordClassAudit({
+      classRecord,
+      context: requestContext,
+      eventType: 'admin.class_announcement_updated',
+      metadata: {
+        announcementDocumentId: body.announcementDocumentId,
+        announcementState: body.announcementState,
+        expiresAt: body.expiresAt,
+        priority: body.priority,
+        visibleFrom: body.visibleFrom,
+      },
+      newState: publicClassAnnouncement(updatedAnnouncement),
+      previousState: publicClassAnnouncement(existingAnnouncement),
+      session,
+      strapi,
+    });
+    await publishClassAdminChange(strapi, body.classDocumentId);
+
+    if (
+      existingAnnouncement.announcementState === 'published' ||
+      updatedAnnouncement.announcementState === 'published'
+    ) {
+      await publishClassCandidateChanges(
+        strapi,
+        classRecord,
+        enrollments,
+        'class_announcement_updated'
+      );
+    }
+
+    return {
+      announcement: publicClassAnnouncement(updatedAnnouncement),
+      updated: true,
+      user: session.user,
+    };
+  },
+
+  async deleteClassAnnouncement(input: unknown, requestContext: RequestContext = {}) {
+    const body = validateDeleteAnnouncement(input);
+    const session = await assertClassManageSession(strapi, body.sessionToken, requestContext);
+    const [classRecord, existingAnnouncement] = await Promise.all([
+      findClassByDocumentId(strapi, body.classDocumentId),
+      findClassAnnouncementByDocumentId(strapi, body.classDocumentId, body.announcementDocumentId),
+    ]);
+
+    if (!classRecord) {
+      throw new ValidationError('Class could not be found.');
+    }
+
+    if (!existingAnnouncement || existingAnnouncement.announcementState === 'archived') {
+      throw new ValidationError('Class announcement could not be found.');
+    }
+
+    const archivedAnnouncement = await documents(strapi, 'api::class-announcement.class-announcement').update({
+      documentId: body.announcementDocumentId,
+      data: {
+        announcementState: 'archived',
+        metadata: {
+          ...objectValue(existingAnnouncement.metadata),
+          archivedAt: new Date().toISOString(),
+          archivedByStaffUserId: session.user.id,
+          archivedRequestId: requestContext.requestId,
+          source: 'admin_dashboard',
+        },
+      },
+    });
+    const enrollments = await findEnrollmentsForClasses(strapi, [body.classDocumentId]);
+
+    await recordClassAudit({
+      classRecord,
+      context: requestContext,
+      eventType: 'admin.class_announcement_deleted',
+      metadata: {
+        announcementDocumentId: body.announcementDocumentId,
+      },
+      newState: publicClassAnnouncement(archivedAnnouncement),
+      previousState: publicClassAnnouncement(existingAnnouncement),
+      session,
+      strapi,
+    });
+    await publishClassAdminChange(strapi, body.classDocumentId);
+
+    if (existingAnnouncement.announcementState === 'published') {
+      await publishClassCandidateChanges(
+        strapi,
+        classRecord,
+        enrollments,
+        'class_announcement_deleted'
+      );
+    }
+
+    return {
+      announcement: publicClassAnnouncement(archivedAnnouncement),
+      deleted: true,
       user: session.user,
     };
   },

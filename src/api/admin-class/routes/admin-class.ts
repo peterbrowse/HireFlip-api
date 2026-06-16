@@ -63,6 +63,24 @@ export default {
     },
     {
       method: 'POST',
+      path: '/internal/admin/classes/announcements/update',
+      handler: 'admin-class.updateAnnouncement',
+      config: {
+        auth: false,
+        policies: [adminDashboardServicePolicy],
+      },
+    },
+    {
+      method: 'POST',
+      path: '/internal/admin/classes/announcements/delete',
+      handler: 'admin-class.deleteAnnouncement',
+      config: {
+        auth: false,
+        policies: [adminDashboardServicePolicy],
+      },
+    },
+    {
+      method: 'POST',
       path: '/internal/admin/classes/lifecycle',
       handler: 'admin-class.lifecycle',
       config: {

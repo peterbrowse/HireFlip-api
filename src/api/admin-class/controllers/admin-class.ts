@@ -7,10 +7,12 @@ type RequestContext = {
 
 type AdminClassService = {
   createClass(input: unknown, context: RequestContext): Promise<unknown>;
+  deleteClassAnnouncement(input: unknown, context: RequestContext): Promise<unknown>;
   getClassDetail(input: unknown, context: RequestContext): Promise<unknown>;
   getClassOptions(input: unknown, context: RequestContext): Promise<unknown>;
   listClasses(input: unknown, context: RequestContext): Promise<unknown>;
   postClassAnnouncement(input: unknown, context: RequestContext): Promise<unknown>;
+  updateClassAnnouncement(input: unknown, context: RequestContext): Promise<unknown>;
   updateClass(input: unknown, context: RequestContext): Promise<unknown>;
   updateClassLifecycle(input: unknown, context: RequestContext): Promise<unknown>;
 };
@@ -80,6 +82,24 @@ export default ({ strapi }) => ({
   async postAnnouncement(ctx) {
     ctx.body = {
       data: await adminClassService(strapi).postClassAnnouncement(
+        ctx.request.body,
+        getRequestContext(ctx)
+      ),
+    };
+  },
+
+  async updateAnnouncement(ctx) {
+    ctx.body = {
+      data: await adminClassService(strapi).updateClassAnnouncement(
+        ctx.request.body,
+        getRequestContext(ctx)
+      ),
+    };
+  },
+
+  async deleteAnnouncement(ctx) {
+    ctx.body = {
+      data: await adminClassService(strapi).deleteClassAnnouncement(
         ctx.request.body,
         getRequestContext(ctx)
       ),
