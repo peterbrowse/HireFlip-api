@@ -46,6 +46,8 @@ type DocumentRecord = Record<string, unknown> & {
   completionStatus?: string;
   createdAt?: string;
   course?: DocumentRecord;
+  courseMaterial?: DocumentRecord;
+  courseModule?: DocumentRecord;
   currency?: string;
   displayTitle?: string;
   documentId?: string;
@@ -60,6 +62,8 @@ type DocumentRecord = Record<string, unknown> & {
   id?: number | string;
   interestRegisteredAt?: string;
   interestThresholdPercentage?: number;
+  interviewGuaranteeDeadline?: string;
+  interviewGuaranteeWindowStartsAt?: string;
   interviewsGuaranteed?: number;
   invitedToJoinAt?: string;
   lastName?: string;
@@ -83,6 +87,8 @@ type DocumentRecord = Record<string, unknown> & {
   postedByStaffUserId?: string;
   pricePence?: number;
   processedAt?: string;
+  progressState?: string;
+  progressType?: string;
   providerCheckoutSessionId?: string;
   providerPaymentIntentId?: string;
   expiresAt?: string;
@@ -94,13 +100,16 @@ type DocumentRecord = Record<string, unknown> & {
   reservationExpiresAt?: string;
   reservationState?: string;
   scheduledEnrollmentOpenAt?: string;
+  score?: number;
   sector?: string;
   sortOrder?: number;
   slug?: string;
   startDate?: string;
+  startedAt?: string;
   state?: string;
   announcementState?: string;
   priority?: string;
+  test?: DocumentRecord;
   title?: string;
   updatedAt?: string;
   waitingListPosition?: number;
@@ -364,6 +373,7 @@ const classPopulate = ['classArea', 'course', 'workSector'];
 const enrollmentPopulate = ['candidate', 'class'];
 const reservationPopulate = ['candidate', 'class', 'enrollment'];
 const paymentPopulate = ['candidate', 'enrollment', 'reservation'];
+const courseProgressPopulate = ['enrollment', 'courseModule', 'courseMaterial', 'test'];
 
 const getDocumentId = (record?: DocumentRecord | null) => {
   if (!record) {
@@ -722,15 +732,283 @@ const findPaymentsForEnrollments = async (
   return latestByEnrollment(payments);
 };
 
+type CourseSetupPayload = {
+  materials: Array<{
+    documentId?: string;
+    materialState: string | null;
+    required: boolean;
+  }>;
+  modules: Array<{
+    documentId?: string;
+    moduleState: string | null;
+    required: boolean;
+  }>;
+  tests: Array<{
+    documentId?: string;
+    testState: string | null;
+  }>;
+};
+
+const findCourseProgressForEnrollments = async (
+  strapi: StrapiService,
+  enrollmentDocumentIds: string[]
+) => {
+  if (enrollmentDocumentIds.length === 0) {
+    return new Map<string, DocumentRecord[]>();
+  }
+
+  const progressRecords = await documents(strapi, 'api::course-progress.course-progress').findMany({
+    filters: {
+      enrollment: {
+        documentId: {
+          $in: enrollmentDocumentIds,
+        },
+      },
+    },
+    limit: 10000,
+    populate: courseProgressPopulate,
+    sort: ['createdAt:asc'],
+  });
+
+  return progressRecords.reduce((map, progressRecord) => {
+    const enrollmentDocumentId = getDocumentId(progressRecord.enrollment);
+
+    if (!enrollmentDocumentId) {
+      return map;
+    }
+
+    map.set(enrollmentDocumentId, [
+      ...(map.get(enrollmentDocumentId) || []),
+      progressRecord,
+    ]);
+
+    return map;
+  }, new Map<string, DocumentRecord[]>());
+};
+
+const setupItemKeys = (courseSetup: CourseSetupPayload) => {
+  const keys = new Set<string>();
+
+  courseSetup.modules.forEach((module) => {
+    if (module.required && module.moduleState !== 'archived' && module.documentId) {
+      keys.add(`module:${module.documentId}`);
+    }
+  });
+  courseSetup.materials.forEach((material) => {
+    if (material.required && material.materialState !== 'archived' && material.documentId) {
+      keys.add(`material:${material.documentId}`);
+    }
+  });
+  courseSetup.tests.forEach((test) => {
+    if (test.testState !== 'archived' && test.documentId) {
+      keys.add(`test:${test.documentId}`);
+    }
+  });
+
+  return keys;
+};
+
+const progressItemKey = (progressRecord: DocumentRecord) => {
+  if (progressRecord.progressType === 'module') {
+    const documentId = getDocumentId(progressRecord.courseModule);
+    return documentId ? `module:${documentId}` : null;
+  }
+
+  if (progressRecord.progressType === 'material') {
+    const documentId = getDocumentId(progressRecord.courseMaterial);
+    return documentId ? `material:${documentId}` : null;
+  }
+
+  if (progressRecord.progressType === 'test') {
+    const documentId = getDocumentId(progressRecord.test);
+    return documentId ? `test:${documentId}` : null;
+  }
+
+  return null;
+};
+
+const progressTimestamp = (progressRecord?: DocumentRecord) => {
+  if (!progressRecord) {
+    return null;
+  }
+
+  return progressRecord.completedAt || progressRecord.startedAt || progressRecord.updatedAt || progressRecord.createdAt || null;
+};
+
+const latestProgressRecord = (progressRecords: DocumentRecord[]) =>
+  progressRecords.reduce<DocumentRecord | undefined>((latest, progressRecord) => {
+    const latestTime = progressTimestamp(latest);
+    const progressTime = progressTimestamp(progressRecord);
+
+    if (!latestTime) {
+      return progressRecord;
+    }
+
+    if (!progressTime) {
+      return latest;
+    }
+
+    return Date.parse(progressTime) >= Date.parse(latestTime) ? progressRecord : latest;
+  }, undefined);
+
+const daysUntil = (dateValue?: string | null) => {
+  if (!dateValue) {
+    return null;
+  }
+
+  const timestamp = Date.parse(dateValue);
+
+  if (Number.isNaN(timestamp)) {
+    return null;
+  }
+
+  return Math.ceil((timestamp - Date.now()) / 86400000);
+};
+
+const activeDeadline = (classRecord: DocumentRecord, enrollment: DocumentRecord) => {
+  const phase = String(enrollment.enrollmentState || classRecord.state || '');
+  const interviewDeadline = enrollment.interviewGuaranteeDeadline || classRecord.interviewGuaranteeDeadline || null;
+  const completionDeadline = classRecord.completionDeadline || null;
+  const reservationDeadline = enrollment.reservationExpiresAt || null;
+
+  if (phase === 'interview_phase' && interviewDeadline) {
+    return {
+      at: interviewDeadline,
+      type: 'interview',
+    };
+  }
+
+  if (['in_class', 'enrolled'].includes(phase) && completionDeadline) {
+    return {
+      at: completionDeadline,
+      type: 'completion',
+    };
+  }
+
+  if (['place_reserved', 'enrollment_open'].includes(phase) && reservationDeadline) {
+    return {
+      at: reservationDeadline,
+      type: 'reservation',
+    };
+  }
+
+  if (classRecord.state === 'completion_window' && completionDeadline) {
+    return {
+      at: completionDeadline,
+      type: 'completion',
+    };
+  }
+
+  if (classRecord.state === 'interview_window' && interviewDeadline) {
+    return {
+      at: interviewDeadline,
+      type: 'interview',
+    };
+  }
+
+  return {
+    at: completionDeadline || interviewDeadline || reservationDeadline,
+    type: completionDeadline
+      ? 'completion'
+      : interviewDeadline
+        ? 'interview'
+        : reservationDeadline
+          ? 'reservation'
+          : null,
+  };
+};
+
+const enrollmentProgressSummary = ({
+  classRecord,
+  courseItemKeys,
+  enrollment,
+  progressRecords,
+}: {
+  classRecord: DocumentRecord;
+  courseItemKeys: Set<string>;
+  enrollment: DocumentRecord;
+  progressRecords: DocumentRecord[];
+}) => {
+  const completedKeys = new Set<string>();
+  const startedKeys = new Set<string>();
+  const classProgressRecord = latestProgressRecord(
+    progressRecords.filter((progressRecord) => progressRecord.progressType === 'class')
+  );
+  const latestProgress = latestProgressRecord(progressRecords);
+
+  progressRecords.forEach((progressRecord) => {
+    const itemKey = progressItemKey(progressRecord);
+
+    if (!itemKey || !courseItemKeys.has(itemKey)) {
+      return;
+    }
+
+    if (['in_progress', 'completed', 'failed'].includes(String(progressRecord.progressState || ''))) {
+      startedKeys.add(itemKey);
+    }
+
+    if (progressRecord.progressState === 'completed') {
+      completedKeys.add(itemKey);
+    }
+  });
+
+  const totalItems = courseItemKeys.size;
+  const courseCompletedByStatus =
+    enrollment.completionStatus === 'completed' || classProgressRecord?.progressState === 'completed';
+  const completedItems = totalItems > 0 && courseCompletedByStatus
+    ? totalItems
+    : Math.min(totalItems, completedKeys.size);
+  const startedItems = totalItems > 0 && courseCompletedByStatus
+    ? totalItems
+    : Math.min(totalItems, startedKeys.size);
+  const percentageComplete = totalItems > 0
+    ? Math.min(100, Math.round((completedItems / totalItems) * 100))
+    : courseCompletedByStatus
+      ? 100
+      : null;
+  const deadline = activeDeadline(classRecord, enrollment);
+
+  return {
+    activeDeadlineAt: deadline.at || null,
+    activeDeadlineDaysRemaining: daysUntil(deadline.at),
+    activeDeadlineType: deadline.type,
+    classProgressState: classProgressRecord?.progressState || null,
+    completedItems,
+    completionDeadline: classRecord.completionDeadline || null,
+    interviewGuaranteeDeadline:
+      enrollment.interviewGuaranteeDeadline || classRecord.interviewGuaranteeDeadline || null,
+    interviewGuaranteeWindowStartsAt: enrollment.interviewGuaranteeWindowStartsAt || null,
+    interviewsGuaranteed: classRecord.interviewsGuaranteed ?? null,
+    latestProgressAt: progressTimestamp(latestProgress),
+    latestProgressState: latestProgress?.progressState || null,
+    percentageComplete,
+    percentageSource: totalItems > 0
+      ? 'course_progress_records'
+      : courseCompletedByStatus
+        ? 'enrollment_completion_status'
+        : null,
+    phase: enrollment.enrollmentState || classRecord.state || null,
+    qualifyingInterviewsDeliveredCount: enrollment.qualifyingInterviewsDeliveredCount ?? null,
+    startedItems,
+    totalItems,
+  };
+};
+
 const publicEnrollment = ({
+  classRecord,
   enrollment,
   payment,
   permissions,
+  progressRecords,
   reservation,
+  courseItemKeys,
 }: {
+  classRecord: DocumentRecord;
+  courseItemKeys: Set<string>;
   enrollment: DocumentRecord;
   payment?: DocumentRecord;
   permissions: ReturnType<typeof classPermissions>;
+  progressRecords: DocumentRecord[];
   reservation?: DocumentRecord;
 }) => {
   const candidate = enrollment.candidate;
@@ -765,6 +1043,12 @@ const publicEnrollment = ({
         }
       : null,
     paymentStatus: enrollment.paymentStatus || null,
+    progress: enrollmentProgressSummary({
+      classRecord,
+      courseItemKeys,
+      enrollment,
+      progressRecords,
+    }),
     qualifyingInterviewsDeliveredCount: enrollment.qualifyingInterviewsDeliveredCount ?? null,
     refundEligibilityState: enrollment.refundEligibilityState || null,
     reservation: permissions.canViewFinancials && reservation
@@ -1457,12 +1741,14 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
 
     const enrollments = await findEnrollmentsForClasses(strapi, [body.classDocumentId]);
     const enrollmentDocumentIds = enrollments.map(getDocumentId).filter((documentId): documentId is string => Boolean(documentId));
-    const [reservationsByEnrollment, paymentsByEnrollment, courseSetup, announcements] = await Promise.all([
+    const [reservationsByEnrollment, paymentsByEnrollment, progressByEnrollment, courseSetup, announcements] = await Promise.all([
       findReservationsForEnrollments(strapi, enrollmentDocumentIds),
       findPaymentsForEnrollments(strapi, enrollmentDocumentIds),
+      findCourseProgressForEnrollments(strapi, enrollmentDocumentIds),
       courseSetupForClass(strapi, classRecord),
       findClassAnnouncements(strapi, body.classDocumentId),
     ]);
+    const courseItemKeys = setupItemKeys(courseSetup);
 
     return {
       announcements: announcements.map(publicClassAnnouncement),
@@ -1470,9 +1756,12 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
       courseSetup,
       enrollments: enrollments.map((enrollment) =>
         publicEnrollment({
+          classRecord,
+          courseItemKeys,
           enrollment,
           payment: paymentsByEnrollment.get(getDocumentId(enrollment) || ''),
           permissions,
+          progressRecords: progressByEnrollment.get(getDocumentId(enrollment) || '') || [],
           reservation: reservationsByEnrollment.get(getDocumentId(enrollment) || ''),
         })
       ),
