@@ -208,6 +208,12 @@ const reviewExecuteSchema = reviewDetailSchema
     reviewClaimToken: z.string().trim().min(32).max(160).optional(),
   })
   .strict();
+const reviewPaymentExceptionApproveSchema = reviewDetailSchema
+  .extend({
+    message: z.string().trim().max(4000).optional(),
+    reviewClaimToken: z.string().trim().min(32).max(160).optional(),
+  })
+  .strict();
 const providerRefundSchema = z
   .object({
     amountPence: z.number().int().nonnegative(),
@@ -237,6 +243,9 @@ const validateReviewDetail = validateZodSchema(reviewDetailSchema);
 const validateReviewRefuse = validateZodSchema(reviewRefuseSchema);
 const validateReviewEscalate = validateZodSchema(reviewEscalateSchema);
 const validateReviewExecute = validateZodSchema(reviewExecuteSchema);
+const validateReviewPaymentExceptionApprove = validateZodSchema(
+  reviewPaymentExceptionApproveSchema
+);
 const validateProviderRefundUpdate = validateZodSchema(providerRefundUpdateSchema);
 
 const documents = (strapi: StrapiDocumentService, uid: string) =>
@@ -284,6 +293,9 @@ const getDocumentId = (record?: DocumentRecord | null) => {
       ? String(record.id)
       : undefined;
 };
+
+const relationConnect = (record?: DocumentRecord | null) =>
+  getDocumentId(record) ? { connect: [{ documentId: getDocumentId(record) }] } : undefined;
 
 const objectValue = (value: unknown) =>
   value && typeof value === 'object' && !Array.isArray(value)
@@ -807,6 +819,11 @@ const buildReviewItem = async ({
   return {
     actionPath: refundTaskPath(taskKey),
     actions: {
+      canApproveFullRefund:
+        type === 'payment_exception' &&
+        typeof originalAmountPence === 'number' &&
+        originalAmountPence > 0 &&
+        Boolean(originalPayment?.providerPaymentIntentId),
       canExecuteRefund: type === 'refund_request' && ['approved', 'failed'].includes(refundState),
       canEscalate: type === 'refund_request' && ['requested', 'failed'].includes(refundState),
       canRefuse: type === 'refund_request' && ['requested', 'failed'].includes(refundState),
@@ -1394,6 +1411,195 @@ const refundActionContext = async (strapi: StrapiDocumentService, taskKey: strin
   };
 };
 
+const paymentExceptionActionContext = async (
+  strapi: StrapiDocumentService,
+  taskKey: string
+) => {
+  const review = await reviewByTaskKey(strapi, taskKey);
+
+  if (review.reviewType !== 'payment_exception') {
+    throw new ValidationError('This review is not linked to a payment exception.');
+  }
+
+  let payment: DocumentRecord | undefined;
+  let reservation: DocumentRecord | undefined;
+  let enrollment: DocumentRecord | undefined;
+
+  if (review.sourceType === 'payment') {
+    payment = await byDocumentId(strapi, 'api::payment.payment', review.sourceDocumentId, [
+      'candidate',
+      'enrollment',
+      'reservation',
+    ]);
+
+    if (!payment) {
+      throw new ValidationError('Payment exception could not be found.');
+    }
+
+    const relationRecords = await relationContext(strapi, payment);
+    enrollment = relationRecords.enrollment;
+    reservation = relationRecords.reservation;
+  } else if (review.sourceType === 'reservation') {
+    reservation = await byDocumentId(
+      strapi,
+      'api::reservation.reservation',
+      review.sourceDocumentId,
+      ['candidate', 'class', 'enrollment']
+    );
+
+    if (!reservation) {
+      throw new ValidationError('Reservation payment exception could not be found.');
+    }
+
+    payment = await paymentForRelation(strapi, 'reservation', review.sourceDocumentId);
+    enrollment = reservation.enrollment?.documentId
+      ? await byDocumentId(strapi, 'api::enrollment.enrollment', getDocumentId(reservation.enrollment), [
+          'candidate',
+          'class',
+        ])
+      : reservation.enrollment;
+  } else if (review.sourceType === 'enrollment') {
+    enrollment = await byDocumentId(
+      strapi,
+      'api::enrollment.enrollment',
+      review.sourceDocumentId,
+      ['candidate', 'class']
+    );
+
+    if (!enrollment) {
+      throw new ValidationError('Enrollment payment exception could not be found.');
+    }
+
+    payment = await paymentForRelation(strapi, 'enrollment', review.sourceDocumentId);
+    reservation = payment?.reservation?.documentId
+      ? await byDocumentId(
+          strapi,
+          'api::reservation.reservation',
+          getDocumentId(payment.reservation),
+          ['candidate', 'class', 'enrollment']
+        )
+      : undefined;
+  }
+
+  if (!payment?.documentId) {
+    throw new ValidationError('A payment record is required before this exception can be refunded.');
+  }
+
+  if (!payment.providerPaymentIntentId) {
+    throw new ValidationError('The provider PaymentIntent is required before this exception can be refunded.');
+  }
+
+  const candidate =
+    payment.candidate || reservation?.candidate || enrollment?.candidate || review.candidate;
+
+  if (!candidate?.email || typeof candidate.email !== 'string') {
+    throw new ValidationError('Payment exception is not linked to a candidate email address.');
+  }
+
+  return {
+    candidate,
+    enrollment,
+    payment,
+    reservation,
+    review,
+  };
+};
+
+const activeExceptionRefundForPayment = async (
+  strapi: StrapiDocumentService,
+  paymentDocumentId: string
+) => {
+  const refunds = await documents(strapi, 'api::refund.refund').findMany({
+    filters: {
+      eligibilitySource: 'payment_error',
+      payment: {
+        documentId: paymentDocumentId,
+      },
+      refundState: {
+        $in: ['requested', 'approved', 'submitted_to_provider', 'processing', 'failed'],
+      },
+    },
+    limit: 1,
+    populate: ['candidate', 'enrollment', 'payment'],
+    sort: ['updatedAt:desc', 'createdAt:desc'],
+  });
+
+  return refunds[0];
+};
+
+const resolvePaymentExceptionSourceRecords = async ({
+  enrollment,
+  payment,
+  refund,
+  reservation,
+  strapi,
+}: {
+  enrollment?: DocumentRecord;
+  payment: DocumentRecord;
+  refund: DocumentRecord;
+  reservation?: DocumentRecord;
+  strapi: StrapiDocumentService;
+}) => {
+  const now = new Date().toISOString();
+  const metadata = {
+    paymentExceptionResolvedAt: now,
+    paymentExceptionResolution: 'full_refund_approved',
+    refundDocumentId: getDocumentId(refund) || null,
+  };
+  const [updatedPayment, updatedReservation, updatedEnrollment] = await Promise.all([
+    payment.documentId && payment.paymentState === 'requires_review'
+      ? documents(strapi, 'api::payment.payment').update({
+          documentId: payment.documentId,
+          data: {
+            metadata: {
+              ...(objectValue(payment.metadata)),
+              ...metadata,
+            },
+            paymentState: 'paid',
+          },
+          populate: ['candidate', 'enrollment', 'reservation'],
+        })
+      : Promise.resolve(payment),
+    reservation?.documentId && reservation.reservationState === 'payment_exception'
+      ? documents(strapi, 'api::reservation.reservation').update({
+          documentId: reservation.documentId,
+          data: {
+            metadata: {
+              ...(objectValue(reservation.metadata)),
+              ...metadata,
+            },
+            reservationState: 'released',
+          },
+          populate: ['candidate', 'class', 'enrollment'],
+        })
+      : Promise.resolve(reservation),
+    enrollment?.documentId &&
+    (enrollment.enrollmentState === 'payment_exception' ||
+      enrollment.paymentStatus === 'requires_review')
+      ? documents(strapi, 'api::enrollment.enrollment').update({
+          documentId: enrollment.documentId,
+          data: {
+            enrollmentState: 'removed_full_refund',
+            metadata: {
+              ...(objectValue(enrollment.metadata)),
+              ...metadata,
+            },
+            paymentStatus: 'paid',
+            reservationExpiresAt: null,
+            waitingListPosition: null,
+          },
+          populate: ['candidate', 'class'],
+        })
+      : Promise.resolve(enrollment),
+  ]);
+
+  return {
+    enrollment: updatedEnrollment,
+    payment: updatedPayment,
+    reservation: updatedReservation,
+  };
+};
+
 const refundsByProviderRefundId = async (
   strapi: StrapiDocumentService,
   providerRefundId?: string | null
@@ -1597,6 +1803,24 @@ const paymentSnapshot = (payment?: DocumentRecord | null) =>
       }
     : null;
 
+const reservationSnapshot = (reservation?: DocumentRecord | null) =>
+  reservation
+    ? {
+        documentId: getDocumentId(reservation) || null,
+        paidAt: reservation.paidAt || null,
+        reservationState: reservation.reservationState || null,
+      }
+    : null;
+
+const enrollmentSnapshot = (enrollment?: DocumentRecord | null) =>
+  enrollment
+    ? {
+        documentId: getDocumentId(enrollment) || null,
+        enrollmentState: enrollment.enrollmentState || null,
+        paymentStatus: enrollment.paymentStatus || null,
+      }
+    : null;
+
 const candidateFirstName = (candidate: DocumentRecord) =>
   typeof candidate.firstName === 'string' && candidate.firstName.trim()
     ? candidate.firstName.trim()
@@ -1643,6 +1867,61 @@ const auditRefundAction = async ({
     subjectDisplayName,
     subjectId,
     subjectType: 'refund',
+    userAgent: requestContext.userAgent,
+  });
+
+const auditPaymentExceptionResolution = async ({
+  candidate,
+  metadata,
+  newEnrollment,
+  newPayment,
+  newRefund,
+  newReservation,
+  previousEnrollment,
+  previousPayment,
+  previousReservation,
+  requestContext,
+  session,
+  strapi,
+}: {
+  candidate?: DocumentRecord | null;
+  metadata?: Record<string, unknown>;
+  newEnrollment?: DocumentRecord | null;
+  newPayment?: DocumentRecord | null;
+  newRefund?: DocumentRecord | null;
+  newReservation?: DocumentRecord | null;
+  previousEnrollment?: DocumentRecord | null;
+  previousPayment?: DocumentRecord | null;
+  previousReservation?: DocumentRecord | null;
+  requestContext: RequestContext;
+  session: AdminSession;
+  strapi: StrapiDocumentService;
+}) =>
+  auditEvents(strapi).record({
+    actorDisplayName: session.user.displayName,
+    actorEmail: session.user.email,
+    actorId: session.user.id,
+    actorType: 'admin',
+    eventCategory: 'payment',
+    eventType: 'admin.payment_exception_full_refund_approved',
+    ipAddress: requestContext.ipAddress,
+    metadata,
+    newState: {
+      enrollment: enrollmentSnapshot(newEnrollment),
+      payment: paymentSnapshot(newPayment),
+      refund: refundSnapshot(newRefund),
+      reservation: reservationSnapshot(newReservation),
+    },
+    previousState: {
+      enrollment: enrollmentSnapshot(previousEnrollment),
+      payment: paymentSnapshot(previousPayment),
+      reservation: reservationSnapshot(previousReservation),
+    },
+    requestId: requestContext.requestId,
+    source: 'admin_dashboard',
+    subjectDisplayName: candidateDisplayName(candidate),
+    subjectId: getDocumentId(newPayment || previousPayment) || getDocumentId(newRefund),
+    subjectType: 'payment',
     userAgent: requestContext.userAgent,
   });
 
@@ -2192,6 +2471,179 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
         supportCases,
       },
       reviewClaim,
+    };
+  },
+
+  async approvePaymentExceptionRefund(input: unknown, requestContext: RequestContext = {}) {
+    const body = validateReviewPaymentExceptionApprove(input);
+    const session = await assertRefundReviewSession(strapi, body.sessionToken, requestContext);
+    const { candidate, enrollment, payment, reservation, review } =
+      await paymentExceptionActionContext(strapi, body.taskKey);
+
+    await reviewClaimService(strapi).assertActiveClaimForSession(
+      {
+        claimToken: body.reviewClaimToken,
+        resourceDocumentId: review.sourceDocumentId,
+        resourceKey: body.taskKey,
+        resourceLabel: review.title,
+        resourceType: 'refund_review',
+      },
+      session
+    );
+
+    const existingRefund = await activeExceptionRefundForPayment(strapi, payment.documentId);
+
+    if (existingRefund?.documentId) {
+      throw new ValidationError('This payment exception already has an active refund review.');
+    }
+
+    if (typeof payment.amountPence !== 'number' || payment.amountPence <= 0) {
+      throw new ValidationError('A positive payment amount is required before a full refund can be approved.');
+    }
+
+    const now = new Date().toISOString();
+    const amount = formatMoney(payment.amountPence, payment.currency || 'GBP');
+    const candidateMessage =
+      body.message ||
+      `Your payment exception has been reviewed and a full refund${amount ? ` of ${amount}` : ''} has been approved. It is now waiting for final provider processing.`;
+    const refund = await documents(strapi, 'api::refund.refund').create({
+      data: {
+        amountPence: payment.amountPence,
+        approvedAt: now,
+        candidate: relationConnect(candidate),
+        currency: payment.currency || 'GBP',
+        eligibilitySource: 'payment_error',
+        enrollment: relationConnect(enrollment || payment.enrollment),
+        metadata: {
+          approvedByAdminEmail: session.user.email,
+          approvedByAdminId: session.user.id,
+          originalAmountPence: payment.amountPence,
+          paymentExceptionApprovedAt: now,
+          paymentExceptionReason: objectValue(payment.metadata).exceptionReason || null,
+          paymentExceptionSourceDocumentId: review.sourceDocumentId,
+          paymentExceptionTaskKey: body.taskKey,
+          refundDecision: 'payment_exception_full_refund_pending_super_admin_execution',
+        },
+        payment: relationConnect(payment),
+        paymentProvider: payment.paymentProvider || 'stripe',
+        reason: candidateMessage,
+        refundPercentage: 100,
+        refundState: 'approved',
+        requestedAt: now,
+      },
+      populate: ['candidate', 'enrollment', 'payment'],
+    });
+    const { supportCase } = await ensureRefundSupportCase({
+      candidate,
+      payment,
+      refund,
+      session,
+      state: 'awaiting_staff',
+      strapi,
+      summary: 'Payment exception approved for a full refund and waiting for Super Admin provider execution.',
+    });
+    const supportCaseDocumentId = getDocumentId(supportCase);
+    let queueResult: NotificationServiceQueueResponse | undefined;
+    let notificationFailureMessage: string | undefined;
+
+    try {
+      queueResult = await requestNotificationServiceEmail({
+        correlationId: refund.documentId,
+        template: {
+          key: 'candidate_refund_accepted',
+          variables: {
+            amount,
+            candidateFirstName: candidateFirstName(candidate),
+            message: candidateMessage,
+            supportCaseUrl: supportCaseDocumentId ? supportCaseUrl(supportCaseDocumentId) : undefined,
+          },
+        },
+        to: candidate.email,
+        type: 'candidate_refund_accepted',
+      });
+    } catch (error) {
+      notificationFailureMessage =
+        error instanceof Error
+          ? error.message
+          : 'Candidate payment exception refund notification could not be queued.';
+      (strapi as { log?: { error?: (message: string, error?: unknown) => void } }).log?.error?.(
+        'Candidate payment exception refund notification could not be queued.',
+        error
+      );
+    }
+
+    const notificationQueued = queueResult?.data?.queued === true;
+    const refundWithNotification = await documents(strapi, 'api::refund.refund').update({
+      documentId: refund.documentId,
+      data: {
+        metadata: {
+          ...(objectValue(refund.metadata)),
+          acceptedCandidateMessage: candidateMessage,
+          acceptedNotificationFailureMessage: notificationFailureMessage || null,
+          acceptedNotificationServiceJobId: queueResult?.data?.jobId ?? null,
+        },
+      },
+      populate: ['candidate', 'enrollment', 'payment'],
+    });
+
+    await addRefundSupportMessage({
+      body: candidateMessage,
+      candidate,
+      deliveryState: notificationQueued ? 'queued' : 'failed',
+      direction: 'outbound',
+      messageType: 'refund_acceptance',
+      metadata: {
+        amountPence: payment.amountPence,
+        notificationFailureMessage: notificationFailureMessage || null,
+        notificationServiceJobId: queueResult?.data?.jobId ?? null,
+        refundPercentage: 100,
+      },
+      payment,
+      refund: refundWithNotification,
+      sender: adminSender(session),
+      sentAt: now,
+      strapi,
+      subject: 'Your HireFlip refund has been accepted',
+      supportCase,
+      visibility: 'public',
+    });
+    const updatedRecords = await resolvePaymentExceptionSourceRecords({
+      enrollment,
+      payment,
+      refund: refundWithNotification,
+      reservation,
+      strapi,
+    });
+
+    await auditPaymentExceptionResolution({
+      candidate,
+      metadata: {
+        amountPence: payment.amountPence,
+        candidateEmail: candidate.email,
+        notificationFailureMessage: notificationFailureMessage || null,
+        notificationQueued,
+        notificationServiceJobId: queueResult?.data?.jobId ?? null,
+        refundPercentage: 100,
+        taskKey: body.taskKey,
+      },
+      newEnrollment: updatedRecords.enrollment,
+      newPayment: updatedRecords.payment,
+      newRefund: refundWithNotification,
+      newReservation: updatedRecords.reservation,
+      previousEnrollment: enrollment,
+      previousPayment: payment,
+      previousReservation: reservation,
+      requestContext,
+      session,
+      strapi,
+    });
+    await publishRefundReviewChange(strapi, body.taskKey);
+    await publishRefundReviewChange(strapi, `refund:${refundWithNotification.documentId}:approved`);
+
+    return {
+      approved: true,
+      notificationQueued,
+      refund: publicRefund(refundWithNotification),
     };
   },
 

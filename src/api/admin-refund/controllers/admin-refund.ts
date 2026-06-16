@@ -6,6 +6,7 @@ type RequestContext = {
 };
 
 type AdminRefundService = {
+  approvePaymentExceptionRefund(input: unknown, context: RequestContext): Promise<unknown>;
   escalateReview(input: unknown, context: RequestContext): Promise<unknown>;
   executeReviewRefund(input: unknown, context: RequestContext): Promise<unknown>;
   getReviewDetail(input: unknown, context: RequestContext): Promise<unknown>;
@@ -75,6 +76,15 @@ export default ({ strapi }) => ({
     ctx.body = {
       data: result,
     };
+  },
+
+  async approveExceptionRefund(ctx) {
+    await writeResult(ctx, () =>
+      adminRefundService(strapi).approvePaymentExceptionRefund(
+        ctx.request.body,
+        getRequestContext(ctx)
+      )
+    );
   },
 
   async refuse(ctx) {

@@ -27,6 +27,15 @@ export default {
     },
     {
       method: 'POST',
+      path: '/internal/admin/refunds/reviews/approve-exception-refund',
+      handler: 'admin-refund.approveExceptionRefund',
+      config: {
+        auth: false,
+        policies: [adminDashboardServicePolicy],
+      },
+    },
+    {
+      method: 'POST',
       path: '/internal/admin/refunds/reviews/refuse',
       handler: 'admin-refund.refuse',
       config: {
