@@ -5,6 +5,13 @@ const adminDashboardServicePolicy = {
   },
 };
 
+const staffAuthServicePolicy = {
+  name: 'global::service-token',
+  config: {
+    allowedServices: ['admin-dashboard', 'candidate-dashboard'],
+  },
+};
+
 export default {
   routes: [
     {
@@ -13,7 +20,7 @@ export default {
       handler: 'admin-auth.login',
       config: {
         auth: false,
-        policies: [adminDashboardServicePolicy],
+        policies: [staffAuthServicePolicy],
       },
     },
     {
@@ -22,7 +29,7 @@ export default {
       handler: 'admin-auth.verifyTwoFactor',
       config: {
         auth: false,
-        policies: [adminDashboardServicePolicy],
+        policies: [staffAuthServicePolicy],
       },
     },
     {
@@ -31,7 +38,7 @@ export default {
       handler: 'admin-auth.resendTwoFactor',
       config: {
         auth: false,
-        policies: [adminDashboardServicePolicy],
+        policies: [staffAuthServicePolicy],
       },
     },
     {
@@ -40,7 +47,7 @@ export default {
       handler: 'admin-auth.session',
       config: {
         auth: false,
-        policies: [adminDashboardServicePolicy],
+        policies: [staffAuthServicePolicy],
       },
     },
     {
@@ -49,7 +56,7 @@ export default {
       handler: 'admin-auth.logout',
       config: {
         auth: false,
-        policies: [adminDashboardServicePolicy],
+        policies: [staffAuthServicePolicy],
       },
     },
     {
