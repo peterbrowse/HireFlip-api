@@ -45,6 +45,11 @@ type NotificationServiceQueueResponse = {
   };
 };
 
+type NotificationTemplatePayload = {
+  key: string;
+  variables?: Record<string, unknown>;
+};
+
 type PaymentServiceRefundResult = {
   amountPence: number;
   createdAt: string;
@@ -268,14 +273,6 @@ const getIntegerEnv = (name: string, fallback: number) => {
   return Number.isFinite(parsedValue) && parsedValue > 0 ? parsedValue : fallback;
 };
 
-const htmlEscape = (value: string) =>
-  value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-
 const getDocumentId = (record?: DocumentRecord | null) => {
   if (!record) {
     return undefined;
@@ -307,6 +304,8 @@ const candidateDisplayName = (candidate?: DocumentRecord | null) => {
 
 const taskRouteSegment = (taskKey: string) => encodeURIComponent(taskKey);
 const refundTaskPath = (taskKey: string) => `/refunds/${taskRouteSegment(taskKey)}`;
+const supportCaseUrl = (supportCaseDocumentId: string) =>
+  `${trimTrailingSlash(process.env.CANDIDATE_DASHBOARD_BASE_URL || 'http://localhost:3001')}/support/${encodeURIComponent(supportCaseDocumentId)}`;
 
 const formatMoney = (amountPence?: number, currency = 'GBP') => {
   if (typeof amountPence !== 'number') {
@@ -322,15 +321,19 @@ const formatMoney = (amountPence?: number, currency = 'GBP') => {
 const requestNotificationServiceEmail = async ({
   correlationId,
   html,
+  priority = 'critical',
   subject,
+  template,
   text,
   to,
   type,
 }: {
   correlationId?: string;
-  html: string;
-  subject: string;
-  text: string;
+  html?: string;
+  priority?: 'critical' | 'high' | 'transactional' | 'normal' | 'low';
+  subject?: string;
+  template?: NotificationTemplatePayload;
+  text?: string;
   to: string;
   type: string;
 }): Promise<NotificationServiceQueueResponse> => {
@@ -351,11 +354,12 @@ const requestNotificationServiceEmail = async ({
     const response = await fetch(`${trimTrailingSlash(baseUrl)}/api/internal/notifications/email`, {
       body: JSON.stringify({
         correlationId,
-        html,
-        priority: 'critical',
+        ...(html ? { html } : {}),
+        priority,
         source: 'core-api',
-        subject,
-        text,
+        ...(subject ? { subject } : {}),
+        ...(template ? { template } : {}),
+        ...(text ? { text } : {}),
         to,
         type,
       }),
@@ -1555,6 +1559,20 @@ const providerRefundMessageBody = (refundState: string) =>
       ? 'Refund failed at the payment provider and needs staff review.'
       : 'Refund is processing with the payment provider.';
 
+const providerRefundPublicMessageBody = (refundState: string) =>
+  refundState === 'completed'
+    ? 'Refund completed by the payment provider.'
+    : refundState === 'failed'
+      ? "There's been an issue whilst processing your refund which may cause a delay. But fear not, our team are looking into it and will get back to you in due course."
+      : 'Refund is processing with the payment provider.';
+
+const providerRefundNotificationTemplateKey = (refundState: string) =>
+  refundState === 'completed'
+    ? 'candidate_refund_completed'
+    : refundState === 'failed'
+      ? 'candidate_refund_failed'
+      : undefined;
+
 const refundSnapshot = (refund?: DocumentRecord | null) =>
   refund
     ? {
@@ -1583,73 +1601,6 @@ const candidateFirstName = (candidate: DocumentRecord) =>
   typeof candidate.firstName === 'string' && candidate.firstName.trim()
     ? candidate.firstName.trim()
     : 'there';
-
-const buildRefundRefusedEmail = ({
-  candidate,
-  message,
-}: {
-  candidate: DocumentRecord;
-  message: string;
-}) => {
-  const name = candidateFirstName(candidate);
-
-  return {
-    html: [
-      `<p>Hi ${htmlEscape(name)},</p>`,
-      '<p>We have reviewed your refund request and cannot approve it on the information currently available.</p>',
-      `<p>${htmlEscape(message)}</p>`,
-      '<p>You can reply with any extra information you want the team to review.</p>',
-      '<p>HireFlip</p>',
-    ].join(''),
-    subject: 'Your HireFlip refund request',
-    text: [
-      `Hi ${name},`,
-      '',
-      'We have reviewed your refund request and cannot approve it on the information currently available.',
-      '',
-      message,
-      '',
-      'You can reply with any extra information you want the team to review.',
-      '',
-      'HireFlip',
-    ].join('\n'),
-  };
-};
-
-const buildRefundAcceptedEmail = ({
-  amount,
-  candidate,
-  message,
-}: {
-  amount?: string;
-  candidate: DocumentRecord;
-  message?: string;
-}) => {
-  const name = candidateFirstName(candidate);
-  const amountText = amount ? ` for ${amount}` : '';
-  const trimmedMessage = message?.trim();
-
-  return {
-    html: [
-      `<p>Hi ${htmlEscape(name)},</p>`,
-      `<p>Your refund request has been accepted${htmlEscape(amountText)} and is being processed.</p>`,
-      trimmedMessage ? `<p>${htmlEscape(trimmedMessage)}</p>` : '',
-      '<p>We will update you when the refund has been submitted to the payment provider.</p>',
-      '<p>HireFlip</p>',
-    ].filter(Boolean).join(''),
-    subject: 'Your HireFlip refund has been accepted',
-    text: [
-      `Hi ${name},`,
-      '',
-      `Your refund request has been accepted${amountText} and is being processed.`,
-      ...(trimmedMessage ? ['', trimmedMessage] : []),
-      '',
-      'We will update you when the refund has been submitted to the payment provider.',
-      '',
-      'HireFlip',
-    ].join('\n'),
-  };
-};
 
 const auditRefundAction = async ({
   eventType,
@@ -1860,6 +1811,53 @@ const addRefundSupportMessage = async ({
     visibility,
   });
 
+const queueCandidateRefundProviderNotification = async ({
+  candidate,
+  refund,
+  refundState,
+  strapi,
+  supportCase,
+}: {
+  candidate?: DocumentRecord;
+  refund: DocumentRecord;
+  refundState: string;
+  strapi: StrapiDocumentService;
+  supportCase: DocumentRecord;
+}) => {
+  const templateKey = providerRefundNotificationTemplateKey(refundState);
+
+  if (!templateKey || !candidate?.email || typeof candidate.email !== 'string') {
+    return undefined;
+  }
+
+  const supportCaseDocumentId = getDocumentId(supportCase);
+  const amount = formatMoney(refund.amountPence, refund.currency || 'GBP');
+
+  try {
+    return await requestNotificationServiceEmail({
+      correlationId: getDocumentId(refund),
+      priority: 'critical',
+      template: {
+        key: templateKey,
+        variables: {
+          amount,
+          candidateFirstName: candidateFirstName(candidate),
+          supportCaseUrl: supportCaseDocumentId ? supportCaseUrl(supportCaseDocumentId) : undefined,
+        },
+      },
+      to: candidate.email,
+      type: templateKey,
+    });
+  } catch (error) {
+    (strapi as { log?: { error?: (message: string, error?: unknown) => void } }).log?.error?.(
+      'Candidate provider refund notification could not be queued.',
+      error
+    );
+
+    return undefined;
+  }
+};
+
 const updatePaymentAfterProviderRefund = async ({
   payment,
   refund,
@@ -2016,14 +2014,28 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
       strapi,
       supportCase,
     });
-    await addRefundSupportMessage({
-      body: providerRefundMessageBody(finalRefundState),
+    const providerNotificationResult = await queueCandidateRefundProviderNotification({
       candidate,
+      refund: updatedRefund,
+      refundState: finalRefundState,
+      strapi,
+      supportCase,
+    });
+    await addRefundSupportMessage({
+      body: providerRefundPublicMessageBody(finalRefundState),
+      candidate,
+      deliveryState:
+        providerNotificationResult?.data?.queued === true
+          ? 'queued'
+          : providerRefundNotificationTemplateKey(finalRefundState) && candidate?.email
+            ? 'failed'
+            : 'not_required',
       direction: 'system',
       messageType: 'refund_provider_update',
       metadata: {
         eventType: body.eventType,
         livemode: body.livemode,
+        notificationServiceJobId: providerNotificationResult?.data?.jobId ?? null,
         providerEventId: body.providerEventId,
         providerRefund,
         refundState: finalRefundState,
@@ -2032,7 +2044,7 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
       refund: updatedRefund,
       strapi,
       supportCase,
-      visibility: finalRefundState === 'failed' ? 'internal' : 'public',
+      visibility: 'public',
     });
 
     await auditProviderRefundAction({
@@ -2204,19 +2216,30 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
       session
     );
 
-    const email = buildRefundRefusedEmail({
+    const now = new Date().toISOString();
+    const { supportCase } = await ensureRefundSupportCase({
       candidate,
-      message: body.message,
+      payment,
+      refund,
+      session,
+      state: 'awaiting_candidate',
+      strapi,
+      summary: 'Refund refused; waiting for candidate response or further evidence.',
     });
+    const supportCaseDocumentId = getDocumentId(supportCase);
     const queueResult = await requestNotificationServiceEmail({
       correlationId: refund.documentId,
-      html: email.html,
-      subject: email.subject,
-      text: email.text,
+      template: {
+        key: 'candidate_refund_refused',
+        variables: {
+          candidateFirstName: candidateFirstName(candidate),
+          message: body.message,
+          supportCaseUrl: supportCaseDocumentId ? supportCaseUrl(supportCaseDocumentId) : undefined,
+        },
+      },
       to: candidate.email,
       type: 'candidate_refund_refused',
     });
-    const now = new Date().toISOString();
     const updatedRefund = await documents(strapi, 'api::refund.refund').update({
       documentId: refund.documentId,
       data: {
@@ -2231,15 +2254,6 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
         reason: body.message,
         refundState: 'rejected',
       },
-    });
-    const { supportCase } = await ensureRefundSupportCase({
-      candidate,
-      payment,
-      refund: updatedRefund,
-      session,
-      state: 'awaiting_candidate',
-      strapi,
-      summary: 'Refund refused; waiting for candidate response or further evidence.',
     });
 
     await updateRefundSupportCaseState({
@@ -2261,7 +2275,7 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
       sender: adminSender(session),
       sentAt: now,
       strapi,
-      subject: email.subject,
+      subject: 'Your HireFlip refund request',
       supportCase,
       visibility: 'public',
     });
@@ -2317,20 +2331,31 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
     const amountPence = Math.round((review.originalAmountPence * body.refundPercentage) / 100);
     const currency = refund.currency || review.payment?.currency || 'GBP';
     const formattedAmount = formatMoney(amountPence, currency);
-    const email = buildRefundAcceptedEmail({
-      amount: formattedAmount,
+    const now = new Date().toISOString();
+    const { supportCase } = await ensureRefundSupportCase({
       candidate,
-      message: body.message,
+      payment,
+      refund,
+      session,
+      state: 'awaiting_staff',
+      strapi,
+      summary: 'Refund accepted and waiting for Super Admin provider execution.',
     });
+    const supportCaseDocumentId = getDocumentId(supportCase);
     const queueResult = await requestNotificationServiceEmail({
       correlationId: refund.documentId,
-      html: email.html,
-      subject: email.subject,
-      text: email.text,
+      template: {
+        key: 'candidate_refund_accepted',
+        variables: {
+          amount: formattedAmount,
+          candidateFirstName: candidateFirstName(candidate),
+          message: body.message,
+          supportCaseUrl: supportCaseDocumentId ? supportCaseUrl(supportCaseDocumentId) : undefined,
+        },
+      },
       to: candidate.email,
       type: 'candidate_refund_accepted',
     });
-    const now = new Date().toISOString();
     const updatedRefund = await documents(strapi, 'api::refund.refund').update({
       documentId: refund.documentId,
       data: {
@@ -2349,15 +2374,6 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
         refundPercentage: body.refundPercentage,
         refundState: 'approved',
       },
-    });
-    const { supportCase } = await ensureRefundSupportCase({
-      candidate,
-      payment,
-      refund: updatedRefund,
-      session,
-      state: 'awaiting_staff',
-      strapi,
-      summary: 'Refund accepted and waiting for Super Admin provider execution.',
     });
 
     await updateRefundSupportCaseState({
@@ -2383,7 +2399,7 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
       sender: adminSender(session),
       sentAt: now,
       strapi,
-      subject: email.subject,
+      subject: 'Your HireFlip refund has been accepted',
       supportCase,
       visibility: 'public',
     });
@@ -2623,17 +2639,26 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
       strapi,
       supportCase,
     });
-    await addRefundSupportMessage({
-      body:
-        finalRefundState === 'completed'
-          ? 'Refund completed by the payment provider.'
-          : finalRefundState === 'failed'
-            ? 'Refund failed at the payment provider and needs staff review.'
-            : 'Refund is processing with the payment provider.',
+    const providerNotificationResult = await queueCandidateRefundProviderNotification({
       candidate,
+      refund: updatedRefund,
+      refundState: finalRefundState,
+      strapi,
+      supportCase,
+    });
+    await addRefundSupportMessage({
+      body: providerRefundPublicMessageBody(finalRefundState),
+      candidate,
+      deliveryState:
+        providerNotificationResult?.data?.queued === true
+          ? 'queued'
+          : providerRefundNotificationTemplateKey(finalRefundState) && candidate?.email
+            ? 'failed'
+            : 'not_required',
       direction: 'system',
       messageType: 'refund_provider_update',
       metadata: {
+        notificationServiceJobId: providerNotificationResult?.data?.jobId ?? null,
         providerRefund,
         refundState: finalRefundState,
       },
@@ -2641,7 +2666,7 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
       refund: updatedRefund,
       strapi,
       supportCase,
-      visibility: finalRefundState === 'failed' ? 'internal' : 'public',
+      visibility: 'public',
     });
     await publishRefundReviewChange(strapi, body.taskKey);
 

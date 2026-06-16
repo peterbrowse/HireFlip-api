@@ -90,7 +90,7 @@ const findSupportMessagesForRefund = (strapi, refundDocumentId) =>
         documentId: refundDocumentId,
       },
     },
-    fields: ['documentId', 'messageType', 'visibility'],
+    fields: ['body', 'deliveryState', 'documentId', 'messageType', 'visibility'],
     limit: 100,
     sort: ['createdAt:asc'],
   });
@@ -324,8 +324,12 @@ const main = async () => {
     assert(stillPaidPayment.paymentState === 'paid', 'Expected provider failure not to refund the payment.');
     assert(failedMessages.length === 1, 'Expected provider failure to add one support message.');
     assert(
-      failedMessages[0].visibility === 'internal',
-      'Expected provider failure support message to remain internal.'
+      failedMessages[0].visibility === 'public',
+      'Expected provider failure support message to use candidate-safe public copy.'
+    );
+    assert(
+      failedMessages[0].body.includes('issue whilst processing your refund'),
+      'Expected provider failure support message to avoid provider internals.'
     );
 
     created.auditRequestIds.push(`refund-provider-unmatched-${runId}`);

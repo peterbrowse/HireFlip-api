@@ -100,6 +100,11 @@ type NotificationServiceQueueResponse = {
   };
 };
 
+type NotificationTemplatePayload = {
+  key: string;
+  variables?: Record<string, unknown>;
+};
+
 const listCasesSchema = z
   .object({
     caseState: z
@@ -180,14 +185,6 @@ const getIntegerEnv = (name: string, fallback: number) => {
 
   return Number.isFinite(parsedValue) && parsedValue > 0 ? parsedValue : fallback;
 };
-
-const htmlEscape = (value: string) =>
-  value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
 
 const objectValue = (value: unknown) =>
   value && typeof value === 'object' && !Array.isArray(value)
@@ -342,14 +339,16 @@ const requestNotificationServiceEmail = async ({
   correlationId,
   html,
   subject,
+  template,
   text,
   to,
   type,
 }: {
   correlationId?: string;
-  html: string;
-  subject: string;
-  text: string;
+  html?: string;
+  subject?: string;
+  template?: NotificationTemplatePayload;
+  text?: string;
   to: string;
   type: string;
 }): Promise<NotificationServiceQueueResponse | undefined> => {
@@ -370,11 +369,12 @@ const requestNotificationServiceEmail = async ({
     const response = await fetch(`${trimTrailingSlash(baseUrl)}/api/internal/notifications/email`, {
       body: JSON.stringify({
         correlationId,
-        html,
+        ...(html ? { html } : {}),
         priority: 'transactional',
         source: 'core-api',
-        subject,
-        text,
+        ...(subject ? { subject } : {}),
+        ...(template ? { template } : {}),
+        ...(text ? { text } : {}),
         to,
         type,
       }),
@@ -465,34 +465,13 @@ const findSupportCaseRecord = async (strapi: StrapiService, supportCaseDocumentI
 
 const buildSupportCasePrompt = (supportCase: DocumentRecord) => {
   const url = supportCaseUrl(String(supportCase.documentId));
-  const escapedUrl = htmlEscape(url);
   const name = candidateFirstName(supportCase.candidate);
-  const escapedName = htmlEscape(name);
   const isRefundCase = supportCase.refund || supportCase.title?.toLowerCase().includes('refund');
   const requestLabel = isRefundCase ? 'refund request' : 'support request';
 
   return {
-    email: {
-      html: [
-        `<p>Hi ${escapedName},</p>`,
-        `<p>There is a new reply to your ${requestLabel}.</p>`,
-        `<p><a href="${escapedUrl}">Open your dashboard to view and reply</a></p>`,
-        '<p>Please reply in your HireFlip dashboard rather than replying to this email, so your message stays linked to your case.</p>',
-        '<p>HireFlip</p>',
-      ].join(''),
-      subject: `New reply to your HireFlip ${requestLabel}`,
-      text: [
-        `Hi ${name},`,
-        '',
-        `There is a new reply to your ${requestLabel}.`,
-        '',
-        `Open your dashboard to view and reply: ${url}`,
-        '',
-        'Please reply in your HireFlip dashboard rather than replying to this email, so your message stays linked to your case.',
-        '',
-        'HireFlip',
-      ].join('\n'),
-    },
+    candidateFirstName: name,
+    requestLabel,
     sms: `HireFlip: there is a new reply to your ${requestLabel}. Open your dashboard to view and reply: ${url}`,
     url,
   };
@@ -527,9 +506,14 @@ const queueCandidateSupportPrompt = async ({
     emailAllowed && typeof candidate.email === 'string'
       ? await requestNotificationServiceEmail({
           correlationId: supportCaseDocumentId,
-          html: content.email.html,
-          subject: content.email.subject,
-          text: content.email.text,
+          template: {
+            key: 'candidate_support_case_updated',
+            variables: {
+              candidateFirstName: content.candidateFirstName,
+              requestLabel: content.requestLabel,
+              supportCaseUrl: content.url,
+            },
+          },
           to: candidate.email,
           type: 'candidate_support_case_updated',
         })
