@@ -1132,6 +1132,63 @@ export interface ApiCandidateCandidate extends Struct.CollectionTypeSchema {
   };
 }
 
+export interface ApiClassAnnouncementClassAnnouncement
+  extends Struct.CollectionTypeSchema {
+  collectionName: 'class_announcements';
+  info: {
+    description: 'Candidate-visible class announcements shown on the class noticeboard.';
+    displayName: 'Class Announcement';
+    pluralName: 'class-announcements';
+    singularName: 'class-announcement';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    announcementState: Schema.Attribute.Enumeration<
+      ['draft', 'published', 'archived']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'published'>;
+    body: Schema.Attribute.Text & Schema.Attribute.Required;
+    class: Schema.Attribute.Relation<'manyToOne', 'api::class.class'>;
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    expiresAt: Schema.Attribute.DateTime;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::class-announcement.class-announcement'
+    > &
+      Schema.Attribute.Private;
+    metadata: Schema.Attribute.JSON;
+    postedByStaffDisplayName: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 160;
+      }>;
+    postedByStaffEmail: Schema.Attribute.Email;
+    postedByStaffUserId: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 160;
+      }>;
+    priority: Schema.Attribute.Enumeration<['normal', 'important', 'urgent']> &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'normal'>;
+    publishedAt: Schema.Attribute.DateTime;
+    title: Schema.Attribute.String &
+      Schema.Attribute.Required &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 160;
+        minLength: 1;
+      }>;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    visibleFrom: Schema.Attribute.DateTime;
+  };
+}
+
 export interface ApiClassAreaClassArea extends Struct.CollectionTypeSchema {
   collectionName: 'class_areas';
   info: {
@@ -4176,6 +4233,7 @@ declare module '@strapi/strapi' {
       'api::candidate-interview-strike.candidate-interview-strike': ApiCandidateInterviewStrikeCandidateInterviewStrike;
       'api::candidate-profile.candidate-profile': ApiCandidateProfileCandidateProfile;
       'api::candidate.candidate': ApiCandidateCandidate;
+      'api::class-announcement.class-announcement': ApiClassAnnouncementClassAnnouncement;
       'api::class-area.class-area': ApiClassAreaClassArea;
       'api::class.class': ApiClassClass;
       'api::course-material.course-material': ApiCourseMaterialCourseMaterial;

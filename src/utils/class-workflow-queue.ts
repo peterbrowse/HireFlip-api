@@ -19,6 +19,10 @@ type AdminRefundService = {
   reconcileProviderRefunds(limit?: number, context?: RequestContext): Promise<unknown>;
 };
 
+type AdminClassService = {
+  reconcileScheduledClassOpenings(limit?: number, context?: RequestContext): Promise<unknown>;
+};
+
 type ClassWorkflowJobName = 'expire-waiting-list-offer' | 'reconcile-payments';
 
 type ClassWorkflowJobData = {
@@ -143,6 +147,9 @@ const paymentWebhookEventService = (strapi: Core.Strapi) =>
 const adminRefundService = (strapi: Core.Strapi) =>
   strapi.service('api::admin-refund.admin-refund') as unknown as AdminRefundService;
 
+const adminClassService = (strapi: Core.Strapi) =>
+  strapi.service('api::admin-class.admin-class') as unknown as AdminClassService;
+
 export const schedulePaymentReconciliationJob = async () => {
   if (!queueEnabled() || !envBool('CLASS_WORKFLOW_PAYMENT_RECONCILIATION_ENABLED', true)) {
     return undefined;
@@ -221,6 +228,14 @@ export const startClassWorkflowWorker = (strapi: Core.Strapi) => {
           });
         } catch (error) {
           throw new Error(`Pending Stripe refund reconciliation failed: ${formatJobError(error)}`);
+        }
+
+        try {
+          await adminClassService(strapi).reconcileScheduledClassOpenings(limit, {
+            serviceName: 'class-workflow-worker',
+          });
+        } catch (error) {
+          throw new Error(`Scheduled class opening reconciliation failed: ${formatJobError(error)}`);
         }
 
         return;

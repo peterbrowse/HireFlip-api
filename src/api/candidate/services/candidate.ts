@@ -51,6 +51,7 @@ type DocumentRecord = Record<string, unknown> & {
   accountOnboardingCompletedAt?: string;
   accountRestrictionStatus?: string;
   amountPence?: number;
+  announcementState?: string;
   authIdentityId?: string;
   candidate?: DocumentRecord;
   candidateState?: string;
@@ -104,6 +105,7 @@ type DocumentRecord = Record<string, unknown> & {
   policyKey?: string;
   policyState?: string;
   policyType?: string;
+  priority?: string;
   pricePence?: number;
   discountedPricePence?: number;
   preferredCommunicationChannel?: (typeof communicationChannels)[number];
@@ -131,6 +133,7 @@ type DocumentRecord = Record<string, unknown> & {
   supersededAt?: string;
   title?: string;
   version?: string;
+  visibleFrom?: string;
   waitingListPosition?: number;
   waitingListJoinedAt?: string;
   waitingListOffer?: DocumentRecord;
@@ -4060,6 +4063,53 @@ const buildClassTimeline = (classRecord, relationshipState) => {
   ];
 };
 
+const sanitizeClassAnnouncement = (announcement: DocumentRecord) => ({
+  body: announcement.body,
+  documentId: announcement.documentId,
+  expiresAt: announcement.expiresAt,
+  priority: announcement.priority || 'normal',
+  title: announcement.title,
+  visibleFrom: announcement.visibleFrom,
+});
+
+const isVisibleClassAnnouncement = (announcement: DocumentRecord, now: number) => {
+  if (announcement.announcementState !== 'published') {
+    return false;
+  }
+
+  if (announcement.visibleFrom && Date.parse(announcement.visibleFrom) > now) {
+    return false;
+  }
+
+  if (announcement.expiresAt && Date.parse(announcement.expiresAt) <= now) {
+    return false;
+  }
+
+  return true;
+};
+
+const findVisibleClassAnnouncements = async (strapi: StrapiDocumentService, classDocumentId?: string) => {
+  if (!classDocumentId) {
+    return [];
+  }
+
+  const announcements = await documents(strapi, 'api::class-announcement.class-announcement').findMany({
+    filters: {
+      announcementState: 'published',
+      class: {
+        documentId: classDocumentId,
+      },
+    },
+    limit: 50,
+    sort: ['visibleFrom:desc', 'createdAt:desc'],
+  });
+  const now = Date.now();
+
+  return announcements
+    .filter((announcement) => isVisibleClassAnnouncement(announcement, now))
+    .map(sanitizeClassAnnouncement);
+};
+
 const buildClassRelationship = async ({ candidate, classRecord, enrollment, registeredInterestCount = 0, strapi }) => {
   const derivedState = deriveClassRelationshipState(enrollment, classRecord);
   const activeWaitingListOffer =
@@ -4076,9 +4126,11 @@ const buildClassRelationship = async ({ candidate, classRecord, enrollment, regi
       strapi,
     });
   const state = waitlistedCanReserveOpenPlace ? 'enrollment_open' : derivedState;
+  const announcements = await findVisibleClassAnnouncements(strapi, classRecord?.documentId);
 
   return {
     activeWaitingListOffer: sanitizeWaitingListOffer(activeWaitingListOffer),
+    announcements,
     canClaimWaitingListOffer: Boolean(activeWaitingListOffer),
     canRegisterInterest: state === 'not_registered',
     canWithdrawInterest: state === 'interest_registered',

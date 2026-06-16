@@ -1,0 +1,70 @@
+{
+  "kind": "collectionType",
+  "collectionName": "class_announcements",
+  "info": {
+    "singularName": "class-announcement",
+    "pluralName": "class-announcements",
+    "displayName": "Class Announcement",
+    "description": "Candidate-visible class announcements shown on the class noticeboard."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "class": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::class.class"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "required": true
+    },
+    "body": {
+      "type": "text",
+      "required": true
+    },
+    "announcementState": {
+      "type": "enumeration",
+      "enum": [
+        "draft",
+        "published",
+        "archived"
+      ],
+      "default": "published",
+      "required": true
+    },
+    "priority": {
+      "type": "enumeration",
+      "enum": [
+        "normal",
+        "important",
+        "urgent"
+      ],
+      "default": "normal",
+      "required": true
+    },
+    "visibleFrom": {
+      "type": "datetime"
+    },
+    "expiresAt": {
+      "type": "datetime"
+    },
+    "postedByStaffUserId": {
+      "type": "string",
+      "maxLength": 160
+    },
+    "postedByStaffEmail": {
+      "type": "email"
+    },
+    "postedByStaffDisplayName": {
+      "type": "string",
+      "maxLength": 160
+    },
+    "metadata": {
+      "type": "json"
+    }
+  }
+}

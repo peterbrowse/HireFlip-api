@@ -5,6 +5,7 @@ type Logger = {
 };
 
 export type CandidateClassRealtimeEventType =
+  | 'class_announcement_posted'
   | 'class_relationship_updated'
   | 'class_state_changed'
   | 'reservation_created'
