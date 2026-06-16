@@ -2,10 +2,12 @@ import { validateZodSchema, z } from '@strapi/utils';
 
 type DocumentRecord = Record<string, unknown> & {
   amountPence?: number;
+  approvedAt?: string;
   caseKey?: string;
   caseState?: string;
   caseType?: string;
   candidate?: DocumentRecord;
+  closedAt?: string;
   createdAt?: string;
   currency?: string;
   deliveryState?: string;
@@ -19,13 +21,19 @@ type DocumentRecord = Record<string, unknown> & {
   lastName?: string;
   metadata?: unknown;
   messageType?: string;
+  openedAt?: string;
   ownerRoleKey?: string;
   ownerStaffDisplayName?: string;
   ownerStaffEmail?: string;
   ownerStaffUserId?: string;
   payment?: DocumentRecord;
+  processedAt?: string;
+  providerRefundId?: string;
+  refundPercentage?: number | string;
   refund?: DocumentRecord;
   refundState?: string;
+  requestedAt?: string;
+  resolvedAt?: string;
   senderType?: string;
   senderDisplayName?: string;
   subject?: string;
@@ -236,7 +244,254 @@ const candidateSupportMessage = (message: DocumentRecord) => ({
   subject: message.subject || null,
 });
 
+const formatMoney = (amountPence?: number, currency = 'GBP') => {
+  if (typeof amountPence !== 'number') {
+    return undefined;
+  }
+
+  return new Intl.NumberFormat('en-GB', {
+    currency,
+    style: 'currency',
+  }).format(amountPence / 100);
+};
+
+const supportCaseRefundSummary = (
+  refund?: DocumentRecord | null,
+  { includeProvider = false } = {}
+) => {
+  if (!refund) {
+    return null;
+  }
+
+  return {
+    amountPence: refund.amountPence ?? null,
+    approvedAt: refund.approvedAt || null,
+    currency: refund.currency || null,
+    documentId: getDocumentId(refund) || null,
+    formattedAmount: formatMoney(refund.amountPence, refund.currency || 'GBP') || null,
+    processedAt: refund.processedAt || null,
+    ...(includeProvider ? { providerRefundId: refund.providerRefundId || null } : {}),
+    refundPercentage: refund.refundPercentage ?? null,
+    refundState: refund.refundState || null,
+    requestedAt: refund.requestedAt || null,
+  };
+};
+
+type CaseTrackingStepState = 'attention' | 'complete' | 'current' | 'upcoming';
+
+const trackingStep = ({
+  detail,
+  key,
+  label,
+  occurredAt = null,
+  state,
+}: {
+  detail: string;
+  key: string;
+  label: string;
+  occurredAt?: string | null;
+  state: CaseTrackingStepState;
+}) => ({
+  detail,
+  key,
+  label,
+  occurredAt,
+  state,
+});
+
+const supportCaseHasPublicCandidateReply = (messages: DocumentRecord[]) =>
+  messages.some(
+    (message) =>
+      message.visibility === 'public' &&
+      (message.senderType === 'candidate' || message.messageType === 'candidate_message')
+  );
+
+const refundCaseTracking = (supportCase: DocumentRecord, messages: DocumentRecord[]) => {
+  const caseState = String(supportCase.caseState || 'open');
+  const refundState = String(supportCase.refund?.refundState || '');
+  const openedAt = supportCase.openedAt || supportCase.createdAt || null;
+  const candidateReplied = supportCaseHasPublicCandidateReply(messages);
+  const caseClosed = ['closed', 'resolved'].includes(caseState);
+  const refundDecisioned = [
+    'approved',
+    'rejected',
+    'submitted_to_provider',
+    'processing',
+    'completed',
+    'failed',
+    'cancelled',
+  ].includes(refundState);
+  const providerStarted = ['submitted_to_provider', 'processing', 'completed', 'failed'].includes(
+    refundState
+  );
+
+  const steps = [
+    trackingStep({
+      detail: 'HireFlip has received the refund support case.',
+      key: 'opened',
+      label: 'Request opened',
+      occurredAt: openedAt,
+      state: 'complete',
+    }),
+    trackingStep({
+      detail:
+        caseState === 'open'
+          ? 'The request is waiting to be picked up by the team.'
+          : 'HireFlip is reviewing the refund request and related case history.',
+      key: 'hireflip_review',
+      label: 'HireFlip review',
+      occurredAt: caseState === 'open' ? null : supportCase.updatedAt || supportCase.lastMessageAt || openedAt,
+      state: caseState === 'open' ? 'current' : refundDecisioned || caseClosed ? 'complete' : 'current',
+    }),
+    trackingStep({
+      detail: candidateReplied
+        ? 'A candidate reply has been recorded on this case.'
+        : caseState === 'awaiting_candidate'
+          ? 'HireFlip is waiting for a reply in the dashboard.'
+          : 'No candidate reply is required right now.',
+      key: 'candidate_reply',
+      label: 'Candidate reply',
+      occurredAt: messages.find((message) => message.senderType === 'candidate')?.createdAt || null,
+      state: candidateReplied ? 'complete' : caseState === 'awaiting_candidate' ? 'current' : 'upcoming',
+    }),
+    trackingStep({
+      detail:
+        refundState === 'rejected'
+          ? 'The refund request has been refused on the current evidence.'
+          : refundState === 'approved'
+            ? 'The refund has been approved and is waiting for provider execution.'
+            : refundState === 'failed'
+              ? 'The provider refund failed and needs review.'
+              : refundDecisioned
+                ? 'A refund decision has been recorded.'
+                : 'The refund decision has not been recorded yet.',
+      key: 'refund_decision',
+      label: 'Refund decision',
+      occurredAt: supportCase.refund?.approvedAt || supportCase.refund?.processedAt || null,
+      state:
+        refundState === 'failed'
+          ? 'attention'
+          : refundDecisioned
+            ? 'complete'
+            : caseState === 'awaiting_staff' || caseState === 'in_progress'
+              ? 'current'
+              : 'upcoming',
+    }),
+    trackingStep({
+      detail:
+        refundState === 'completed'
+          ? 'The payment provider has confirmed the refund.'
+          : refundState === 'failed'
+            ? 'The provider refund needs attention.'
+            : providerStarted || refundState === 'approved'
+              ? 'The refund is waiting for provider completion.'
+              : 'No provider refund has been submitted yet.',
+      key: 'provider_refund',
+      label: 'Provider refund',
+      occurredAt: supportCase.refund?.processedAt || null,
+      state:
+        refundState === 'completed'
+          ? 'complete'
+          : refundState === 'failed'
+            ? 'attention'
+            : providerStarted || refundState === 'approved'
+              ? 'current'
+              : 'upcoming',
+    }),
+    trackingStep({
+      detail: caseClosed ? 'The support case is closed.' : 'The case remains open.',
+      key: 'closed',
+      label: 'Closed',
+      occurredAt: supportCase.closedAt || supportCase.resolvedAt || null,
+      state: caseClosed ? 'complete' : 'upcoming',
+    }),
+  ];
+  const activeStep =
+    steps.find((step) => step.state === 'attention') ||
+    steps.find((step) => step.state === 'current') ||
+    [...steps].reverse().find((step) => step.state === 'complete') ||
+    steps[0];
+
+  return {
+    currentLabel: activeStep?.label || 'Case opened',
+    nextAction:
+      caseState === 'awaiting_candidate'
+        ? 'Reply in the dashboard so the team can continue the review.'
+        : refundState === 'approved'
+          ? 'The approved refund is waiting to be sent to the payment provider.'
+          : refundState === 'failed'
+            ? 'HireFlip needs to review the failed provider refund.'
+            : caseClosed
+              ? null
+              : 'HireFlip will update this case when there is a decision or reply.',
+    steps,
+  };
+};
+
+const generalCaseTracking = (supportCase: DocumentRecord, messages: DocumentRecord[]) => {
+  const caseState = String(supportCase.caseState || 'open');
+  const openedAt = supportCase.openedAt || supportCase.createdAt || null;
+  const caseClosed = ['closed', 'resolved'].includes(caseState);
+  const candidateReplied = supportCaseHasPublicCandidateReply(messages);
+  const steps = [
+    trackingStep({
+      detail: 'HireFlip has received the support case.',
+      key: 'opened',
+      label: 'Case opened',
+      occurredAt: openedAt,
+      state: 'complete',
+    }),
+    trackingStep({
+      detail:
+        caseState === 'awaiting_candidate'
+          ? 'HireFlip is waiting for a candidate reply.'
+          : 'HireFlip is reviewing the case.',
+      key: 'review',
+      label: 'Review',
+      occurredAt: supportCase.lastMessageAt || supportCase.updatedAt || null,
+      state: caseClosed ? 'complete' : 'current',
+    }),
+    trackingStep({
+      detail: candidateReplied
+        ? 'A candidate reply has been recorded.'
+        : 'No candidate reply is required right now.',
+      key: 'candidate_reply',
+      label: 'Candidate reply',
+      occurredAt: messages.find((message) => message.senderType === 'candidate')?.createdAt || null,
+      state: candidateReplied ? 'complete' : caseState === 'awaiting_candidate' ? 'current' : 'upcoming',
+    }),
+    trackingStep({
+      detail: caseClosed ? 'The support case is closed.' : 'The case remains open.',
+      key: 'closed',
+      label: 'Closed',
+      occurredAt: supportCase.closedAt || supportCase.resolvedAt || null,
+      state: caseClosed ? 'complete' : 'upcoming',
+    }),
+  ];
+  const activeStep =
+    steps.find((step) => step.state === 'current') ||
+    [...steps].reverse().find((step) => step.state === 'complete') ||
+    steps[0];
+
+  return {
+    currentLabel: activeStep?.label || 'Case opened',
+    nextAction:
+      caseState === 'awaiting_candidate'
+        ? 'Reply in the dashboard so the team can continue the review.'
+        : caseClosed
+          ? null
+          : 'HireFlip will update this case when there is a reply or decision.',
+    steps,
+  };
+};
+
+const supportCaseTracking = (supportCase: DocumentRecord, messages: DocumentRecord[] = []) =>
+  supportCase.caseType === 'refund'
+    ? refundCaseTracking(supportCase, messages)
+    : generalCaseTracking(supportCase, messages);
+
 const publicSupportCase = (supportCase: DocumentRecord, messages: DocumentRecord[] = []) => ({
+  caseTracking: supportCaseTracking(supportCase, messages),
   caseKey: supportCase.caseKey || null,
   caseState: supportCase.caseState || null,
   caseType: supportCase.caseType || null,
@@ -260,18 +515,14 @@ const publicSupportCase = (supportCase: DocumentRecord, messages: DocumentRecord
       }
     : null,
   priority: supportCase.priority || null,
-  refund: supportCase.refund
-    ? {
-        documentId: getDocumentId(supportCase.refund) || null,
-        refundState: supportCase.refund.refundState || null,
-      }
-    : null,
+  refund: supportCaseRefundSummary(supportCase.refund, { includeProvider: true }),
   summary: supportCase.summary || null,
   title: supportCase.title || null,
   updatedAt: supportCase.updatedAt || null,
 });
 
 const candidateSupportCase = (supportCase: DocumentRecord, messages: DocumentRecord[] = []) => ({
+  caseTracking: supportCaseTracking(supportCase, messages),
   caseKey: supportCase.caseKey || null,
   caseState: supportCase.caseState || null,
   caseType: supportCase.caseType || null,
@@ -282,12 +533,7 @@ const candidateSupportCase = (supportCase: DocumentRecord, messages: DocumentRec
     .filter((message) => message.visibility === 'public')
     .map(candidateSupportMessage),
   priority: supportCase.priority || null,
-  refund: supportCase.refund
-    ? {
-        documentId: getDocumentId(supportCase.refund) || null,
-        refundState: supportCase.refund.refundState || null,
-      }
-    : null,
+  refund: supportCaseRefundSummary(supportCase.refund),
   summary: supportCase.summary || null,
   title: supportCase.title || null,
   updatedAt: supportCase.updatedAt || null,

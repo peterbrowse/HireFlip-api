@@ -76,16 +76,25 @@ type SupportCaseService = {
 type DocumentRecord = Record<string, unknown> & {
   amountPence?: number;
   approvedAt?: string;
+  appealedAt?: string;
+  appliedAt?: string;
   candidate?: DocumentRecord;
   candidateState?: string;
   class?: DocumentRecord;
+  companyName?: string;
+  concerns?: string;
+  confirmedAt?: string;
   completedAt?: string;
   completionStatus?: string;
+  countsTowardGuarantee?: boolean;
   createdAt?: string;
   currency?: string;
   displayTitle?: string;
   documentId?: string;
   email?: string;
+  employer?: DocumentRecord;
+  employerCancellation?: boolean;
+  employerContact?: DocumentRecord;
   enrollment?: DocumentRecord;
   enrollmentState?: string;
   eventCategory?: string;
@@ -93,11 +102,19 @@ type DocumentRecord = Record<string, unknown> & {
   eligibilitySource?: string;
   firstName?: string;
   id?: number | string;
+  interview?: DocumentRecord;
   interviewGuaranteeDeadline?: string;
+  interviewSlot?: DocumentRecord;
+  interviewState?: string;
+  interviewsGuaranteed?: number;
   lastName?: string;
   metadata?: unknown;
+  name?: string;
+  nextStep?: string;
+  notes?: string;
   officialClassCode?: string;
   occurredAt?: string;
+  outcome?: string;
   paidAt?: string;
   passStatus?: string;
   processedAt?: string;
@@ -110,6 +127,7 @@ type DocumentRecord = Record<string, unknown> & {
   providerPaymentIntentId?: string;
   providerRefundId?: string;
   qualifyingInterviewsDeliveredCount?: number;
+  rating?: number;
   reason?: string;
   refund?: DocumentRecord;
   refundEligibilityState?: string;
@@ -118,13 +136,23 @@ type DocumentRecord = Record<string, unknown> & {
   requestedAt?: string;
   reservation?: DocumentRecord;
   reservationState?: string;
+  reviewedAt?: string;
+  reviewDecision?: string;
   severity?: string;
+  scheduledEndTime?: string;
+  scheduledStartTime?: string;
   sourceDocumentId?: string;
   sourceType?: string;
   state?: string;
+  strength?: string;
+  strengths?: string;
+  strikeNumber?: number;
+  strikeState?: string;
   subjectDisplayName?: string;
   subjectId?: string;
   subjectType?: string;
+  submittedAt?: string;
+  submittedByType?: string;
   summary?: string;
   taskKey?: string;
   taskType?: string;
@@ -552,6 +580,10 @@ const publicClass = (classRecord?: DocumentRecord | null) =>
     ? {
         displayTitle: classRecord.displayTitle || classRecord.name || 'Class',
         documentId: getDocumentId(classRecord) || null,
+        interviewsGuaranteed:
+          typeof classRecord.interviewsGuaranteed === 'number'
+            ? classRecord.interviewsGuaranteed
+            : null,
         officialClassCode: classRecord.officialClassCode || null,
         state: classRecord.state || null,
       }
@@ -898,6 +930,320 @@ const supportCasesForReview = async (strapi: StrapiDocumentService, review: Refu
   }
 
   return supportCaseService(strapi).casesForRefund(refundDocumentId);
+};
+
+const reviewRelationFilters = (review: RefundReviewItem) => {
+  if (review.enrollment?.documentId) {
+    return {
+      enrollment: {
+        documentId: review.enrollment.documentId,
+      },
+    };
+  }
+
+  if (review.candidate?.documentId) {
+    return {
+      candidate: {
+        documentId: review.candidate.documentId,
+      },
+    };
+  }
+
+  return undefined;
+};
+
+const relationDisplayName = (record?: DocumentRecord | null) => {
+  if (!record) {
+    return null;
+  }
+
+  return (
+    record.displayTitle ||
+    record.companyName ||
+    record.name ||
+    candidateDisplayName(record) ||
+    record.email ||
+    getDocumentId(record) ||
+    null
+  );
+};
+
+const decisionTreeItem = ({
+  detail,
+  key,
+  label,
+  source,
+  state,
+}: {
+  detail: string;
+  key: string;
+  label: string;
+  source: string;
+  state: 'met' | 'needs_review' | 'not_met' | 'not_recorded';
+}) => ({
+  detail,
+  key,
+  label,
+  source,
+  state,
+});
+
+const dateHasPassed = (value?: string | null) => {
+  if (!value) {
+    return undefined;
+  }
+
+  const timestamp = new Date(value).getTime();
+
+  if (!Number.isFinite(timestamp)) {
+    return undefined;
+  }
+
+  return timestamp <= Date.now();
+};
+
+const publicFeedback = (feedback: DocumentRecord) => ({
+  concerns: feedback.concerns || null,
+  documentId: getDocumentId(feedback) || null,
+  nextStep: feedback.nextStep || null,
+  notes: feedback.notes || null,
+  outcome: feedback.outcome || null,
+  rating: feedback.rating ?? null,
+  strengths: feedback.strengths || null,
+  submittedAt: feedback.submittedAt || feedback.createdAt || null,
+  submittedByType: feedback.submittedByType || null,
+});
+
+const refundEvidenceForReview = async (strapi: StrapiDocumentService, review: RefundReviewItem) => {
+  const filters = reviewRelationFilters(review);
+  const interviews = filters
+    ? await documents(strapi, 'api::interview.interview').findMany({
+        filters,
+        limit: 100,
+        populate: ['candidate', 'employer', 'employerContact', 'enrollment', 'interviewSlot'],
+        sort: ['scheduledStartTime:asc', 'createdAt:asc'],
+      })
+    : [];
+  const strikes = filters
+    ? await documents(strapi, 'api::candidate-interview-strike.candidate-interview-strike').findMany({
+        filters,
+        limit: 50,
+        populate: ['candidate', 'enrollment', 'interview'],
+        sort: ['appliedAt:asc', 'createdAt:asc'],
+      })
+    : [];
+  const interviewIds = interviews
+    .map((interview) => getDocumentId(interview))
+    .filter((documentId): documentId is string => Boolean(documentId));
+  const feedbackRecords = interviewIds.length
+    ? await documents(strapi, 'api::interview-feedback.interview-feedback').findMany({
+        filters: {
+          interview: {
+            documentId: {
+              $in: interviewIds,
+            },
+          },
+        },
+        limit: 100,
+        populate: ['interview'],
+        sort: ['submittedAt:asc', 'createdAt:asc'],
+      })
+    : [];
+  const feedbackByInterviewId = new Map<string, DocumentRecord[]>();
+
+  feedbackRecords.forEach((feedback) => {
+    const interviewDocumentId = getDocumentId(feedback.interview);
+
+    if (!interviewDocumentId) {
+      return;
+    }
+
+    feedbackByInterviewId.set(interviewDocumentId, [
+      ...(feedbackByInterviewId.get(interviewDocumentId) || []),
+      feedback,
+    ]);
+  });
+
+  const guaranteedInterviews =
+    typeof review.class?.interviewsGuaranteed === 'number'
+      ? review.class.interviewsGuaranteed
+      : null;
+  const qualifyingFromInterviews = interviews.filter(
+    (interview) => interview.countsTowardGuarantee
+  ).length;
+  const qualifyingInterviews =
+    interviews.length > 0
+      ? qualifyingFromInterviews
+      : review.enrollment?.qualifyingInterviewsDeliveredCount ?? null;
+  const completedInterviews = interviews.filter(
+    (interview) => interview.interviewState === 'completed' || Boolean(interview.completedAt)
+  ).length;
+  const candidateNoShows = interviews.filter(
+    (interview) => interview.interviewState === 'candidate_no_show'
+  ).length;
+  const candidateDeclines = interviews.filter(
+    (interview) => interview.interviewState === 'candidate_declined'
+  ).length;
+  const employerCancellations = interviews.filter(
+    (interview) => interview.employerCancellation || interview.interviewState === 'employer_cancelled'
+  ).length;
+  const activeStrikes = strikes.filter((strike) =>
+    ['active', 'upheld'].includes(String(strike.strikeState || ''))
+  ).length;
+  const appealedStrikes = strikes.filter((strike) => strike.strikeState === 'appealed').length;
+  const guaranteeDeadlinePassed = dateHasPassed(review.enrollment?.interviewGuaranteeDeadline);
+  const passStatus = String(review.enrollment?.passStatus || '');
+  const completionStatus = String(review.enrollment?.completionStatus || '');
+  const paymentState = String(review.payment?.paymentState || review.enrollment?.paymentStatus || '');
+  const decisionTree = [
+    decisionTreeItem({
+      detail:
+        passStatus === 'passed'
+          ? 'Candidate has passed the course.'
+          : passStatus
+            ? `Course pass status is ${passStatus}.`
+            : 'Course pass status is not recorded.',
+      key: 'course_passed',
+      label: 'Course passed',
+      source: 'Enrollment pass status',
+      state: passStatus === 'passed' ? 'met' : passStatus === 'failed' ? 'not_met' : 'not_recorded',
+    }),
+    decisionTreeItem({
+      detail:
+        completionStatus === 'completed'
+          ? 'Required course completion is recorded.'
+          : completionStatus
+            ? `Course completion status is ${completionStatus}.`
+            : 'Course completion status is not recorded.',
+      key: 'course_completion',
+      label: 'Course completion',
+      source: 'Enrollment completion status',
+      state:
+        completionStatus === 'completed'
+          ? 'met'
+          : completionStatus
+            ? 'needs_review'
+            : 'not_recorded',
+    }),
+    decisionTreeItem({
+      detail:
+        typeof guaranteeDeadlinePassed === 'undefined'
+          ? 'No interview guarantee deadline is recorded.'
+          : guaranteeDeadlinePassed
+            ? `Guarantee deadline passed on ${review.enrollment?.interviewGuaranteeDeadline}.`
+            : `Guarantee deadline is still open until ${review.enrollment?.interviewGuaranteeDeadline}.`,
+      key: 'guarantee_window',
+      label: 'Guarantee window',
+      source: 'Enrollment guarantee deadline',
+      state:
+        typeof guaranteeDeadlinePassed === 'undefined'
+          ? 'not_recorded'
+          : guaranteeDeadlinePassed
+            ? 'met'
+            : 'needs_review',
+    }),
+    decisionTreeItem({
+      detail:
+        typeof qualifyingInterviews !== 'number' || typeof guaranteedInterviews !== 'number'
+          ? 'Guaranteed or qualifying interview count is not fully recorded.'
+          : qualifyingInterviews >= guaranteedInterviews
+            ? `${qualifyingInterviews} of ${guaranteedInterviews} guaranteed interviews were delivered.`
+            : `${qualifyingInterviews} of ${guaranteedInterviews} guaranteed interviews were delivered.`,
+      key: 'qualifying_interviews',
+      label: 'Qualifying interviews',
+      source: 'Interview records and enrollment count',
+      state:
+        typeof qualifyingInterviews !== 'number' || typeof guaranteedInterviews !== 'number'
+          ? 'not_recorded'
+          : qualifyingInterviews >= guaranteedInterviews
+            ? 'not_met'
+            : 'met',
+    }),
+    decisionTreeItem({
+      detail:
+        activeStrikes >= 2
+          ? `${activeStrikes} active or upheld strikes are recorded.`
+          : appealedStrikes > 0
+            ? `${appealedStrikes} appealed strike record needs review.`
+            : `${activeStrikes} active or upheld strikes are recorded.`,
+      key: 'strike_limit',
+      label: 'Strike limit',
+      source: 'Candidate interview strikes',
+      state: activeStrikes >= 2 ? 'not_met' : appealedStrikes > 0 ? 'needs_review' : 'met',
+    }),
+    decisionTreeItem({
+      detail:
+        employerCancellations > 0
+          ? `${employerCancellations} employer cancellation record needs review.`
+          : 'No employer cancellation records found in the interview timeline.',
+      key: 'employer_cancellations',
+      label: 'Employer cancellations',
+      source: 'Interview records',
+      state: employerCancellations > 0 ? 'needs_review' : 'met',
+    }),
+    decisionTreeItem({
+      detail: paymentState ? `Payment state is ${paymentState}.` : 'Payment state is not recorded.',
+      key: 'payment_confirmed',
+      label: 'Payment confirmed',
+      source: 'Payment/enrollment payment state',
+      state: ['paid', 'partially_refunded', 'refunded'].includes(paymentState)
+        ? 'met'
+        : paymentState
+          ? 'needs_review'
+          : 'not_recorded',
+    }),
+  ];
+
+  return {
+    decisionTree,
+    interviewSummary: {
+      candidateDeclines,
+      candidateNoShows,
+      completed: completedInterviews,
+      employerCancellations,
+      guaranteed: guaranteedInterviews,
+      qualifying: qualifyingInterviews,
+      strikes: activeStrikes,
+      total: interviews.length,
+    },
+    interviews: interviews.map((interview) => {
+      const interviewDocumentId = getDocumentId(interview);
+
+      return {
+        candidateStrikeApplied: Boolean(interview.candidateStrikeApplied),
+        completedAt: interview.completedAt || null,
+        confirmedAt: interview.confirmedAt || null,
+        countsTowardGuarantee: Boolean(interview.countsTowardGuarantee),
+        documentId: interviewDocumentId || null,
+        employerCancellation: Boolean(interview.employerCancellation),
+        employerContactName: relationDisplayName(interview.employerContact),
+        employerName: relationDisplayName(interview.employer),
+        feedback: (feedbackByInterviewId.get(interviewDocumentId || '') || []).map(publicFeedback),
+        interviewState: interview.interviewState || null,
+        scheduledEndTime: interview.scheduledEndTime || null,
+        scheduledStartTime: interview.scheduledStartTime || null,
+      };
+    }),
+    readiness: {
+      completedAt: review.enrollment?.completedAt || null,
+      completionStatus: review.enrollment?.completionStatus || null,
+      guaranteeDeadline: review.enrollment?.interviewGuaranteeDeadline || null,
+      passStatus: review.enrollment?.passStatus || null,
+      paymentStatus: review.enrollment?.paymentStatus || null,
+      refundEligibilityState: review.enrollment?.refundEligibilityState || null,
+    },
+    strikes: strikes.map((strike) => ({
+      appliedAt: strike.appliedAt || strike.createdAt || null,
+      appealedAt: strike.appealedAt || null,
+      documentId: getDocumentId(strike) || null,
+      interviewDocumentId: getDocumentId(strike.interview) || null,
+      reason: strike.reason || null,
+      reviewDecision: strike.reviewDecision || null,
+      reviewedAt: strike.reviewedAt || null,
+      strikeNumber: strike.strikeNumber ?? null,
+      strikeState: strike.strikeState || null,
+    })),
+  };
 };
 
 const reviewByTaskKey = async (strapi: StrapiDocumentService, taskKey: string) => {
@@ -1280,6 +1626,11 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
     const session = await assertRefundReviewSession(strapi, body.sessionToken, requestContext);
 
     const review = await reviewByTaskKey(strapi, body.taskKey);
+    const [auditEvents, supportCases, evidence] = await Promise.all([
+      auditEventsForReview(strapi, review),
+      supportCasesForReview(strapi, review),
+      refundEvidenceForReview(strapi, review),
+    ]);
     const { reviewClaim } = await reviewClaimService(strapi).claimForSession(
       {
         resourceDocumentId: review.sourceDocumentId,
@@ -1295,8 +1646,9 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
       generatedAt: new Date().toISOString(),
       review: {
         ...review,
-        auditEvents: await auditEventsForReview(strapi, review),
-        supportCases: await supportCasesForReview(strapi, review),
+        auditEvents,
+        evidence,
+        supportCases,
       },
       reviewClaim,
     };
