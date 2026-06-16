@@ -222,6 +222,16 @@ const candidateRelationshipEnrollmentStatuses = new Set([
   'waiting_list',
   'waitlisted',
 ]);
+const candidateRefundDecisionEnrollmentStatuses = new Set([
+  'refunded',
+  'removed_no_refund',
+  'removed_partial_refund',
+  'removed_full_refund',
+]);
+const candidateVisibleRelationshipEnrollmentStatuses = new Set([
+  ...candidateRelationshipEnrollmentStatuses,
+  ...candidateRefundDecisionEnrollmentStatuses,
+]);
 const interestCountEnrollmentStatuses = [
   'interest_registered',
   'enrollment_open',
@@ -1009,12 +1019,18 @@ const enrollmentClassDocumentId = (enrollment) => enrollment?.class?.documentId;
 
 const relationshipClassDocumentIds = (enrollments: DocumentRecord[] = []) =>
   enrollments
-    .filter((enrollment) => candidateRelationshipEnrollmentStatuses.has(normalizedEnrollmentState(enrollment)))
+    .filter((enrollment) => candidateVisibleRelationshipEnrollmentStatuses.has(normalizedEnrollmentState(enrollment)))
     .map(enrollmentClassDocumentId)
     .filter((documentId): documentId is string => Boolean(documentId));
 
 const findRelationshipClasses = async (strapi: StrapiDocumentService, enrollments: DocumentRecord[] = []) => {
   const classDocumentIds = [...new Set(relationshipClassDocumentIds(enrollments))];
+  const refundDecisionClassDocumentIds = new Set(
+    enrollments
+      .filter((enrollment) => candidateRefundDecisionEnrollmentStatuses.has(normalizedEnrollmentState(enrollment)))
+      .map(enrollmentClassDocumentId)
+      .filter((documentId): documentId is string => Boolean(documentId))
+  );
 
   if (classDocumentIds.length === 0) {
     return [];
@@ -1033,8 +1049,11 @@ const findRelationshipClasses = async (strapi: StrapiDocumentService, enrollment
 
   return sortClassesByStartDate(
     classes
-      .filter((classRecord) => !terminalClassStatuses.has(classRecord.state))
-      .filter((classRecord) => candidateRelationshipClassStates.has(classRecord.state))
+      .filter(
+        (classRecord) =>
+          refundDecisionClassDocumentIds.has(classRecord.documentId) ||
+          (!terminalClassStatuses.has(classRecord.state) && candidateRelationshipClassStates.has(classRecord.state))
+      )
   );
 };
 
@@ -3948,6 +3967,51 @@ const deriveClassRelationshipState = (enrollment, classRecord?) => {
 };
 
 const buildClassTimeline = (classRecord, relationshipState) => {
+  const refundDecisionTimelineMeta: Record<string, { label: string; state: 'complete' | 'current' }> = {
+    refunded: {
+      label: 'Refund completed',
+      state: 'complete',
+    },
+    removed_full_refund: {
+      label: 'Full refund approved',
+      state: 'current',
+    },
+    removed_no_refund: {
+      label: 'Refund not approved',
+      state: 'current',
+    },
+    removed_partial_refund: {
+      label: 'Partial refund approved',
+      state: 'current',
+    },
+  };
+  const refundDecisionMeta = refundDecisionTimelineMeta[relationshipState];
+
+  if (refundDecisionMeta) {
+    return [
+      {
+        key: 'interest',
+        label: 'Interest Registered',
+        state: 'complete',
+      },
+      {
+        key: 'enrollment_open',
+        label: 'Enrolled',
+        state: 'complete',
+      },
+      {
+        key: 'place_secured',
+        label: 'Place secured',
+        state: 'complete',
+      },
+      {
+        key: 'refund_decision',
+        label: refundDecisionMeta.label,
+        state: refundDecisionMeta.state,
+      },
+    ];
+  }
+
   const completedInterest = relationshipState !== 'not_registered';
   const completedEnrollmentOpen = [
     'place_reserved',
