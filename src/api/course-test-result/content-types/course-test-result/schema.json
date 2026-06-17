@@ -1,11 +1,11 @@
 {
   "kind": "collectionType",
-  "collectionName": "test_attempts",
+  "collectionName": "course_test_results",
   "info": {
-    "singularName": "test-attempt",
-    "pluralName": "test-attempts",
-    "displayName": "Test Attempt",
-    "description": "One candidate attempt at a test."
+    "singularName": "course-test-result",
+    "pluralName": "course-test-results",
+    "displayName": "Course Test Result",
+    "description": "Snapshot result for a candidate course test attempt."
   },
   "options": {
     "draftAndPublish": false
@@ -21,34 +21,27 @@
       "relation": "manyToOne",
       "target": "api::enrollment.enrollment"
     },
-    "test": {
+    "courseTest": {
       "type": "relation",
       "relation": "manyToOne",
-      "target": "api::test.test"
+      "target": "api::course-test.course-test"
     },
-    "attemptNumber": {
-      "type": "integer",
-      "required": true
+    "courseTestAttempt": {
+      "type": "relation",
+      "relation": "oneToOne",
+      "target": "api::course-test-attempt.course-test-attempt"
     },
-    "attemptState": {
+    "resultState": {
       "type": "enumeration",
       "enum": [
-        "in_progress",
-        "submitted",
-        "scored",
+        "not_assessed",
         "passed",
         "failed",
         "appealed",
         "void"
       ],
-      "default": "in_progress",
+      "default": "not_assessed",
       "required": true
-    },
-    "startedAt": {
-      "type": "datetime"
-    },
-    "submittedAt": {
-      "type": "datetime"
     },
     "score": {
       "type": "decimal"
@@ -62,16 +55,8 @@
     "passed": {
       "type": "boolean"
     },
-    "retryType": {
-      "type": "enumeration",
-      "enum": [
-        "first_attempt",
-        "open_retry",
-        "conditional_retry",
-        "admin_override"
-      ],
-      "default": "first_attempt",
-      "required": true
+    "attemptNumber": {
+      "type": "integer"
     },
     "retryEligibilityState": {
       "type": "enumeration",
@@ -85,8 +70,8 @@
       "default": "not_assessed",
       "required": true
     },
-    "timeTakenSeconds": {
-      "type": "integer"
+    "decidedAt": {
+      "type": "datetime"
     },
     "metadata": {
       "type": "json"

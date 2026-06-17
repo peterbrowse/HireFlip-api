@@ -52,6 +52,9 @@ type DocumentRecord = Record<string, unknown> & {
   accountRestrictionStatus?: string;
   amountPence?: number;
   announcementState?: string;
+  appealState?: string;
+  attemptNumber?: number;
+  attemptState?: string;
   authIdentityId?: string;
   candidate?: DocumentRecord;
   candidateState?: string;
@@ -63,8 +66,22 @@ type DocumentRecord = Record<string, unknown> & {
   classAreaPreferences?: unknown;
   acceptedTermsPolicyDocument?: DocumentRecord;
   acceptanceLabel?: string;
+  beganClassAt?: string;
   body?: string;
+  completedAt?: string;
+  completionMode?: string;
   completionStatus?: string;
+  course?: DocumentRecord;
+  courseCompletionDeadline?: string;
+  courseDeadlineExtensionSeconds?: number;
+  courseMaterial?: DocumentRecord;
+  courseModule?: DocumentRecord;
+  courseQuestion?: DocumentRecord;
+  courseSection?: DocumentRecord;
+  courseTest?: DocumentRecord;
+  courseTestAttempt?: DocumentRecord;
+  correctAnswerPayload?: unknown;
+  createdAt?: string;
   currency?: string;
   declinedAt?: string;
   displayTitle?: string;
@@ -87,6 +104,7 @@ type DocumentRecord = Record<string, unknown> & {
   marketingConsentCapturedAt?: string;
   marketingConsentState?: string;
   marketingConsentWordingVersion?: string;
+  maxScore?: number;
   metadata?: unknown;
   name?: string;
   notificationPreferences?: unknown;
@@ -114,24 +132,41 @@ type DocumentRecord = Record<string, unknown> & {
   providerCheckoutSessionId?: string;
   providerCustomerId?: string;
   providerPaymentIntentId?: string;
+  options?: unknown;
+  passed?: boolean;
+  passMark?: number;
+  prompt?: string;
+  questionState?: string;
+  questionType?: string;
   registeredInterestAt?: string;
+  required?: boolean;
+  requiredCompletionPercentage?: number;
+  retryEligibilityState?: string;
   reservation?: DocumentRecord;
   reservationState?: string;
   region?: string;
   reviewState?: string;
   reservationExpiresAt?: string;
   reservationDocumentId?: string;
+  score?: number;
+  scoringRubric?: unknown;
   sector?: string;
+  sectionState?: string;
   skippedAt?: string;
   slug?: string;
+  sortOrder?: number;
   startDate?: string;
+  startedAt?: string;
   source?: string;
   sourceTrigger?: string;
   state?: string;
   status?: string;
+  submittedAt?: string;
   suggestedValue?: string;
   supersededAt?: string;
+  testState?: string;
   title?: string;
+  updatedAt?: string;
   version?: string;
   visibleFrom?: string;
   waitingListPosition?: number;
@@ -459,6 +494,41 @@ const supportCaseReplySchema = z
   .strict();
 
 const validateSupportCaseReply = validateZodSchema(supportCaseReplySchema);
+
+const materialProgressSchema = z
+  .object({
+    completionPercentage: z.number().min(0).max(100).optional(),
+    eventType: z.enum(['read_progress', 'video_progress', 'completed']).default('completed'),
+    reachedEnd: z.boolean().optional(),
+    watchedSeconds: z.number().nonnegative().optional(),
+  })
+  .strict()
+  .default({ eventType: 'completed' });
+
+const validateMaterialProgress = validateZodSchema(materialProgressSchema);
+
+const testAnswerSchema = z
+  .object({
+    questionDocumentId: z.string().trim().min(1).max(160),
+    selectedOptionIds: z.array(z.string().trim().min(1).max(120)).min(1).max(20),
+  })
+  .strict();
+
+const submitCourseTestSchema = z
+  .object({
+    answers: z.array(testAnswerSchema).min(1).max(200),
+  })
+  .strict();
+
+const validateSubmitCourseTest = validateZodSchema(submitCourseTestSchema);
+
+const courseAppealSchema = z
+  .object({
+    reason: z.string().trim().min(20).max(4000),
+  })
+  .strict();
+
+const validateCourseAppeal = validateZodSchema(courseAppealSchema);
 
 const recoverUploadPath = (file) => {
   if (!file?.url || file.path || !file.hash) {
@@ -4237,7 +4307,1421 @@ const buildCandidateClassInterestForCandidate = async (strapi, candidate) => {
   });
 };
 
+const courseAccessEnrollmentStates = new Set(['enrolled', 'in_class', 'interview_phase', 'completed']);
+const courseStartedClassStates = new Set(['in_progress', 'completion_window']);
+const activeCourseContentStates = new Set(['active']);
+const courseCompletionMonths = 3;
+
+const addCalendarMonths = (value: Date, months: number) => {
+  const next = new Date(value.getTime());
+  next.setMonth(next.getMonth() + months);
+  return next;
+};
+
+const latestByTimestamp = (records: DocumentRecord[]) =>
+  records.reduce<DocumentRecord | undefined>((latest, record) => {
+    const latestTime = latest?.completedAt || latest?.submittedAt || latest?.startedAt || latest?.updatedAt || latest?.createdAt;
+    const recordTime = record.completedAt || record.submittedAt || record.startedAt || record.updatedAt || record.createdAt;
+
+    if (!latestTime) {
+      return record;
+    }
+
+    if (!recordTime) {
+      return latest;
+    }
+
+    return Date.parse(recordTime) >= Date.parse(latestTime) ? record : latest;
+  }, undefined);
+
+const courseProgressItemDocumentId = (progressRecord: DocumentRecord) => {
+  if (progressRecord.progressType === 'section') {
+    return progressRecord.courseSection?.documentId;
+  }
+
+  if (progressRecord.progressType === 'module') {
+    return progressRecord.courseModule?.documentId;
+  }
+
+  if (progressRecord.progressType === 'material') {
+    return progressRecord.courseMaterial?.documentId;
+  }
+
+  if (progressRecord.progressType === 'test') {
+    return progressRecord.courseTest?.documentId;
+  }
+
+  if (progressRecord.progressType === 'question') {
+    return progressRecord.courseQuestion?.documentId;
+  }
+
+  return undefined;
+};
+
+const latestCourseProgressByKey = (progressRecords: DocumentRecord[]) => {
+  const map = new Map<string, DocumentRecord[]>();
+
+  progressRecords.forEach((progressRecord) => {
+    const documentId = courseProgressItemDocumentId(progressRecord);
+    const key = documentId ? `${progressRecord.progressType}:${documentId}` : progressRecord.progressType === 'class' ? 'class' : undefined;
+
+    if (!key) {
+      return;
+    }
+
+    map.set(key, [...(map.get(key) || []), progressRecord]);
+  });
+
+  return new Map([...map.entries()].map(([key, records]) => [key, latestByTimestamp(records)!]));
+};
+
+const findCurrentCourseEnrollment = async (strapi: StrapiDocumentService, candidate: DocumentRecord) => {
+  if (!candidate.documentId) {
+    return undefined;
+  }
+
+  const enrollments = await documents(strapi, 'api::enrollment.enrollment').findMany({
+    filters: {
+      candidate: {
+        documentId: candidate.documentId,
+      },
+      enrollmentState: {
+        $in: [...courseAccessEnrollmentStates],
+      },
+    },
+    limit: 20,
+    populate: ['class'],
+    sort: ['beganClassAt:desc', 'enrolledAt:desc', 'createdAt:desc'],
+  });
+
+  return enrollments.find((enrollment) =>
+    enrollment.paymentStatus === 'paid' || ['in_class', 'interview_phase', 'completed'].includes(String(enrollment.enrollmentState || ''))
+  );
+};
+
+const findClassWithCourse = async (strapi: StrapiDocumentService, classDocumentId?: string) => {
+  if (!classDocumentId) {
+    return undefined;
+  }
+
+  const classes = await documents(strapi, 'api::class.class').findMany({
+    filters: {
+      documentId: classDocumentId,
+    },
+    limit: 1,
+    populate: ['classArea', 'course', 'workSector'],
+  });
+
+  return classes[0];
+};
+
+const activeContentRecord = (record: DocumentRecord, stateKey: string) =>
+  activeCourseContentStates.has(String(record[stateKey] || 'active'));
+
+const findCourseBundle = async (
+  strapi: StrapiDocumentService,
+  enrollment: DocumentRecord
+) => {
+  const classRecord = await findClassWithCourse(strapi, enrollment.class?.documentId);
+  const course = classRecord?.course;
+
+  if (!classRecord || !course?.documentId) {
+    return undefined;
+  }
+
+  const sections = (await documents(strapi, 'api::course-section.course-section').findMany({
+    filters: {
+      course: {
+        documentId: course.documentId,
+      },
+    },
+    limit: 200,
+    sort: ['sortOrder:asc', 'createdAt:asc'],
+  })).filter((section) => activeContentRecord(section, 'sectionState'));
+  const sectionDocumentIds = sections.map((section) => section.documentId).filter((documentId): documentId is string => Boolean(documentId));
+  const modules = sectionDocumentIds.length
+    ? (await documents(strapi, 'api::course-module.course-module').findMany({
+        filters: {
+          courseSection: {
+            documentId: {
+              $in: sectionDocumentIds,
+            },
+          },
+        },
+        limit: 1000,
+        populate: ['courseSection'],
+        sort: ['sortOrder:asc', 'createdAt:asc'],
+      })).filter((module) => activeContentRecord(module, 'moduleState'))
+    : [];
+  const moduleDocumentIds = modules.map((module) => module.documentId).filter((documentId): documentId is string => Boolean(documentId));
+  const [materials, courseTests, moduleTests, progressRecords, attempts, appeals] = await Promise.all([
+    moduleDocumentIds.length
+      ? documents(strapi, 'api::course-material.course-material').findMany({
+          filters: {
+            module: {
+              documentId: {
+                $in: moduleDocumentIds,
+              },
+            },
+          },
+          limit: 2000,
+          populate: ['module'],
+          sort: ['sortOrder:asc', 'createdAt:asc'],
+        })
+      : [],
+    documents(strapi, 'api::course-test.course-test').findMany({
+      filters: {
+        course: {
+          documentId: course.documentId,
+        },
+      },
+      limit: 500,
+      sort: ['createdAt:asc'],
+    }),
+    moduleDocumentIds.length
+      ? documents(strapi, 'api::course-test.course-test').findMany({
+          filters: {
+            courseModule: {
+              documentId: {
+                $in: moduleDocumentIds,
+              },
+            },
+          },
+          limit: 1000,
+          populate: ['courseModule'],
+          sort: ['createdAt:asc'],
+        })
+      : [],
+    documents(strapi, 'api::course-progress.course-progress').findMany({
+      filters: {
+        enrollment: {
+          documentId: enrollment.documentId,
+        },
+      },
+      limit: 5000,
+      populate: ['courseSection', 'courseModule', 'courseMaterial', 'courseTest', 'courseQuestion', 'enrollment'],
+      sort: ['createdAt:asc'],
+    }),
+    documents(strapi, 'api::course-test-attempt.course-test-attempt').findMany({
+      filters: {
+        enrollment: {
+          documentId: enrollment.documentId,
+        },
+      },
+      limit: 1000,
+      populate: ['courseTest'],
+      sort: ['attemptNumber:desc', 'createdAt:desc'],
+    }),
+    documents(strapi, 'api::assessment-appeal.assessment-appeal').findMany({
+      filters: {
+        enrollment: {
+          documentId: enrollment.documentId,
+        },
+      },
+      limit: 500,
+      populate: ['courseTestAttempt'],
+      sort: ['createdAt:desc'],
+    }),
+  ]);
+  const tests = [...courseTests, ...moduleTests].filter((test) => activeContentRecord(test, 'testState'));
+  const testDocumentIds = tests.map((test) => test.documentId).filter((documentId): documentId is string => Boolean(documentId));
+  const questions = testDocumentIds.length
+    ? (await documents(strapi, 'api::course-question.course-question').findMany({
+        filters: {
+          courseTest: {
+            documentId: {
+              $in: testDocumentIds,
+            },
+          },
+        },
+        limit: 2000,
+        populate: ['courseTest'],
+        sort: ['sortOrder:asc', 'createdAt:asc'],
+      })).filter((question) => activeContentRecord(question, 'questionState'))
+    : [];
+
+  return {
+    appeals,
+    attempts,
+    classRecord,
+    course,
+    enrollment,
+    materials: materials.filter((material) => activeContentRecord(material, 'materialState')),
+    modules,
+    progressRecords,
+    questions,
+    sections,
+    tests,
+  };
+};
+
+const progressCompleted = (progress?: DocumentRecord) => progress?.progressState === 'completed';
+
+const expectedCompletionPercentage = (material: DocumentRecord) => {
+  if (typeof material.requiredCompletionPercentage === 'number') {
+    return material.requiredCompletionPercentage;
+  }
+
+  return material.completionMode === 'watch_percentage' ? 90 : 100;
+};
+
+const sanitizeQuestionForCandidate = (question: DocumentRecord) => ({
+  documentId: question.documentId,
+  options: Array.isArray(question.options) ? question.options : [],
+  prompt: question.prompt,
+  questionType: question.questionType,
+  sortOrder: question.sortOrder ?? 0,
+});
+
+const selectedIds = (value: unknown) =>
+  Array.isArray(value)
+    ? Array.from(new Set(value.filter((item): item is string => typeof item === 'string' && item.trim() !== '').map((item) => item.trim()))).sort()
+    : [];
+
+const correctIdsForQuestion = (question: DocumentRecord) => {
+  const payload = objectValue(question.correctAnswerPayload);
+  return selectedIds(payload.correctOptionIds);
+};
+
+const answerIsCorrect = (question: DocumentRecord, selectedOptionIds: string[]) => {
+  const correctIds = correctIdsForQuestion(question);
+  const selected = selectedIds(selectedOptionIds);
+
+  return correctIds.length > 0 &&
+    selected.length === correctIds.length &&
+    selected.every((optionId, index) => optionId === correctIds[index]);
+};
+
+const questionPoints = (question: DocumentRecord) => {
+  const rubric = objectValue(question.scoringRubric);
+  const rawPoints = Number(rubric.points);
+
+  return Number.isFinite(rawPoints) && rawPoints > 0 ? rawPoints : 1;
+};
+
+const latestAttemptForTest = (attempts: DocumentRecord[], testDocumentId?: string) =>
+  latestByTimestamp(attempts.filter((attempt) => attempt.courseTest?.documentId === testDocumentId));
+
+const activeAppealForAttempt = (appeals: DocumentRecord[], attemptDocumentId?: string) =>
+  appeals.find((appeal) =>
+    appeal.courseTestAttempt?.documentId === attemptDocumentId &&
+    ['submitted', 'under_review'].includes(String(appeal.appealState || ''))
+  );
+
+const buildCandidateCourseState = async (
+  strapi: StrapiDocumentService,
+  candidate: DocumentRecord,
+  enrollment: DocumentRecord
+) => {
+  const bundle = await findCourseBundle(strapi, enrollment);
+
+  if (!bundle) {
+    return {
+      candidate: {
+        documentId: candidate.documentId,
+        email: candidate.email,
+      },
+      course: null,
+      state: 'not_configured',
+    };
+  }
+
+  const progressMap = latestCourseProgressByKey(bundle.progressRecords);
+  const testsByModule = new Map<string, DocumentRecord[]>();
+  const materialsByModule = new Map<string, DocumentRecord[]>();
+  const questionsByTest = new Map<string, DocumentRecord[]>();
+
+  bundle.materials.forEach((material) => {
+    const moduleDocumentId = material.module?.documentId;
+
+    if (moduleDocumentId) {
+      materialsByModule.set(moduleDocumentId, [...(materialsByModule.get(moduleDocumentId) || []), material]);
+    }
+  });
+  bundle.tests.forEach((test) => {
+    const moduleDocumentId = test.courseModule?.documentId;
+
+    if (moduleDocumentId) {
+      testsByModule.set(moduleDocumentId, [...(testsByModule.get(moduleDocumentId) || []), test]);
+    }
+  });
+  bundle.questions.forEach((question) => {
+    const testDocumentId = question.courseTest?.documentId;
+
+    if (testDocumentId) {
+      questionsByTest.set(testDocumentId, [...(questionsByTest.get(testDocumentId) || []), question]);
+    }
+  });
+
+  const courseStarted = Boolean(enrollment.beganClassAt);
+  let previousRequiredSectionPassed = true;
+  const sections = bundle.sections.map((section) => {
+    const sectionUnlocked = courseStarted && previousRequiredSectionPassed;
+    const sectionModules = bundle.modules
+      .filter((module) => module.courseSection?.documentId === section.documentId)
+      .sort((first, second) => Number(first.sortOrder || 0) - Number(second.sortOrder || 0));
+    let previousRequiredModulePassed = true;
+    const modules = sectionModules.map((module) => {
+      const moduleRequired = module.required !== false;
+      const moduleUnlocked = sectionUnlocked && previousRequiredModulePassed;
+      const moduleMaterials = (materialsByModule.get(module.documentId || '') || [])
+        .sort((first, second) => Number(first.sortOrder || 0) - Number(second.sortOrder || 0));
+      const moduleTests = testsByModule.get(module.documentId || '') || [];
+      const materials = moduleMaterials.map((material) => {
+        const progress = progressMap.get(`material:${material.documentId}`);
+        const completionPercentage = Number(objectValue(progress?.metadata).completionPercentage || 0);
+        const completed = progressCompleted(progress);
+        const materialRequired = material.required !== false;
+
+        return {
+          body: moduleUnlocked ? material.body || null : null,
+          completionMode: material.completionMode || 'read_to_end',
+          completionPercentage: completed ? 100 : Math.min(100, Math.max(0, completionPercentage)),
+          documentId: material.documentId,
+          estimatedDurationMinutes: material.estimatedDurationMinutes ?? null,
+          required: materialRequired,
+          requiredCompletionPercentage: expectedCompletionPercentage(material),
+          sortOrder: material.sortOrder ?? 0,
+          state: completed ? 'completed' : progress ? 'in_progress' : 'not_started',
+          title: material.title || 'Course material',
+          type: material.materialType || 'text',
+          url: moduleUnlocked ? material.url || null : null,
+        };
+      });
+      const tests = moduleTests.map((test) => {
+        const latestAttempt = latestAttemptForTest(bundle.attempts, test.documentId);
+        const activeAppeal = activeAppealForAttempt(bundle.appeals, latestAttempt?.documentId);
+        const questions = questionsByTest.get(test.documentId || '') || [];
+        const testPassed = latestAttempt?.passed === true || latestAttempt?.attemptState === 'passed';
+        const testFailed = latestAttempt?.attemptState === 'failed';
+        const retryEligibilityState = latestAttempt?.retryEligibilityState || 'not_assessed';
+
+        return {
+          activeAppeal: activeAppeal
+            ? {
+                documentId: activeAppeal.documentId,
+                state: activeAppeal.appealState,
+                submittedAt: activeAppeal.submittedAt,
+              }
+            : null,
+          attemptLimit: test.attemptLimit ?? 3,
+          canAppeal: Boolean(testFailed && retryEligibilityState === 'exhausted' && !activeAppeal),
+          canSubmit: moduleUnlocked && !testPassed && !activeAppeal,
+          description: test.description || null,
+          documentId: test.documentId,
+          latestAttempt: latestAttempt
+            ? {
+                attemptNumber: latestAttempt.attemptNumber,
+                documentId: latestAttempt.documentId,
+                passed: latestAttempt.passed === true,
+                retryEligibilityState,
+                score: latestAttempt.score ?? null,
+                state: latestAttempt.attemptState,
+                submittedAt: latestAttempt.submittedAt,
+              }
+            : null,
+          maxScore: test.maxScore ?? questions.reduce((total, question) => total + questionPoints(question), 0),
+          passMark: test.passMark ?? 70,
+          questions: moduleUnlocked ? questions.map(sanitizeQuestionForCandidate) : [],
+          state: testPassed ? 'passed' : testFailed ? 'failed' : latestAttempt ? 'in_progress' : 'not_started',
+          timeLimitMinutes: test.timeLimitMinutes ?? null,
+          title: test.title || 'Course test',
+        };
+      });
+      const requiredMaterialsComplete = materials
+        .filter((material) => material.required)
+        .every((material) => material.state === 'completed');
+      const requiredTestsPassed = tests.every((test) => test.state === 'passed');
+      const modulePassed =
+        moduleUnlocked &&
+        requiredMaterialsComplete &&
+        requiredTestsPassed &&
+        (materials.some((material) => material.required) || tests.length > 0);
+
+      if (moduleRequired) {
+        previousRequiredModulePassed = modulePassed;
+      }
+
+      return {
+        description: module.description || null,
+        documentId: module.documentId,
+        materials,
+        required: moduleRequired,
+        sortOrder: module.sortOrder ?? 0,
+        state: modulePassed ? 'passed' : moduleUnlocked ? 'in_progress' : 'locked',
+        tests,
+        title: module.title || 'Course module',
+        unlocked: moduleUnlocked,
+      };
+    });
+    const sectionRequired = section.required !== false;
+    const requiredModules = modules.filter((module) => module.required);
+    const sectionPassed =
+      sectionUnlocked &&
+      requiredModules.length > 0 &&
+      requiredModules.every((module) => module.state === 'passed');
+
+    if (sectionRequired) {
+      previousRequiredSectionPassed = sectionPassed;
+    }
+
+    return {
+      description: section.description || null,
+      documentId: section.documentId,
+      modules,
+      required: sectionRequired,
+      sortOrder: section.sortOrder ?? 0,
+      state: sectionPassed ? 'passed' : sectionUnlocked ? 'in_progress' : 'locked',
+      title: section.title || 'Course section',
+      unlocked: sectionUnlocked,
+    };
+  });
+  const requiredSections = sections.filter((section) => section.required);
+  const coursePassed = requiredSections.length > 0 && requiredSections.every((section) => section.state === 'passed');
+  const totalItems = sections.reduce(
+    (total, section) =>
+      total + section.modules.reduce(
+        (moduleTotal, module) =>
+          moduleTotal +
+          module.materials.filter((material) => material.required).length +
+          module.tests.length,
+        0
+      ),
+    0
+  );
+  const completedItems = sections.reduce(
+    (total, section) =>
+      total + section.modules.reduce(
+        (moduleTotal, module) =>
+          moduleTotal +
+          module.materials.filter((material) => material.required && material.state === 'completed').length +
+          module.tests.filter((test) => test.state === 'passed').length,
+        0
+      ),
+    0
+  );
+
+  return {
+    candidate: {
+      documentId: candidate.documentId,
+      email: candidate.email,
+    },
+    class: sanitizeClass(bundle.classRecord),
+    course: {
+      description: bundle.course.description || null,
+      documentId: bundle.course.documentId,
+      name: bundle.course.name,
+      sourceType: bundle.course.sourceType,
+      state: bundle.course.courseState,
+      version: bundle.course.version,
+    },
+    enrollment: {
+      ...sanitizeEnrollment(enrollment),
+      beganClassAt: enrollment.beganClassAt || null,
+      courseCompletionDeadline: enrollment.courseCompletionDeadline || null,
+      courseDeadlineExtensionSeconds: enrollment.courseDeadlineExtensionSeconds || 0,
+    },
+    progress: {
+      completedItems,
+      percentageComplete: totalItems > 0 ? Math.round((completedItems / totalItems) * 100) : 0,
+      totalItems,
+    },
+    rules: {
+      appealAvailableAfterRetriesExhausted: true,
+      conditionalRetryThresholdPercentBelowPassMark: 15,
+      openRetriesAfterFirstFailure: 1,
+      passRequiresRequiredMaterialsAndTests: true,
+    },
+    sections,
+    state: coursePassed
+      ? 'passed'
+      : courseStarted
+        ? 'in_progress'
+        : courseStartedClassStates.has(String(bundle.classRecord.state || ''))
+          ? 'ready_to_begin'
+          : 'waiting_for_class_start',
+  };
+};
+
+const recordCourseAudit = async ({
+  candidate,
+  eventType,
+  metadata,
+  newState,
+  previousState,
+  requestContext,
+  strapi,
+  subjectId,
+  subjectType = 'course',
+}: {
+  candidate: DocumentRecord;
+  eventType: string;
+  metadata?: unknown;
+  newState?: unknown;
+  previousState?: unknown;
+  requestContext: RequestContext;
+  strapi: StrapiDocumentService;
+  subjectId?: string;
+  subjectType?: string;
+}) => {
+  await auditEvents(strapi).record({
+    actorEmail: candidate.email,
+    actorId: candidate.authIdentityId,
+    actorType: 'candidate',
+    eventCategory: 'course',
+    eventType,
+    ipAddress: requestContext.ipAddress,
+    metadata,
+    newState,
+    occurredAt: new Date().toISOString(),
+    previousState,
+    requestId: requestContext.requestId,
+    source: 'candidate_dashboard',
+    subjectDisplayName: candidate.email,
+    subjectId: subjectId || candidate.documentId,
+    subjectType,
+    userAgent: requestContext.userAgent,
+  });
+};
+
+const createCourseProgress = async (
+  strapi: StrapiDocumentService,
+  input: {
+    candidate: DocumentRecord;
+    completedAt?: string;
+    courseMaterial?: DocumentRecord;
+    courseModule?: DocumentRecord;
+    courseQuestion?: DocumentRecord;
+    courseSection?: DocumentRecord;
+    courseTest?: DocumentRecord;
+    enrollment: DocumentRecord;
+    metadata?: unknown;
+    progressState: 'not_started' | 'in_progress' | 'completed' | 'failed' | 'skipped';
+    progressType: 'class' | 'section' | 'module' | 'material' | 'test' | 'question';
+    score?: number;
+    startedAt?: string;
+  }
+) =>
+  documents(strapi, 'api::course-progress.course-progress').create({
+    data: {
+      candidate: {
+        connect: [{ documentId: input.candidate.documentId }],
+      },
+      completedAt: input.completedAt,
+      courseMaterial: input.courseMaterial?.documentId
+        ? { connect: [{ documentId: input.courseMaterial.documentId }] }
+        : undefined,
+      courseModule: input.courseModule?.documentId
+        ? { connect: [{ documentId: input.courseModule.documentId }] }
+        : undefined,
+      courseQuestion: input.courseQuestion?.documentId
+        ? { connect: [{ documentId: input.courseQuestion.documentId }] }
+        : undefined,
+      courseSection: input.courseSection?.documentId
+        ? { connect: [{ documentId: input.courseSection.documentId }] }
+        : undefined,
+      courseTest: input.courseTest?.documentId
+        ? { connect: [{ documentId: input.courseTest.documentId }] }
+        : undefined,
+      enrollment: {
+        connect: [{ documentId: input.enrollment.documentId }],
+      },
+      metadata: input.metadata,
+      progressState: input.progressState,
+      progressType: input.progressType,
+      score: input.score,
+      startedAt: input.startedAt,
+    },
+  });
+
+const updateCourseOutcomeIfPassed = async (
+  strapi: StrapiDocumentService,
+  candidate: DocumentRecord,
+  enrollment: DocumentRecord,
+  requestContext: RequestContext
+) => {
+  const courseState = await buildCandidateCourseState(strapi, candidate, enrollment);
+  const now = new Date();
+  const nowIso = now.toISOString();
+  const [
+    completedProgressRecords,
+    existingModuleResults,
+    existingSectionResults,
+    existingCourseResults,
+  ] = await Promise.all([
+    documents(strapi, 'api::course-progress.course-progress').findMany({
+      filters: {
+        enrollment: {
+          documentId: enrollment.documentId,
+        },
+        progressState: 'completed',
+        progressType: {
+          $in: ['class', 'section', 'module'],
+        },
+      },
+      limit: 5000,
+      populate: ['courseModule', 'courseSection', 'enrollment'],
+      sort: ['createdAt:asc'],
+    }),
+    documents(strapi, 'api::course-module-result.course-module-result').findMany({
+      filters: {
+        enrollment: {
+          documentId: enrollment.documentId,
+        },
+        resultState: 'passed',
+      },
+      limit: 1000,
+      populate: ['courseModule', 'enrollment'],
+      sort: ['createdAt:asc'],
+    }),
+    documents(strapi, 'api::course-section-result.course-section-result').findMany({
+      filters: {
+        enrollment: {
+          documentId: enrollment.documentId,
+        },
+        resultState: 'passed',
+      },
+      limit: 1000,
+      populate: ['courseSection', 'enrollment'],
+      sort: ['createdAt:asc'],
+    }),
+    documents(strapi, 'api::course-result.course-result').findMany({
+      filters: {
+        enrollment: {
+          documentId: enrollment.documentId,
+        },
+      },
+      limit: 10,
+      populate: ['course', 'enrollment'],
+      sort: ['updatedAt:desc', 'createdAt:desc'],
+    }),
+  ]);
+  const completedProgressKeys = new Set([...latestCourseProgressByKey(completedProgressRecords).keys()]);
+  const passedModuleResultKeys = new Set(
+    existingModuleResults
+      .map((result) => result.courseModule?.documentId)
+      .filter((documentId): documentId is string => Boolean(documentId))
+  );
+  const passedSectionResultKeys = new Set(
+    existingSectionResults
+      .map((result) => result.courseSection?.documentId)
+      .filter((documentId): documentId is string => Boolean(documentId))
+  );
+  const existingCourseResult = latestByTimestamp(existingCourseResults);
+
+  for (const section of courseState.sections || []) {
+    for (const module of section.modules || []) {
+      if (module.state === 'passed' && module.documentId) {
+        if (!completedProgressKeys.has(`module:${module.documentId}`)) {
+          await createCourseProgress(strapi, {
+            candidate,
+            completedAt: nowIso,
+            courseModule: { documentId: module.documentId },
+            enrollment,
+            progressState: 'completed',
+            progressType: 'module',
+            startedAt: enrollment.beganClassAt || undefined,
+          });
+          completedProgressKeys.add(`module:${module.documentId}`);
+        }
+
+        if (!passedModuleResultKeys.has(module.documentId)) {
+          await documents(strapi, 'api::course-module-result.course-module-result').create({
+            data: {
+              candidate: {
+                connect: [{ documentId: candidate.documentId }],
+              },
+              courseModule: {
+                connect: [{ documentId: module.documentId }],
+              },
+              decidedAt: nowIso,
+              enrollment: {
+                connect: [{ documentId: enrollment.documentId }],
+              },
+              metadata: {
+                source: 'candidate_course_progress',
+              },
+              requiredItemsCompleted:
+                module.materials.filter((material) => material.required && material.state === 'completed').length +
+                module.tests.filter((test) => test.state === 'passed').length,
+              requiredItemsTotal:
+                module.materials.filter((material) => material.required).length +
+                module.tests.length,
+              resultState: 'passed',
+            },
+          });
+          passedModuleResultKeys.add(module.documentId);
+        }
+      }
+    }
+
+    if (section.state === 'passed' && section.documentId) {
+      if (!completedProgressKeys.has(`section:${section.documentId}`)) {
+        await createCourseProgress(strapi, {
+          candidate,
+          completedAt: nowIso,
+          courseSection: { documentId: section.documentId },
+          enrollment,
+          progressState: 'completed',
+          progressType: 'section',
+          startedAt: enrollment.beganClassAt || undefined,
+        });
+        completedProgressKeys.add(`section:${section.documentId}`);
+      }
+
+      if (!passedSectionResultKeys.has(section.documentId)) {
+        await documents(strapi, 'api::course-section-result.course-section-result').create({
+          data: {
+            candidate: {
+              connect: [{ documentId: candidate.documentId }],
+            },
+            courseSection: {
+              connect: [{ documentId: section.documentId }],
+            },
+            decidedAt: nowIso,
+            enrollment: {
+              connect: [{ documentId: enrollment.documentId }],
+            },
+            metadata: {
+              source: 'candidate_course_progress',
+            },
+            requiredModulesPassed: section.modules.filter((module) => module.required && module.state === 'passed').length,
+            requiredModulesTotal: section.modules.filter((module) => module.required).length,
+            resultState: 'passed',
+          },
+        });
+        passedSectionResultKeys.add(section.documentId);
+      }
+    }
+  }
+
+  if (courseState.state !== 'passed' || !courseState.course?.documentId) {
+    return courseState;
+  }
+
+  const alreadyPassed = enrollment.passStatus === 'passed' && enrollment.enrollmentState === 'interview_phase';
+
+  if (alreadyPassed) {
+    return courseState;
+  }
+
+  const interviewGuaranteeDeadline = addCalendarMonths(now, 3).toISOString();
+  const updatedEnrollment = await documents(strapi, 'api::enrollment.enrollment').update({
+    documentId: enrollment.documentId,
+    data: {
+      completedAt: enrollment.completedAt || nowIso,
+      completionStatus: 'completed',
+      enrollmentState: 'interview_phase',
+      interviewGuaranteeDeadline,
+      interviewGuaranteeWindowStartsAt: nowIso,
+      passStatus: 'passed',
+      passedAt: nowIso,
+    },
+    populate: ['class'],
+  });
+
+  const courseResultData = {
+    completedAt: nowIso,
+    completionDeadline: enrollment.courseCompletionDeadline,
+    course: {
+      connect: [{ documentId: courseState.course.documentId }],
+    },
+    metadata: {
+      source: 'candidate_course_submission',
+    },
+    passedAt: nowIso,
+    requiredSectionsPassed: courseState.sections.filter((section) => section.required && section.state === 'passed').length,
+    requiredSectionsTotal: courseState.sections.filter((section) => section.required).length,
+    resultState: 'passed',
+    startedAt: enrollment.beganClassAt,
+  };
+
+  if (existingCourseResult?.documentId) {
+    await documents(strapi, 'api::course-result.course-result').update({
+      documentId: existingCourseResult.documentId,
+      data: courseResultData,
+    });
+  } else {
+    await documents(strapi, 'api::course-result.course-result').create({
+      data: {
+        ...courseResultData,
+        candidate: {
+          connect: [{ documentId: candidate.documentId }],
+        },
+        enrollment: {
+          connect: [{ documentId: enrollment.documentId }],
+        },
+      },
+    });
+  }
+
+  if (!completedProgressKeys.has('class')) {
+    await createCourseProgress(strapi, {
+      candidate,
+      completedAt: nowIso,
+      enrollment: updatedEnrollment,
+      progressState: 'completed',
+      progressType: 'class',
+      startedAt: enrollment.beganClassAt || nowIso,
+    });
+  }
+
+  await recordCourseAudit({
+    candidate,
+    eventType: 'candidate.course_passed',
+    metadata: {
+      course: courseState.course,
+      progress: courseState.progress,
+    },
+    newState: sanitizeEnrollment(updatedEnrollment),
+    previousState: sanitizeEnrollment(enrollment),
+    requestContext,
+    strapi,
+    subjectId: enrollment.documentId,
+    subjectType: 'enrollment',
+  });
+  await publishClassRelationshipEvent({
+    candidate,
+    classRecord: updatedEnrollment.class || enrollment.class,
+    eventType: 'class_relationship_updated',
+    strapi,
+  });
+
+  return buildCandidateCourseState(strapi, candidate, updatedEnrollment);
+};
+
 export default factories.createCoreService('api::candidate.candidate', ({ strapi }) => ({
+  async getCurrentCandidateCourse(auth: Auth0State | undefined) {
+    if (!auth || auth.type !== 'auth0' || !auth.subject) {
+      throw new UnauthorizedError('Auth0 authentication is required.');
+    }
+
+    const existingCandidate = await findCandidateByAuthIdentity(strapi, auth.subject);
+
+    if (!existingCandidate) {
+      throw new ValidationError('Candidate account must be synced before course access can be checked.');
+    }
+
+    const enrollment = await findCurrentCourseEnrollment(strapi, existingCandidate);
+
+    if (!enrollment) {
+      return {
+        candidate: {
+          documentId: existingCandidate.documentId,
+          email: existingCandidate.email,
+        },
+        course: null,
+        state: 'no_active_course',
+      };
+    }
+
+    return buildCandidateCourseState(strapi, existingCandidate, enrollment);
+  },
+
+  async beginCurrentCandidateCourse(
+    auth: Auth0State | undefined,
+    requestContext: RequestContext = {}
+  ) {
+    if (!auth || auth.type !== 'auth0' || !auth.subject) {
+      throw new UnauthorizedError('Auth0 authentication is required.');
+    }
+
+    const existingCandidate = await findCandidateByAuthIdentity(strapi, auth.subject);
+
+    if (!existingCandidate) {
+      throw new ValidationError('Candidate account must be synced before course access can begin.');
+    }
+
+    const enrollment = await findCurrentCourseEnrollment(strapi, existingCandidate);
+
+    if (!enrollment) {
+      throw new ValidationError('No paid class enrollment is available for course access.');
+    }
+
+    const classRecord = await findClassWithCourse(strapi, enrollment.class?.documentId);
+
+    if (!classRecord?.course?.documentId) {
+      throw new ValidationError('This class does not have course content attached yet.');
+    }
+
+    if (!courseStartedClassStates.has(String(classRecord.state || '')) && enrollment.enrollmentState !== 'in_class') {
+      throw new ValidationError('This class has not started yet.');
+    }
+
+    if (enrollment.beganClassAt) {
+      return buildCandidateCourseState(strapi, existingCandidate, enrollment);
+    }
+
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const deadline = addCalendarMonths(now, courseCompletionMonths).toISOString();
+    const updatedEnrollment = await documents(strapi, 'api::enrollment.enrollment').update({
+      documentId: enrollment.documentId,
+      data: {
+        beganClassAt: nowIso,
+        completionStatus: 'in_progress',
+        courseCompletionDeadline: deadline,
+        enrollmentState: 'in_class',
+      },
+      populate: ['class'],
+    });
+
+    await documents(strapi, 'api::course-result.course-result').create({
+      data: {
+        candidate: {
+          connect: [{ documentId: existingCandidate.documentId }],
+        },
+        completionDeadline: deadline,
+        course: {
+          connect: [{ documentId: classRecord.course.documentId }],
+        },
+        enrollment: {
+          connect: [{ documentId: updatedEnrollment.documentId }],
+        },
+        metadata: {
+          classDocumentId: classRecord.documentId,
+          source: 'candidate_begin_class',
+        },
+        resultState: 'in_progress',
+        startedAt: nowIso,
+      },
+    });
+    await createCourseProgress(strapi, {
+      candidate: existingCandidate,
+      enrollment: updatedEnrollment,
+      progressState: 'in_progress',
+      progressType: 'class',
+      startedAt: nowIso,
+    });
+    await recordCourseAudit({
+      candidate: existingCandidate,
+      eventType: 'candidate.course_started',
+      metadata: {
+        class: sanitizeClass(classRecord),
+        course: {
+          documentId: classRecord.course.documentId,
+          name: classRecord.course.name,
+          version: classRecord.course.version,
+        },
+        deadline,
+      },
+      newState: sanitizeEnrollment(updatedEnrollment),
+      previousState: sanitizeEnrollment(enrollment),
+      requestContext,
+      strapi,
+      subjectId: updatedEnrollment.documentId,
+      subjectType: 'enrollment',
+    });
+    await publishClassRelationshipEvent({
+      candidate: existingCandidate,
+      classRecord,
+      eventType: 'class_relationship_updated',
+      strapi,
+    });
+
+    return buildCandidateCourseState(strapi, existingCandidate, updatedEnrollment);
+  },
+
+  async recordCurrentCandidateCourseMaterialProgress(
+    auth: Auth0State | undefined,
+    materialDocumentId: string,
+    input: unknown = {},
+    requestContext: RequestContext = {}
+  ) {
+    if (!auth || auth.type !== 'auth0' || !auth.subject) {
+      throw new UnauthorizedError('Auth0 authentication is required.');
+    }
+
+    const existingCandidate = await findCandidateByAuthIdentity(strapi, auth.subject);
+
+    if (!existingCandidate) {
+      throw new ValidationError('Candidate account must be synced before course progress can be recorded.');
+    }
+
+    const enrollment = await findCurrentCourseEnrollment(strapi, existingCandidate);
+
+    if (!enrollment?.beganClassAt) {
+      throw new ValidationError('Begin the class before recording course progress.');
+    }
+
+    const payload = validateMaterialProgress(input ?? {});
+    const courseState = await buildCandidateCourseState(strapi, existingCandidate, enrollment);
+    const materialState = courseState.sections
+      ?.flatMap((section) => section.modules)
+      .flatMap((module) => module.materials.map((material) => ({ material, module })))
+      .find((item) => item.material.documentId === materialDocumentId);
+
+    if (!materialState) {
+      throw new ValidationError('Course material was not found for this enrollment.');
+    }
+
+    if (!materialState.module.unlocked) {
+      throw new ValidationError('This module is not unlocked yet.');
+    }
+
+    if (materialState.material.state === 'completed') {
+      return courseState;
+    }
+
+    const bundle = await findCourseBundle(strapi, enrollment);
+    const material = bundle?.materials.find((record) => record.documentId === materialDocumentId);
+
+    if (!material) {
+      throw new ValidationError('Course material was not found for this enrollment.');
+    }
+
+    const completionPercentage = Math.max(0, Math.min(100, payload.completionPercentage ?? (payload.reachedEnd ? 100 : 0)));
+    const threshold = expectedCompletionPercentage(material);
+    const completed =
+      material.completionMode === 'read_to_end'
+        ? payload.reachedEnd === true || completionPercentage >= threshold
+        : material.completionMode === 'watch_percentage'
+          ? completionPercentage >= threshold
+          : material.completionMode === 'not_required'
+            ? true
+            : completionPercentage >= threshold;
+    const now = new Date().toISOString();
+
+    await createCourseProgress(strapi, {
+      candidate: existingCandidate,
+      completedAt: completed ? now : undefined,
+      courseMaterial: material,
+      enrollment,
+      metadata: {
+        completionMode: material.completionMode,
+        completionPercentage,
+        eventType: payload.eventType,
+        reachedEnd: payload.reachedEnd === true,
+        requiredCompletionPercentage: threshold,
+        watchedSeconds: payload.watchedSeconds,
+      },
+      progressState: completed ? 'completed' : 'in_progress',
+      progressType: 'material',
+      startedAt: now,
+    });
+    await recordCourseAudit({
+      candidate: existingCandidate,
+      eventType: completed ? 'candidate.course_material_completed' : 'candidate.course_material_progressed',
+      metadata: {
+        completionPercentage,
+        materialDocumentId,
+        threshold,
+      },
+      requestContext,
+      strapi,
+      subjectId: materialDocumentId,
+      subjectType: 'course_material',
+    });
+
+    return updateCourseOutcomeIfPassed(strapi, existingCandidate, enrollment, requestContext);
+  },
+
+  async submitCurrentCandidateCourseTest(
+    auth: Auth0State | undefined,
+    testDocumentId: string,
+    input: unknown = {},
+    requestContext: RequestContext = {}
+  ) {
+    if (!auth || auth.type !== 'auth0' || !auth.subject) {
+      throw new UnauthorizedError('Auth0 authentication is required.');
+    }
+
+    const existingCandidate = await findCandidateByAuthIdentity(strapi, auth.subject);
+
+    if (!existingCandidate) {
+      throw new ValidationError('Candidate account must be synced before submitting a course test.');
+    }
+
+    const enrollment = await findCurrentCourseEnrollment(strapi, existingCandidate);
+
+    if (!enrollment?.beganClassAt) {
+      throw new ValidationError('Begin the class before submitting course tests.');
+    }
+
+    const payload = validateSubmitCourseTest(input ?? {});
+    const courseState = await buildCandidateCourseState(strapi, existingCandidate, enrollment);
+    const testState = courseState.sections
+      ?.flatMap((section) => section.modules)
+      .flatMap((module) => module.tests.map((test) => ({ module, test })))
+      .find((item) => item.test.documentId === testDocumentId);
+
+    if (!testState) {
+      throw new ValidationError('Course test was not found for this enrollment.');
+    }
+
+    if (!testState.module.unlocked) {
+      throw new ValidationError('This module is not unlocked yet.');
+    }
+
+    if (!testState.test.canSubmit) {
+      throw new ValidationError('This test is not available for submission.');
+    }
+
+    const bundle = await findCourseBundle(strapi, enrollment);
+    const test = bundle?.tests.find((record) => record.documentId === testDocumentId);
+    const questions = (bundle?.questions || []).filter((question) => question.courseTest?.documentId === testDocumentId);
+
+    if (!test || questions.length === 0) {
+      throw new ValidationError('Course test questions are not configured.');
+    }
+
+    const previousAttempts = (bundle?.attempts || [])
+      .filter((attempt) => attempt.courseTest?.documentId === testDocumentId)
+      .sort((first, second) => Number(first.attemptNumber || 0) - Number(second.attemptNumber || 0));
+    const latestAttempt = previousAttempts[previousAttempts.length - 1];
+    const attemptLimit = Number(test.attemptLimit || 3);
+
+    if (latestAttempt?.passed === true || latestAttempt?.attemptState === 'passed') {
+      throw new ValidationError('This test has already been passed.');
+    }
+
+    if (previousAttempts.length >= attemptLimit || latestAttempt?.retryEligibilityState === 'exhausted') {
+      throw new ValidationError('No retries are available for this test.');
+    }
+
+    if (previousAttempts.length >= 2 && latestAttempt?.retryEligibilityState !== 'eligible_conditional_retry') {
+      throw new ValidationError('The conditional retry is not available for this test.');
+    }
+
+    const answersByQuestion = new Map(payload.answers.map((answer) => [answer.questionDocumentId, answer.selectedOptionIds]));
+    const missingQuestion = questions.find((question) => !answersByQuestion.has(question.documentId || ''));
+
+    if (missingQuestion) {
+      throw new ValidationError('Every test question must be answered before submission.');
+    }
+
+    const score = questions.reduce((total, question) => {
+      const selectedOptionIds = answersByQuestion.get(question.documentId || '') || [];
+      return total + (answerIsCorrect(question, selectedOptionIds) ? questionPoints(question) : 0);
+    }, 0);
+    const maxScore = Number(test.maxScore || questions.reduce((total, question) => total + questionPoints(question), 0));
+    const passMark = Number(test.passMark || 70);
+    const scorePercent = maxScore > 0 ? (score / maxScore) * 100 : 0;
+    const passed = scorePercent >= passMark;
+    const attemptNumber = previousAttempts.length + 1;
+    const retryEligibilityState = passed
+      ? 'not_eligible'
+      : attemptNumber === 1 && attemptLimit >= 2
+        ? 'eligible_open_retry'
+        : attemptNumber === 2 && attemptLimit >= 3 && scorePercent >= passMark - 15
+          ? 'eligible_conditional_retry'
+          : 'exhausted';
+    const now = new Date().toISOString();
+    const attempt = await documents(strapi, 'api::course-test-attempt.course-test-attempt').create({
+      data: {
+        attemptNumber,
+        attemptState: passed ? 'passed' : 'failed',
+        candidate: {
+          connect: [{ documentId: existingCandidate.documentId }],
+        },
+        courseTest: {
+          connect: [{ documentId: test.documentId }],
+        },
+        enrollment: {
+          connect: [{ documentId: enrollment.documentId }],
+        },
+        maxScore,
+        metadata: {
+          scorePercent,
+        },
+        passed,
+        passMarkSnapshot: passMark,
+        retryEligibilityState,
+        retryType:
+          attemptNumber === 1
+            ? 'first_attempt'
+            : attemptNumber === 2
+              ? 'open_retry'
+              : 'conditional_retry',
+        score,
+        startedAt: now,
+        submittedAt: now,
+      },
+      populate: ['courseTest'],
+    });
+
+    await Promise.all(questions.map((question) =>
+      documents(strapi, 'api::course-answer-submission.course-answer-submission').create({
+        data: {
+          answerPayload: {
+            selectedOptionIds: answersByQuestion.get(question.documentId || '') || [],
+          },
+          candidate: {
+            connect: [{ documentId: existingCandidate.documentId }],
+          },
+          courseQuestion: {
+            connect: [{ documentId: question.documentId }],
+          },
+          courseTestAttempt: {
+            connect: [{ documentId: attempt.documentId }],
+          },
+          feedback: answerIsCorrect(question, answersByQuestion.get(question.documentId || '') || [])
+            ? 'Correct'
+            : 'Incorrect',
+          flagState: 'none',
+          score: answerIsCorrect(question, answersByQuestion.get(question.documentId || '') || [])
+            ? questionPoints(question)
+            : 0,
+          submittedAt: now,
+        },
+      })
+    ));
+    await documents(strapi, 'api::course-test-result.course-test-result').create({
+      data: {
+        attemptNumber,
+        candidate: {
+          connect: [{ documentId: existingCandidate.documentId }],
+        },
+        courseTest: {
+          connect: [{ documentId: test.documentId }],
+        },
+        courseTestAttempt: {
+          connect: [{ documentId: attempt.documentId }],
+        },
+        decidedAt: now,
+        enrollment: {
+          connect: [{ documentId: enrollment.documentId }],
+        },
+        maxScore,
+        metadata: {
+          scorePercent,
+        },
+        passed,
+        passMarkSnapshot: passMark,
+        resultState: passed ? 'passed' : 'failed',
+        retryEligibilityState,
+        score,
+      },
+    });
+    await createCourseProgress(strapi, {
+      candidate: existingCandidate,
+      completedAt: now,
+      courseTest: test,
+      enrollment,
+      metadata: {
+        attemptDocumentId: attempt.documentId,
+        attemptNumber,
+        maxScore,
+        passMark,
+        retryEligibilityState,
+        scorePercent,
+      },
+      progressState: passed ? 'completed' : 'failed',
+      progressType: 'test',
+      score,
+      startedAt: now,
+    });
+    await recordCourseAudit({
+      candidate: existingCandidate,
+      eventType: passed ? 'candidate.course_test_passed' : 'candidate.course_test_failed',
+      metadata: {
+        attemptNumber,
+        maxScore,
+        passMark,
+        retryEligibilityState,
+        score,
+        scorePercent,
+        testDocumentId,
+      },
+      newState: {
+        attemptDocumentId: attempt.documentId,
+        passed,
+        retryEligibilityState,
+        score,
+      },
+      requestContext,
+      strapi,
+      subjectId: testDocumentId,
+      subjectType: 'course_test',
+    });
+
+    return updateCourseOutcomeIfPassed(strapi, existingCandidate, enrollment, requestContext);
+  },
+
+  async createCurrentCandidateCourseAppeal(
+    auth: Auth0State | undefined,
+    testDocumentId: string,
+    input: unknown = {},
+    requestContext: RequestContext = {}
+  ) {
+    if (!auth || auth.type !== 'auth0' || !auth.subject) {
+      throw new UnauthorizedError('Auth0 authentication is required.');
+    }
+
+    const existingCandidate = await findCandidateByAuthIdentity(strapi, auth.subject);
+
+    if (!existingCandidate) {
+      throw new ValidationError('Candidate account must be synced before creating a course appeal.');
+    }
+
+    const enrollment = await findCurrentCourseEnrollment(strapi, existingCandidate);
+
+    if (!enrollment?.beganClassAt) {
+      throw new ValidationError('Begin the class before creating a course appeal.');
+    }
+
+    const payload = validateCourseAppeal(input ?? {});
+    const bundle = await findCourseBundle(strapi, enrollment);
+    const latestAttempt = latestAttemptForTest(bundle?.attempts || [], testDocumentId);
+
+    if (!latestAttempt || latestAttempt.attemptState !== 'failed' || latestAttempt.retryEligibilityState !== 'exhausted') {
+      throw new ValidationError('An appeal can only be submitted after retries are exhausted for a failed test.');
+    }
+
+    const existingAppeal = activeAppealForAttempt(bundle?.appeals || [], latestAttempt.documentId);
+
+    if (existingAppeal) {
+      throw new ValidationError('This failed attempt already has an active appeal.');
+    }
+
+    const now = new Date().toISOString();
+    const appeal = await documents(strapi, 'api::assessment-appeal.assessment-appeal').create({
+      data: {
+        appealState: 'submitted',
+        candidate: {
+          connect: [{ documentId: existingCandidate.documentId }],
+        },
+        courseTestAttempt: {
+          connect: [{ documentId: latestAttempt.documentId }],
+        },
+        enrollment: {
+          connect: [{ documentId: enrollment.documentId }],
+        },
+        metadata: {
+          testDocumentId,
+        },
+        reason: payload.reason,
+        submittedAt: now,
+      },
+    });
+
+    await documents(strapi, 'api::course-test-attempt.course-test-attempt').update({
+      documentId: latestAttempt.documentId,
+      data: {
+        attemptState: 'appealed',
+      },
+    });
+    await recordCourseAudit({
+      candidate: existingCandidate,
+      eventType: 'candidate.course_assessment_appeal_submitted',
+      metadata: {
+        appealDocumentId: appeal.documentId,
+        attemptDocumentId: latestAttempt.documentId,
+        testDocumentId,
+      },
+      newState: {
+        appealDocumentId: appeal.documentId,
+        appealState: appeal.appealState,
+      },
+      requestContext,
+      strapi,
+      subjectId: appeal.documentId,
+      subjectType: 'assessment_appeal',
+    });
+
+    return buildCandidateCourseState(strapi, existingCandidate, enrollment);
+  },
+
   async syncCurrentCandidate(auth: Auth0State | undefined, input: unknown, requestContext: RequestContext = {}) {
     if (!auth || auth.type !== 'auth0' || !auth.subject) {
       throw new UnauthorizedError('Auth0 authentication is required.');

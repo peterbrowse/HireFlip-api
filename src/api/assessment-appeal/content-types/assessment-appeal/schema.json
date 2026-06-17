@@ -21,15 +21,15 @@
       "relation": "manyToOne",
       "target": "api::enrollment.enrollment"
     },
-    "testAttempt": {
+    "courseTestAttempt": {
       "type": "relation",
       "relation": "manyToOne",
-      "target": "api::test-attempt.test-attempt"
+      "target": "api::course-test-attempt.course-test-attempt"
     },
-    "answerSubmission": {
+    "courseAnswerSubmission": {
       "type": "relation",
       "relation": "manyToOne",
-      "target": "api::answer-submission.answer-submission"
+      "target": "api::course-answer-submission.course-answer-submission"
     },
     "reason": {
       "type": "text",

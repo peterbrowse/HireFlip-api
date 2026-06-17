@@ -46,6 +46,161 @@ const upsertCourse = async (strapi, data) => {
   return strapi.documents('api::course.course').create({ data });
 };
 
+const upsertCourseSection = async (strapi, course, data) => {
+  const existingRecords = await strapi.documents('api::course-section.course-section').findMany({
+    filters: {
+      course: {
+        documentId: course.documentId,
+      },
+      title: data.title,
+    },
+    limit: 1,
+    populate: ['course'],
+  });
+  const existingRecord = existingRecords[0];
+  const nextData = {
+    ...data,
+    course: connectDocument(course),
+  };
+
+  if (existingRecord) {
+    return strapi.documents('api::course-section.course-section').update({
+      documentId: existingRecord.documentId,
+      data: nextData,
+      populate: ['course'],
+    });
+  }
+
+  return strapi.documents('api::course-section.course-section').create({
+    data: nextData,
+    populate: ['course'],
+  });
+};
+
+const upsertCourseModule = async (strapi, courseSection, data) => {
+  const existingRecords = await strapi.documents('api::course-module.course-module').findMany({
+    filters: {
+      courseSection: {
+        documentId: courseSection.documentId,
+      },
+      title: data.title,
+    },
+    limit: 1,
+    populate: ['courseSection'],
+  });
+  const existingRecord = existingRecords[0];
+  const nextData = {
+    ...data,
+    courseSection: connectDocument(courseSection),
+  };
+
+  if (existingRecord) {
+    return strapi.documents('api::course-module.course-module').update({
+      documentId: existingRecord.documentId,
+      data: nextData,
+      populate: ['courseSection'],
+    });
+  }
+
+  return strapi.documents('api::course-module.course-module').create({
+    data: nextData,
+    populate: ['courseSection'],
+  });
+};
+
+const upsertCourseMaterial = async (strapi, courseModule, data) => {
+  const existingRecords = await strapi.documents('api::course-material.course-material').findMany({
+    filters: {
+      module: {
+        documentId: courseModule.documentId,
+      },
+      title: data.title,
+    },
+    limit: 1,
+    populate: ['module'],
+  });
+  const existingRecord = existingRecords[0];
+  const nextData = {
+    ...data,
+    module: connectDocument(courseModule),
+  };
+
+  if (existingRecord) {
+    return strapi.documents('api::course-material.course-material').update({
+      documentId: existingRecord.documentId,
+      data: nextData,
+      populate: ['module'],
+    });
+  }
+
+  return strapi.documents('api::course-material.course-material').create({
+    data: nextData,
+    populate: ['module'],
+  });
+};
+
+const upsertCourseTest = async (strapi, courseModule, data) => {
+  const existingRecords = await strapi.documents('api::course-test.course-test').findMany({
+    filters: {
+      courseModule: {
+        documentId: courseModule.documentId,
+      },
+      title: data.title,
+    },
+    limit: 1,
+    populate: ['courseModule'],
+  });
+  const existingRecord = existingRecords[0];
+  const nextData = {
+    ...data,
+    courseModule: connectDocument(courseModule),
+  };
+
+  if (existingRecord) {
+    return strapi.documents('api::course-test.course-test').update({
+      documentId: existingRecord.documentId,
+      data: nextData,
+      populate: ['courseModule'],
+    });
+  }
+
+  return strapi.documents('api::course-test.course-test').create({
+    data: nextData,
+    populate: ['courseModule'],
+  });
+};
+
+const upsertCourseQuestion = async (strapi, courseTest, data) => {
+  const existingRecords = await strapi.documents('api::course-question.course-question').findMany({
+    filters: {
+      courseTest: {
+        documentId: courseTest.documentId,
+      },
+      sortOrder: data.sortOrder,
+    },
+    limit: 1,
+    populate: ['courseTest'],
+  });
+  const existingRecord = existingRecords[0];
+  const nextData = {
+    ...data,
+    courseTest: connectDocument(courseTest),
+  };
+
+  if (existingRecord) {
+    return strapi.documents('api::course-question.course-question').update({
+      documentId: existingRecord.documentId,
+      data: nextData,
+      populate: ['courseTest'],
+    });
+  }
+
+  return strapi.documents('api::course-question.course-question').create({
+    data: nextData,
+    populate: ['courseTest'],
+  });
+};
+
 const upsertPolicyDocument = async (strapi, data) => {
   const existingRecords = await strapi.documents('api::policy-document.policy-document').findMany({
     filters: {
@@ -139,6 +294,151 @@ const main = async () => {
       version: 'launch-v1',
     });
 
+    const demoSection = await upsertCourseSection(strapi, launchCourse, {
+      description:
+        'Internal demo section used to build and review the course workflow before the final provider course is selected.',
+      required: true,
+      sectionState: 'active',
+      sortOrder: 10,
+      title: 'Demo Section: Marketing Foundations',
+    });
+
+    const demoModuleOne = await upsertCourseModule(strapi, demoSection, {
+      description:
+        'A short reading module covering what a junior marketing team does day to day.',
+      moduleState: 'active',
+      required: true,
+      sortOrder: 10,
+      title: 'What marketing teams do',
+    });
+    const demoModuleTwo = await upsertCourseModule(strapi, demoSection, {
+      description:
+        'A short video module showing how to think about a simple campaign brief.',
+      moduleState: 'active',
+      required: true,
+      sortOrder: 20,
+      title: 'Reading a campaign brief',
+    });
+    const demoModuleThree = await upsertCourseModule(strapi, demoSection, {
+      description:
+        'A checkpoint module with simple questions so the test flow can be built against real records.',
+      moduleState: 'active',
+      required: true,
+      sortOrder: 30,
+      title: 'Campaign readiness checkpoint',
+    });
+
+    await upsertCourseMaterial(strapi, demoModuleOne, {
+      body: [
+        'Marketing teams help a business understand an audience, communicate clearly, and measure whether activity is working.',
+        'A junior marketer may help with research, social posts, email checks, campaign reporting, meeting notes, and keeping work organised.',
+        'The important skill is not knowing every tool on day one. It is being prepared, curious, reliable, and able to turn feedback into better work.',
+      ].join('\n\n'),
+      completionMode: 'read_to_end',
+      estimatedDurationMinutes: 8,
+      materialState: 'active',
+      materialType: 'text',
+      required: true,
+      requiredCompletionPercentage: 100,
+      sortOrder: 10,
+      sourceReference: 'HireFlip internal demo content',
+      title: 'Marketing team basics',
+    });
+
+    await upsertCourseMaterial(strapi, demoModuleTwo, {
+      completionMode: 'watch_percentage',
+      estimatedDurationMinutes: 5,
+      materialState: 'active',
+      materialType: 'video',
+      required: true,
+      requiredCompletionPercentage: 90,
+      sortOrder: 10,
+      sourceReference: 'Vimeo placeholder embed for course workflow development',
+      title: 'Demo video: campaign brief walkthrough',
+      url: 'https://player.vimeo.com/video/76979871',
+    });
+
+    await upsertCourseMaterial(strapi, demoModuleThree, {
+      body: [
+        'Before answering the checkpoint questions, think about the difference between activity and evidence.',
+        'A campaign task is not complete because a post was written. It is complete when the team can explain who it was for, what action was expected, and how success will be checked.',
+      ].join('\n\n'),
+      completionMode: 'read_to_end',
+      estimatedDurationMinutes: 6,
+      materialState: 'active',
+      materialType: 'text',
+      required: true,
+      requiredCompletionPercentage: 100,
+      sortOrder: 10,
+      sourceReference: 'HireFlip internal demo content',
+      title: 'Before the checkpoint',
+    });
+
+    const demoTest = await upsertCourseTest(strapi, demoModuleThree, {
+      attemptLimit: 3,
+      copyPasteRestrictionEnabled: true,
+      description:
+        'Simple internal demo checkpoint used to build the course test flow. This is not production course content.',
+      maxScore: 3,
+      passMark: 70,
+      questionRandomizationEnabled: false,
+      testState: 'active',
+      timeLimitMinutes: 10,
+      title: 'Marketing foundations checkpoint',
+    });
+
+    await upsertCourseQuestion(strapi, demoTest, {
+      correctAnswerPayload: {
+        correctOptionIds: ['audience'],
+      },
+      options: [
+        { id: 'audience', label: 'Who the campaign is trying to reach' },
+        { id: 'logo', label: 'Only the colour of the logo' },
+        { id: 'lunch', label: 'Where the team is having lunch' },
+      ],
+      prompt: 'What does audience usually mean in a campaign brief?',
+      questionState: 'active',
+      questionType: 'single_choice',
+      scoringRubric: {
+        points: 1,
+      },
+      sortOrder: 10,
+    });
+    await upsertCourseQuestion(strapi, demoTest, {
+      correctAnswerPayload: {
+        correctOptionIds: ['evidence'],
+      },
+      options: [
+        { id: 'guess', label: 'Guess whether the work felt busy' },
+        { id: 'evidence', label: 'Use evidence such as clicks, replies, signups, or qualified leads' },
+        { id: 'ignore', label: 'Ignore results once the post is live' },
+      ],
+      prompt: 'What is the best way to check whether a marketing activity worked?',
+      questionState: 'active',
+      questionType: 'single_choice',
+      scoringRubric: {
+        points: 1,
+      },
+      sortOrder: 20,
+    });
+    await upsertCourseQuestion(strapi, demoTest, {
+      correctAnswerPayload: {
+        correctOptionIds: ['reliable', 'feedback'],
+      },
+      options: [
+        { id: 'reliable', label: 'Be reliable with small tasks and deadlines' },
+        { id: 'feedback', label: 'Use feedback to improve the next piece of work' },
+        { id: 'secret', label: 'Avoid asking questions so nobody knows you are new' },
+      ],
+      prompt: 'Which behaviours help a junior marketer build trust early?',
+      questionState: 'active',
+      questionType: 'multiple_choice',
+      scoringRubric: {
+        points: 1,
+      },
+      sortOrder: 30,
+    });
+
     const checkoutTerms = await upsertPolicyDocument(strapi, {
       acceptanceLabel:
         'I have read and accept the HireFlip class checkout terms for this reservation.',
@@ -194,7 +494,7 @@ const main = async () => {
         'A paid online HireFlip class for entry-level marketing candidates. Register interest now and we will notify you when places are ready to secure.',
       employerInterviewAvailabilityThresholdPercentage: 150,
       interestThresholdPercentage: 200,
-      modulesPassCriteriaAttached: false,
+      modulesPassCriteriaAttached: true,
       openingMode: 'admin_scheduled',
       pricePence: 80000,
       requirements:
@@ -240,6 +540,11 @@ const main = async () => {
       classAreas: [london.name, manchester.name],
       classes: [londonClass.name, manchesterClass.name],
       course: launchCourse.name,
+      demoCourseSetup: {
+        modules: [demoModuleOne.title, demoModuleTwo.title, demoModuleThree.title],
+        section: demoSection.title,
+        test: demoTest.title,
+      },
       policies: [checkoutTerms.policyKey],
       workSectors: ['Marketing', 'Accounting'],
     };

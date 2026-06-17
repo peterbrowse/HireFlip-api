@@ -1,11 +1,11 @@
 {
   "kind": "collectionType",
-  "collectionName": "answer_submissions",
+  "collectionName": "course_answer_submissions",
   "info": {
-    "singularName": "answer-submission",
-    "pluralName": "answer-submissions",
-    "displayName": "Answer Submission",
-    "description": "Candidate answer submitted during a test attempt."
+    "singularName": "course-answer-submission",
+    "pluralName": "course-answer-submissions",
+    "displayName": "Course Answer Submission",
+    "description": "Candidate answer submitted during a HireFlip course test attempt."
   },
   "options": {
     "draftAndPublish": false
@@ -16,15 +16,15 @@
       "relation": "manyToOne",
       "target": "api::candidate.candidate"
     },
-    "testAttempt": {
+    "courseTestAttempt": {
       "type": "relation",
       "relation": "manyToOne",
-      "target": "api::test-attempt.test-attempt"
+      "target": "api::course-test-attempt.course-test-attempt"
     },
-    "question": {
+    "courseQuestion": {
       "type": "relation",
       "relation": "manyToOne",
-      "target": "api::question.question"
+      "target": "api::course-question.course-question"
     },
     "answerPayload": {
       "type": "json"

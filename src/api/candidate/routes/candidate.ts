@@ -67,6 +67,71 @@ export default {
     },
     {
       method: 'GET',
+      path: '/candidates/me/course',
+      handler: 'candidate.course',
+      config: {
+        auth: false,
+        middlewares: [
+          {
+            name: 'global::auth0-jwt',
+          },
+        ],
+      },
+    },
+    {
+      method: 'POST',
+      path: '/candidates/me/course/begin',
+      handler: 'candidate.beginCourse',
+      config: {
+        auth: false,
+        middlewares: [
+          {
+            name: 'global::auth0-jwt',
+          },
+        ],
+      },
+    },
+    {
+      method: 'POST',
+      path: '/candidates/me/course/materials/:materialDocumentId/progress',
+      handler: 'candidate.recordMaterialProgress',
+      config: {
+        auth: false,
+        middlewares: [
+          {
+            name: 'global::auth0-jwt',
+          },
+        ],
+      },
+    },
+    {
+      method: 'POST',
+      path: '/candidates/me/course/tests/:testDocumentId/submit',
+      handler: 'candidate.submitCourseTest',
+      config: {
+        auth: false,
+        middlewares: [
+          {
+            name: 'global::auth0-jwt',
+          },
+        ],
+      },
+    },
+    {
+      method: 'POST',
+      path: '/candidates/me/course/tests/:testDocumentId/appeal',
+      handler: 'candidate.createCourseAppeal',
+      config: {
+        auth: false,
+        middlewares: [
+          {
+            name: 'global::auth0-jwt',
+          },
+        ],
+      },
+    },
+    {
+      method: 'GET',
       path: '/candidates/me/class-events',
       handler: 'candidate.classEvents',
       config: {

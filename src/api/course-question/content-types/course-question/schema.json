@@ -1,20 +1,20 @@
 {
   "kind": "collectionType",
-  "collectionName": "questions",
+  "collectionName": "course_questions",
   "info": {
-    "singularName": "question",
-    "pluralName": "questions",
-    "displayName": "Question",
-    "description": "Assessment question and scoring definition."
+    "singularName": "course-question",
+    "pluralName": "course-questions",
+    "displayName": "Course Question",
+    "description": "Assessment question and scoring definition for a HireFlip course test."
   },
   "options": {
     "draftAndPublish": false
   },
   "attributes": {
-    "test": {
+    "courseTest": {
       "type": "relation",
       "relation": "manyToOne",
-      "target": "api::test.test",
+      "target": "api::course-test.course-test",
       "inversedBy": "questions"
     },
     "prompt": {

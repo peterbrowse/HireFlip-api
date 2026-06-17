@@ -54,10 +54,10 @@
       "default": "draft",
       "required": true
     },
-    "modules": {
+    "sections": {
       "type": "relation",
       "relation": "oneToMany",
-      "target": "api::course-module.course-module",
+      "target": "api::course-section.course-section",
       "mappedBy": "course"
     },
     "classes": {

@@ -634,54 +634,6 @@ export interface ApiAdminTaskAdminTask extends Struct.CollectionTypeSchema {
   };
 }
 
-export interface ApiAnswerSubmissionAnswerSubmission
-  extends Struct.CollectionTypeSchema {
-  collectionName: 'answer_submissions';
-  info: {
-    description: 'Candidate answer submitted during a test attempt.';
-    displayName: 'Answer Submission';
-    pluralName: 'answer-submissions';
-    singularName: 'answer-submission';
-  };
-  options: {
-    draftAndPublish: false;
-  };
-  attributes: {
-    answerPayload: Schema.Attribute.JSON;
-    candidate: Schema.Attribute.Relation<
-      'manyToOne',
-      'api::candidate.candidate'
-    >;
-    createdAt: Schema.Attribute.DateTime;
-    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
-      Schema.Attribute.Private;
-    feedback: Schema.Attribute.Text;
-    flagState: Schema.Attribute.Enumeration<
-      ['none', 'flagged', 'cleared', 'confirmed']
-    > &
-      Schema.Attribute.Required &
-      Schema.Attribute.DefaultTo<'none'>;
-    locale: Schema.Attribute.String & Schema.Attribute.Private;
-    localizations: Schema.Attribute.Relation<
-      'oneToMany',
-      'api::answer-submission.answer-submission'
-    > &
-      Schema.Attribute.Private;
-    metadata: Schema.Attribute.JSON;
-    publishedAt: Schema.Attribute.DateTime;
-    question: Schema.Attribute.Relation<'manyToOne', 'api::question.question'>;
-    score: Schema.Attribute.Decimal;
-    submittedAt: Schema.Attribute.DateTime;
-    testAttempt: Schema.Attribute.Relation<
-      'manyToOne',
-      'api::test-attempt.test-attempt'
-    >;
-    updatedAt: Schema.Attribute.DateTime;
-    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
-      Schema.Attribute.Private;
-  };
-}
-
 export interface ApiAssessmentAppealAssessmentAppeal
   extends Struct.CollectionTypeSchema {
   collectionName: 'assessment_appeals';
@@ -695,10 +647,6 @@ export interface ApiAssessmentAppealAssessmentAppeal
     draftAndPublish: false;
   };
   attributes: {
-    answerSubmission: Schema.Attribute.Relation<
-      'manyToOne',
-      'api::answer-submission.answer-submission'
-    >;
     appealState: Schema.Attribute.Enumeration<
       ['submitted', 'under_review', 'approved', 'rejected', 'withdrawn']
     > &
@@ -707,6 +655,14 @@ export interface ApiAssessmentAppealAssessmentAppeal
     candidate: Schema.Attribute.Relation<
       'manyToOne',
       'api::candidate.candidate'
+    >;
+    courseAnswerSubmission: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::course-answer-submission.course-answer-submission'
+    >;
+    courseTestAttempt: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::course-test-attempt.course-test-attempt'
     >;
     createdAt: Schema.Attribute.DateTime;
     createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
@@ -729,10 +685,6 @@ export interface ApiAssessmentAppealAssessmentAppeal
     reviewedAt: Schema.Attribute.DateTime;
     reviewedByAdminId: Schema.Attribute.String;
     submittedAt: Schema.Attribute.DateTime;
-    testAttempt: Schema.Attribute.Relation<
-      'manyToOne',
-      'api::test-attempt.test-attempt'
-    >;
     updatedAt: Schema.Attribute.DateTime;
     updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
@@ -1433,6 +1385,57 @@ export interface ApiClassClass extends Struct.CollectionTypeSchema {
   };
 }
 
+export interface ApiCourseAnswerSubmissionCourseAnswerSubmission
+  extends Struct.CollectionTypeSchema {
+  collectionName: 'course_answer_submissions';
+  info: {
+    description: 'Candidate answer submitted during a HireFlip course test attempt.';
+    displayName: 'Course Answer Submission';
+    pluralName: 'course-answer-submissions';
+    singularName: 'course-answer-submission';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    answerPayload: Schema.Attribute.JSON;
+    candidate: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::candidate.candidate'
+    >;
+    courseQuestion: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::course-question.course-question'
+    >;
+    courseTestAttempt: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::course-test-attempt.course-test-attempt'
+    >;
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    feedback: Schema.Attribute.Text;
+    flagState: Schema.Attribute.Enumeration<
+      ['none', 'flagged', 'cleared', 'confirmed']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'none'>;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::course-answer-submission.course-answer-submission'
+    > &
+      Schema.Attribute.Private;
+    metadata: Schema.Attribute.JSON;
+    publishedAt: Schema.Attribute.DateTime;
+    score: Schema.Attribute.Decimal;
+    submittedAt: Schema.Attribute.DateTime;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+  };
+}
+
 export interface ApiCourseMaterialCourseMaterial
   extends Struct.CollectionTypeSchema {
   collectionName: 'course_materials';
@@ -1447,6 +1450,11 @@ export interface ApiCourseMaterialCourseMaterial
   };
   attributes: {
     body: Schema.Attribute.RichText;
+    completionMode: Schema.Attribute.Enumeration<
+      ['read_to_end', 'watch_percentage', 'external_signal', 'not_required']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'read_to_end'>;
     createdAt: Schema.Attribute.DateTime;
     createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
@@ -1481,6 +1489,14 @@ export interface ApiCourseMaterialCourseMaterial
     required: Schema.Attribute.Boolean &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<true>;
+    requiredCompletionPercentage: Schema.Attribute.Integer &
+      Schema.Attribute.SetMinMax<
+        {
+          max: 100;
+          min: 0;
+        },
+        number
+      >;
     sortOrder: Schema.Attribute.Integer &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<0>;
@@ -1497,6 +1513,58 @@ export interface ApiCourseMaterialCourseMaterial
   };
 }
 
+export interface ApiCourseModuleResultCourseModuleResult
+  extends Struct.CollectionTypeSchema {
+  collectionName: 'course_module_results';
+  info: {
+    description: 'Snapshot result for a candidate module outcome.';
+    displayName: 'Course Module Result';
+    pluralName: 'course-module-results';
+    singularName: 'course-module-result';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    candidate: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::candidate.candidate'
+    >;
+    courseModule: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::course-module.course-module'
+    >;
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    decidedAt: Schema.Attribute.DateTime;
+    enrollment: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::enrollment.enrollment'
+    >;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::course-module-result.course-module-result'
+    > &
+      Schema.Attribute.Private;
+    maxScore: Schema.Attribute.Decimal;
+    metadata: Schema.Attribute.JSON;
+    publishedAt: Schema.Attribute.DateTime;
+    requiredItemsCompleted: Schema.Attribute.Integer;
+    requiredItemsTotal: Schema.Attribute.Integer;
+    resultState: Schema.Attribute.Enumeration<
+      ['not_started', 'in_progress', 'passed', 'failed', 'appealed', 'skipped']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'not_started'>;
+    score: Schema.Attribute.Decimal;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+  };
+}
+
 export interface ApiCourseModuleCourseModule
   extends Struct.CollectionTypeSchema {
   collectionName: 'course_modules';
@@ -1510,7 +1578,10 @@ export interface ApiCourseModuleCourseModule
     draftAndPublish: false;
   };
   attributes: {
-    course: Schema.Attribute.Relation<'manyToOne', 'api::course.course'>;
+    courseSection: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::course-section.course-section'
+    >;
     createdAt: Schema.Attribute.DateTime;
     createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
@@ -1580,6 +1651,18 @@ export interface ApiCourseProgressCourseProgress
       'manyToOne',
       'api::course-module.course-module'
     >;
+    courseQuestion: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::course-question.course-question'
+    >;
+    courseSection: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::course-section.course-section'
+    >;
+    courseTest: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::course-test.course-test'
+    >;
     createdAt: Schema.Attribute.DateTime;
     createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
@@ -1600,14 +1683,432 @@ export interface ApiCourseProgressCourseProgress
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'not_started'>;
     progressType: Schema.Attribute.Enumeration<
-      ['class', 'module', 'material', 'test', 'question']
+      ['class', 'section', 'module', 'material', 'test', 'question']
     > &
       Schema.Attribute.Required;
     publishedAt: Schema.Attribute.DateTime;
-    question: Schema.Attribute.Relation<'manyToOne', 'api::question.question'>;
     score: Schema.Attribute.Decimal;
     startedAt: Schema.Attribute.DateTime;
-    test: Schema.Attribute.Relation<'manyToOne', 'api::test.test'>;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+  };
+}
+
+export interface ApiCourseQuestionCourseQuestion
+  extends Struct.CollectionTypeSchema {
+  collectionName: 'course_questions';
+  info: {
+    description: 'Assessment question and scoring definition for a HireFlip course test.';
+    displayName: 'Course Question';
+    pluralName: 'course-questions';
+    singularName: 'course-question';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    correctAnswerPayload: Schema.Attribute.JSON;
+    courseTest: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::course-test.course-test'
+    >;
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::course-question.course-question'
+    > &
+      Schema.Attribute.Private;
+    options: Schema.Attribute.JSON;
+    prompt: Schema.Attribute.RichText & Schema.Attribute.Required;
+    publishedAt: Schema.Attribute.DateTime;
+    questionState: Schema.Attribute.Enumeration<
+      ['draft', 'active', 'archived']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'draft'>;
+    questionType: Schema.Attribute.Enumeration<
+      [
+        'short_text',
+        'long_text',
+        'single_choice',
+        'multiple_choice',
+        'file_upload',
+        'ai_reviewed',
+        'external',
+      ]
+    > &
+      Schema.Attribute.Required;
+    randomizationGroup: Schema.Attribute.String;
+    scoringRubric: Schema.Attribute.JSON;
+    sortOrder: Schema.Attribute.Integer &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<0>;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+  };
+}
+
+export interface ApiCourseResultCourseResult
+  extends Struct.CollectionTypeSchema {
+  collectionName: 'course_results';
+  info: {
+    description: 'Snapshot result for a candidate course outcome.';
+    displayName: 'Course Result';
+    pluralName: 'course-results';
+    singularName: 'course-result';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    candidate: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::candidate.candidate'
+    >;
+    completedAt: Schema.Attribute.DateTime;
+    completionDeadline: Schema.Attribute.DateTime;
+    course: Schema.Attribute.Relation<'manyToOne', 'api::course.course'>;
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    credentialLabelSnapshot: Schema.Attribute.String;
+    deadlineExtensionSeconds: Schema.Attribute.Integer &
+      Schema.Attribute.DefaultTo<0>;
+    enrollment: Schema.Attribute.Relation<
+      'oneToOne',
+      'api::enrollment.enrollment'
+    >;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::course-result.course-result'
+    > &
+      Schema.Attribute.Private;
+    maxScore: Schema.Attribute.Decimal;
+    metadata: Schema.Attribute.JSON;
+    passedAt: Schema.Attribute.DateTime;
+    publishedAt: Schema.Attribute.DateTime;
+    requiredSectionsPassed: Schema.Attribute.Integer;
+    requiredSectionsTotal: Schema.Attribute.Integer;
+    resultState: Schema.Attribute.Enumeration<
+      ['not_started', 'in_progress', 'passed', 'failed', 'appealed', 'expired']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'not_started'>;
+    score: Schema.Attribute.Decimal;
+    startedAt: Schema.Attribute.DateTime;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+  };
+}
+
+export interface ApiCourseSectionResultCourseSectionResult
+  extends Struct.CollectionTypeSchema {
+  collectionName: 'course_section_results';
+  info: {
+    description: 'Snapshot result for a candidate course section outcome.';
+    displayName: 'Course Section Result';
+    pluralName: 'course-section-results';
+    singularName: 'course-section-result';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    candidate: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::candidate.candidate'
+    >;
+    courseSection: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::course-section.course-section'
+    >;
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    decidedAt: Schema.Attribute.DateTime;
+    enrollment: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::enrollment.enrollment'
+    >;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::course-section-result.course-section-result'
+    > &
+      Schema.Attribute.Private;
+    metadata: Schema.Attribute.JSON;
+    publishedAt: Schema.Attribute.DateTime;
+    requiredModulesPassed: Schema.Attribute.Integer;
+    requiredModulesTotal: Schema.Attribute.Integer;
+    resultState: Schema.Attribute.Enumeration<
+      ['not_started', 'in_progress', 'passed', 'failed', 'appealed', 'skipped']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'not_started'>;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+  };
+}
+
+export interface ApiCourseSectionCourseSection
+  extends Struct.CollectionTypeSchema {
+  collectionName: 'course_sections';
+  info: {
+    description: 'A major section inside a HireFlip course.';
+    displayName: 'Course Section';
+    pluralName: 'course-sections';
+    singularName: 'course-section';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    course: Schema.Attribute.Relation<'manyToOne', 'api::course.course'>;
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    description: Schema.Attribute.Text;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::course-section.course-section'
+    > &
+      Schema.Attribute.Private;
+    modules: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::course-module.course-module'
+    >;
+    publishedAt: Schema.Attribute.DateTime;
+    required: Schema.Attribute.Boolean &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<true>;
+    sectionState: Schema.Attribute.Enumeration<
+      ['draft', 'active', 'archived']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'draft'>;
+    sortOrder: Schema.Attribute.Integer &
+      Schema.Attribute.Required &
+      Schema.Attribute.SetMinMax<
+        {
+          min: 0;
+        },
+        number
+      > &
+      Schema.Attribute.DefaultTo<0>;
+    title: Schema.Attribute.String &
+      Schema.Attribute.Required &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 160;
+        minLength: 1;
+      }>;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+  };
+}
+
+export interface ApiCourseTestAttemptCourseTestAttempt
+  extends Struct.CollectionTypeSchema {
+  collectionName: 'course_test_attempts';
+  info: {
+    description: 'One candidate attempt at a HireFlip course test.';
+    displayName: 'Course Test Attempt';
+    pluralName: 'course-test-attempts';
+    singularName: 'course-test-attempt';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    attemptNumber: Schema.Attribute.Integer & Schema.Attribute.Required;
+    attemptState: Schema.Attribute.Enumeration<
+      [
+        'in_progress',
+        'submitted',
+        'scored',
+        'passed',
+        'failed',
+        'appealed',
+        'void',
+      ]
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'in_progress'>;
+    candidate: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::candidate.candidate'
+    >;
+    courseTest: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::course-test.course-test'
+    >;
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    enrollment: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::enrollment.enrollment'
+    >;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::course-test-attempt.course-test-attempt'
+    > &
+      Schema.Attribute.Private;
+    maxScore: Schema.Attribute.Decimal;
+    metadata: Schema.Attribute.JSON;
+    passed: Schema.Attribute.Boolean;
+    passMarkSnapshot: Schema.Attribute.Decimal;
+    publishedAt: Schema.Attribute.DateTime;
+    retryEligibilityState: Schema.Attribute.Enumeration<
+      [
+        'not_assessed',
+        'eligible_open_retry',
+        'eligible_conditional_retry',
+        'not_eligible',
+        'exhausted',
+      ]
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'not_assessed'>;
+    retryType: Schema.Attribute.Enumeration<
+      ['first_attempt', 'open_retry', 'conditional_retry', 'admin_override']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'first_attempt'>;
+    score: Schema.Attribute.Decimal;
+    startedAt: Schema.Attribute.DateTime;
+    submittedAt: Schema.Attribute.DateTime;
+    timeTakenSeconds: Schema.Attribute.Integer;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+  };
+}
+
+export interface ApiCourseTestResultCourseTestResult
+  extends Struct.CollectionTypeSchema {
+  collectionName: 'course_test_results';
+  info: {
+    description: 'Snapshot result for a candidate course test attempt.';
+    displayName: 'Course Test Result';
+    pluralName: 'course-test-results';
+    singularName: 'course-test-result';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    attemptNumber: Schema.Attribute.Integer;
+    candidate: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::candidate.candidate'
+    >;
+    courseTest: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::course-test.course-test'
+    >;
+    courseTestAttempt: Schema.Attribute.Relation<
+      'oneToOne',
+      'api::course-test-attempt.course-test-attempt'
+    >;
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    decidedAt: Schema.Attribute.DateTime;
+    enrollment: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::enrollment.enrollment'
+    >;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::course-test-result.course-test-result'
+    > &
+      Schema.Attribute.Private;
+    maxScore: Schema.Attribute.Decimal;
+    metadata: Schema.Attribute.JSON;
+    passed: Schema.Attribute.Boolean;
+    passMarkSnapshot: Schema.Attribute.Decimal;
+    publishedAt: Schema.Attribute.DateTime;
+    resultState: Schema.Attribute.Enumeration<
+      ['not_assessed', 'passed', 'failed', 'appealed', 'void']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'not_assessed'>;
+    retryEligibilityState: Schema.Attribute.Enumeration<
+      [
+        'not_assessed',
+        'eligible_open_retry',
+        'eligible_conditional_retry',
+        'not_eligible',
+        'exhausted',
+      ]
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'not_assessed'>;
+    score: Schema.Attribute.Decimal;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+  };
+}
+
+export interface ApiCourseTestCourseTest extends Struct.CollectionTypeSchema {
+  collectionName: 'course_tests';
+  info: {
+    description: 'Assessment attached to a HireFlip course or module.';
+    displayName: 'Course Test';
+    pluralName: 'course-tests';
+    singularName: 'course-test';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    attemptLimit: Schema.Attribute.Integer;
+    copyPasteRestrictionEnabled: Schema.Attribute.Boolean &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<true>;
+    course: Schema.Attribute.Relation<'manyToOne', 'api::course.course'>;
+    courseModule: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::course-module.course-module'
+    >;
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    description: Schema.Attribute.Text;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::course-test.course-test'
+    > &
+      Schema.Attribute.Private;
+    maxScore: Schema.Attribute.Decimal;
+    passMark: Schema.Attribute.Decimal;
+    publishedAt: Schema.Attribute.DateTime;
+    questionRandomizationEnabled: Schema.Attribute.Boolean &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<true>;
+    questions: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::course-question.course-question'
+    >;
+    testState: Schema.Attribute.Enumeration<['draft', 'active', 'archived']> &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'draft'>;
+    timeLimitMinutes: Schema.Attribute.Integer;
+    title: Schema.Attribute.String & Schema.Attribute.Required;
     updatedAt: Schema.Attribute.DateTime;
     updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
@@ -1640,10 +2141,6 @@ export interface ApiCourseCourse extends Struct.CollectionTypeSchema {
       'api::course.course'
     > &
       Schema.Attribute.Private;
-    modules: Schema.Attribute.Relation<
-      'oneToMany',
-      'api::course-module.course-module'
-    >;
     name: Schema.Attribute.String &
       Schema.Attribute.Required &
       Schema.Attribute.SetMinMaxLength<{
@@ -1651,6 +2148,10 @@ export interface ApiCourseCourse extends Struct.CollectionTypeSchema {
         minLength: 1;
       }>;
     publishedAt: Schema.Attribute.DateTime;
+    sections: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::course-section.course-section'
+    >;
     sector: Schema.Attribute.String &
       Schema.Attribute.SetMinMaxLength<{
         maxLength: 120;
@@ -1930,6 +2431,9 @@ export interface ApiEnrollmentEnrollment extends Struct.CollectionTypeSchema {
     > &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'not_started'>;
+    courseCompletionDeadline: Schema.Attribute.DateTime;
+    courseDeadlineExtensionSeconds: Schema.Attribute.Integer &
+      Schema.Attribute.DefaultTo<0>;
     createdAt: Schema.Attribute.DateTime;
     createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
@@ -2830,60 +3334,6 @@ export interface ApiPublicInterestLeadPublicInterestLead
   };
 }
 
-export interface ApiQuestionQuestion extends Struct.CollectionTypeSchema {
-  collectionName: 'questions';
-  info: {
-    description: 'Assessment question and scoring definition.';
-    displayName: 'Question';
-    pluralName: 'questions';
-    singularName: 'question';
-  };
-  options: {
-    draftAndPublish: false;
-  };
-  attributes: {
-    correctAnswerPayload: Schema.Attribute.JSON;
-    createdAt: Schema.Attribute.DateTime;
-    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
-      Schema.Attribute.Private;
-    locale: Schema.Attribute.String & Schema.Attribute.Private;
-    localizations: Schema.Attribute.Relation<
-      'oneToMany',
-      'api::question.question'
-    > &
-      Schema.Attribute.Private;
-    options: Schema.Attribute.JSON;
-    prompt: Schema.Attribute.RichText & Schema.Attribute.Required;
-    publishedAt: Schema.Attribute.DateTime;
-    questionState: Schema.Attribute.Enumeration<
-      ['draft', 'active', 'archived']
-    > &
-      Schema.Attribute.Required &
-      Schema.Attribute.DefaultTo<'draft'>;
-    questionType: Schema.Attribute.Enumeration<
-      [
-        'short_text',
-        'long_text',
-        'single_choice',
-        'multiple_choice',
-        'file_upload',
-        'ai_reviewed',
-        'external',
-      ]
-    > &
-      Schema.Attribute.Required;
-    randomizationGroup: Schema.Attribute.String;
-    scoringRubric: Schema.Attribute.JSON;
-    sortOrder: Schema.Attribute.Integer &
-      Schema.Attribute.Required &
-      Schema.Attribute.DefaultTo<0>;
-    test: Schema.Attribute.Relation<'manyToOne', 'api::test.test'>;
-    updatedAt: Schema.Attribute.DateTime;
-    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
-      Schema.Attribute.Private;
-  };
-}
-
 export interface ApiRefundRefund extends Struct.CollectionTypeSchema {
   collectionName: 'refunds';
   info: {
@@ -3396,127 +3846,6 @@ export interface ApiSupportMessageSupportMessage
     visibility: Schema.Attribute.Enumeration<['public', 'internal']> &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'internal'>;
-  };
-}
-
-export interface ApiTestAttemptTestAttempt extends Struct.CollectionTypeSchema {
-  collectionName: 'test_attempts';
-  info: {
-    description: 'One candidate attempt at a test.';
-    displayName: 'Test Attempt';
-    pluralName: 'test-attempts';
-    singularName: 'test-attempt';
-  };
-  options: {
-    draftAndPublish: false;
-  };
-  attributes: {
-    attemptNumber: Schema.Attribute.Integer & Schema.Attribute.Required;
-    attemptState: Schema.Attribute.Enumeration<
-      [
-        'in_progress',
-        'submitted',
-        'scored',
-        'passed',
-        'failed',
-        'appealed',
-        'void',
-      ]
-    > &
-      Schema.Attribute.Required &
-      Schema.Attribute.DefaultTo<'in_progress'>;
-    candidate: Schema.Attribute.Relation<
-      'manyToOne',
-      'api::candidate.candidate'
-    >;
-    createdAt: Schema.Attribute.DateTime;
-    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
-      Schema.Attribute.Private;
-    enrollment: Schema.Attribute.Relation<
-      'manyToOne',
-      'api::enrollment.enrollment'
-    >;
-    locale: Schema.Attribute.String & Schema.Attribute.Private;
-    localizations: Schema.Attribute.Relation<
-      'oneToMany',
-      'api::test-attempt.test-attempt'
-    > &
-      Schema.Attribute.Private;
-    maxScore: Schema.Attribute.Decimal;
-    metadata: Schema.Attribute.JSON;
-    passed: Schema.Attribute.Boolean;
-    passMarkSnapshot: Schema.Attribute.Decimal;
-    publishedAt: Schema.Attribute.DateTime;
-    retryEligibilityState: Schema.Attribute.Enumeration<
-      [
-        'not_assessed',
-        'eligible_open_retry',
-        'eligible_conditional_retry',
-        'not_eligible',
-        'exhausted',
-      ]
-    > &
-      Schema.Attribute.Required &
-      Schema.Attribute.DefaultTo<'not_assessed'>;
-    retryType: Schema.Attribute.Enumeration<
-      ['first_attempt', 'open_retry', 'conditional_retry', 'admin_override']
-    > &
-      Schema.Attribute.Required &
-      Schema.Attribute.DefaultTo<'first_attempt'>;
-    score: Schema.Attribute.Decimal;
-    startedAt: Schema.Attribute.DateTime;
-    submittedAt: Schema.Attribute.DateTime;
-    test: Schema.Attribute.Relation<'manyToOne', 'api::test.test'>;
-    timeTakenSeconds: Schema.Attribute.Integer;
-    updatedAt: Schema.Attribute.DateTime;
-    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
-      Schema.Attribute.Private;
-  };
-}
-
-export interface ApiTestTest extends Struct.CollectionTypeSchema {
-  collectionName: 'tests';
-  info: {
-    description: 'Assessment attached to a course or module.';
-    displayName: 'Test';
-    pluralName: 'tests';
-    singularName: 'test';
-  };
-  options: {
-    draftAndPublish: false;
-  };
-  attributes: {
-    attemptLimit: Schema.Attribute.Integer;
-    copyPasteRestrictionEnabled: Schema.Attribute.Boolean &
-      Schema.Attribute.Required &
-      Schema.Attribute.DefaultTo<true>;
-    course: Schema.Attribute.Relation<'manyToOne', 'api::course.course'>;
-    courseModule: Schema.Attribute.Relation<
-      'manyToOne',
-      'api::course-module.course-module'
-    >;
-    createdAt: Schema.Attribute.DateTime;
-    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
-      Schema.Attribute.Private;
-    description: Schema.Attribute.Text;
-    locale: Schema.Attribute.String & Schema.Attribute.Private;
-    localizations: Schema.Attribute.Relation<'oneToMany', 'api::test.test'> &
-      Schema.Attribute.Private;
-    maxScore: Schema.Attribute.Decimal;
-    passMark: Schema.Attribute.Decimal;
-    publishedAt: Schema.Attribute.DateTime;
-    questionRandomizationEnabled: Schema.Attribute.Boolean &
-      Schema.Attribute.Required &
-      Schema.Attribute.DefaultTo<true>;
-    questions: Schema.Attribute.Relation<'oneToMany', 'api::question.question'>;
-    testState: Schema.Attribute.Enumeration<['draft', 'active', 'archived']> &
-      Schema.Attribute.Required &
-      Schema.Attribute.DefaultTo<'draft'>;
-    timeLimitMinutes: Schema.Attribute.Integer;
-    title: Schema.Attribute.String & Schema.Attribute.Required;
-    updatedAt: Schema.Attribute.DateTime;
-    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
-      Schema.Attribute.Private;
   };
 }
 
@@ -4227,7 +4556,6 @@ declare module '@strapi/strapi' {
       'admin::user': AdminUser;
       'api::admin-review-claim.admin-review-claim': ApiAdminReviewClaimAdminReviewClaim;
       'api::admin-task.admin-task': ApiAdminTaskAdminTask;
-      'api::answer-submission.answer-submission': ApiAnswerSubmissionAnswerSubmission;
       'api::assessment-appeal.assessment-appeal': ApiAssessmentAppealAssessmentAppeal;
       'api::audit-event.audit-event': ApiAuditEventAuditEvent;
       'api::candidate-interview-strike.candidate-interview-strike': ApiCandidateInterviewStrikeCandidateInterviewStrike;
@@ -4236,9 +4564,18 @@ declare module '@strapi/strapi' {
       'api::class-announcement.class-announcement': ApiClassAnnouncementClassAnnouncement;
       'api::class-area.class-area': ApiClassAreaClassArea;
       'api::class.class': ApiClassClass;
+      'api::course-answer-submission.course-answer-submission': ApiCourseAnswerSubmissionCourseAnswerSubmission;
       'api::course-material.course-material': ApiCourseMaterialCourseMaterial;
+      'api::course-module-result.course-module-result': ApiCourseModuleResultCourseModuleResult;
       'api::course-module.course-module': ApiCourseModuleCourseModule;
       'api::course-progress.course-progress': ApiCourseProgressCourseProgress;
+      'api::course-question.course-question': ApiCourseQuestionCourseQuestion;
+      'api::course-result.course-result': ApiCourseResultCourseResult;
+      'api::course-section-result.course-section-result': ApiCourseSectionResultCourseSectionResult;
+      'api::course-section.course-section': ApiCourseSectionCourseSection;
+      'api::course-test-attempt.course-test-attempt': ApiCourseTestAttemptCourseTestAttempt;
+      'api::course-test-result.course-test-result': ApiCourseTestResultCourseTestResult;
+      'api::course-test.course-test': ApiCourseTestCourseTest;
       'api::course.course': ApiCourseCourse;
       'api::employer-capacity-change-request.employer-capacity-change-request': ApiEmployerCapacityChangeRequestEmployerCapacityChangeRequest;
       'api::employer-contact.employer-contact': ApiEmployerContactEmployerContact;
@@ -4254,14 +4591,11 @@ declare module '@strapi/strapi' {
       'api::policy-document.policy-document': ApiPolicyDocumentPolicyDocument;
       'api::privacy-rights-request.privacy-rights-request': ApiPrivacyRightsRequestPrivacyRightsRequest;
       'api::public-interest-lead.public-interest-lead': ApiPublicInterestLeadPublicInterestLead;
-      'api::question.question': ApiQuestionQuestion;
       'api::refund.refund': ApiRefundRefund;
       'api::reservation.reservation': ApiReservationReservation;
       'api::stored-file.stored-file': ApiStoredFileStoredFile;
       'api::support-case.support-case': ApiSupportCaseSupportCase;
       'api::support-message.support-message': ApiSupportMessageSupportMessage;
-      'api::test-attempt.test-attempt': ApiTestAttemptTestAttempt;
-      'api::test.test': ApiTestTest;
       'api::unlisted-interest.unlisted-interest': ApiUnlistedInterestUnlistedInterest;
       'api::waiting-list-offer.waiting-list-offer': ApiWaitingListOfferWaitingListOffer;
       'api::work-sector.work-sector': ApiWorkSectorWorkSector;

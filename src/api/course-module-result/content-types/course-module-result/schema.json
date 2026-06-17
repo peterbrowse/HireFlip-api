@@ -1,0 +1,61 @@
+{
+  "kind": "collectionType",
+  "collectionName": "course_module_results",
+  "info": {
+    "singularName": "course-module-result",
+    "pluralName": "course-module-results",
+    "displayName": "Course Module Result",
+    "description": "Snapshot result for a candidate module outcome."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "candidate": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::candidate.candidate"
+    },
+    "enrollment": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::enrollment.enrollment"
+    },
+    "courseModule": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::course-module.course-module"
+    },
+    "resultState": {
+      "type": "enumeration",
+      "enum": [
+        "not_started",
+        "in_progress",
+        "passed",
+        "failed",
+        "appealed",
+        "skipped"
+      ],
+      "default": "not_started",
+      "required": true
+    },
+    "score": {
+      "type": "decimal"
+    },
+    "maxScore": {
+      "type": "decimal"
+    },
+    "requiredItemsCompleted": {
+      "type": "integer"
+    },
+    "requiredItemsTotal": {
+      "type": "integer"
+    },
+    "decidedAt": {
+      "type": "datetime"
+    },
+    "metadata": {
+      "type": "json"
+    }
+  }
+}

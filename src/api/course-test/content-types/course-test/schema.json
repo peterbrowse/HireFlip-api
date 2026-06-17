@@ -1,11 +1,11 @@
 {
   "kind": "collectionType",
-  "collectionName": "tests",
+  "collectionName": "course_tests",
   "info": {
-    "singularName": "test",
-    "pluralName": "tests",
-    "displayName": "Test",
-    "description": "Assessment attached to a course or module."
+    "singularName": "course-test",
+    "pluralName": "course-tests",
+    "displayName": "Course Test",
+    "description": "Assessment attached to a HireFlip course or module."
   },
   "options": {
     "draftAndPublish": false
@@ -63,8 +63,8 @@
     "questions": {
       "type": "relation",
       "relation": "oneToMany",
-      "target": "api::question.question",
-      "mappedBy": "test"
+      "target": "api::course-question.course-question",
+      "mappedBy": "courseTest"
     }
   }
 }

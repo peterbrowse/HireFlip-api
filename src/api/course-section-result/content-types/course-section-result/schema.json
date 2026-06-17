@@ -1,0 +1,55 @@
+{
+  "kind": "collectionType",
+  "collectionName": "course_section_results",
+  "info": {
+    "singularName": "course-section-result",
+    "pluralName": "course-section-results",
+    "displayName": "Course Section Result",
+    "description": "Snapshot result for a candidate course section outcome."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "candidate": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::candidate.candidate"
+    },
+    "enrollment": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::enrollment.enrollment"
+    },
+    "courseSection": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::course-section.course-section"
+    },
+    "resultState": {
+      "type": "enumeration",
+      "enum": [
+        "not_started",
+        "in_progress",
+        "passed",
+        "failed",
+        "appealed",
+        "skipped"
+      ],
+      "default": "not_started",
+      "required": true
+    },
+    "requiredModulesPassed": {
+      "type": "integer"
+    },
+    "requiredModulesTotal": {
+      "type": "integer"
+    },
+    "decidedAt": {
+      "type": "datetime"
+    },
+    "metadata": {
+      "type": "json"
+    }
+  }
+}

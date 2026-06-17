@@ -43,11 +43,15 @@ type DocumentRecord = Record<string, unknown> & {
   classArea?: DocumentRecord;
   completedAt?: string;
   completionDeadline?: string;
+  courseCompletionDeadline?: string;
+  courseDeadlineExtensionSeconds?: number;
   completionStatus?: string;
   createdAt?: string;
   course?: DocumentRecord;
   courseMaterial?: DocumentRecord;
   courseModule?: DocumentRecord;
+  courseSection?: DocumentRecord;
+  courseTest?: DocumentRecord;
   currency?: string;
   displayTitle?: string;
   documentId?: string;
@@ -102,6 +106,7 @@ type DocumentRecord = Record<string, unknown> & {
   scheduledEnrollmentOpenAt?: string;
   score?: number;
   sector?: string;
+  sectionState?: string;
   sortOrder?: number;
   slug?: string;
   startDate?: string;
@@ -110,6 +115,7 @@ type DocumentRecord = Record<string, unknown> & {
   announcementState?: string;
   priority?: string;
   test?: DocumentRecord;
+  testState?: string;
   title?: string;
   updatedAt?: string;
   waitingListPosition?: number;
@@ -398,7 +404,7 @@ const classPopulate = ['classArea', 'course', 'workSector'];
 const enrollmentPopulate = ['candidate', 'class'];
 const reservationPopulate = ['candidate', 'class', 'enrollment'];
 const paymentPopulate = ['candidate', 'enrollment', 'reservation'];
-const courseProgressPopulate = ['enrollment', 'courseModule', 'courseMaterial', 'test'];
+const courseProgressPopulate = ['enrollment', 'courseSection', 'courseModule', 'courseMaterial', 'courseTest'];
 
 const getDocumentId = (record?: DocumentRecord | null) => {
   if (!record) {
@@ -768,6 +774,11 @@ type CourseSetupPayload = {
     moduleState: string | null;
     required: boolean;
   }>;
+  sections: Array<{
+    documentId?: string;
+    required: boolean;
+    sectionState: string | null;
+  }>;
   tests: Array<{
     documentId?: string;
     testState: string | null;
@@ -814,6 +825,11 @@ const findCourseProgressForEnrollments = async (
 const setupItemKeys = (courseSetup: CourseSetupPayload) => {
   const keys = new Set<string>();
 
+  courseSetup.sections.forEach((section) => {
+    if (section.required && section.sectionState !== 'archived' && section.documentId) {
+      keys.add(`section:${section.documentId}`);
+    }
+  });
   courseSetup.modules.forEach((module) => {
     if (module.required && module.moduleState !== 'archived' && module.documentId) {
       keys.add(`module:${module.documentId}`);
@@ -834,6 +850,11 @@ const setupItemKeys = (courseSetup: CourseSetupPayload) => {
 };
 
 const progressItemKey = (progressRecord: DocumentRecord) => {
+  if (progressRecord.progressType === 'section') {
+    const documentId = getDocumentId(progressRecord.courseSection);
+    return documentId ? `section:${documentId}` : null;
+  }
+
   if (progressRecord.progressType === 'module') {
     const documentId = getDocumentId(progressRecord.courseModule);
     return documentId ? `module:${documentId}` : null;
@@ -845,7 +866,7 @@ const progressItemKey = (progressRecord: DocumentRecord) => {
   }
 
   if (progressRecord.progressType === 'test') {
-    const documentId = getDocumentId(progressRecord.test);
+    const documentId = getDocumentId(progressRecord.courseTest);
     return documentId ? `test:${documentId}` : null;
   }
 
@@ -893,7 +914,7 @@ const daysUntil = (dateValue?: string | null) => {
 const activeDeadline = (classRecord: DocumentRecord, enrollment: DocumentRecord) => {
   const phase = String(enrollment.enrollmentState || classRecord.state || '');
   const interviewDeadline = enrollment.interviewGuaranteeDeadline || classRecord.interviewGuaranteeDeadline || null;
-  const completionDeadline = classRecord.completionDeadline || null;
+  const completionDeadline = enrollment.courseCompletionDeadline || classRecord.completionDeadline || null;
   const reservationDeadline = enrollment.reservationExpiresAt || null;
 
   if (phase === 'interview_phase' && interviewDeadline) {
@@ -1608,18 +1629,19 @@ const courseSetupForClass = async (strapi: StrapiService, classRecord: DocumentR
       course: null,
       materials: [],
       modules: [],
+      sections: [],
       tests: [],
     };
   }
 
-  const [courses, modules, courseTests] = await Promise.all([
+  const [courses, sections, courseTests] = await Promise.all([
     documents(strapi, 'api::course.course').findMany({
       filters: {
         documentId: courseDocumentId,
       },
       limit: 1,
     }),
-    documents(strapi, 'api::course-module.course-module').findMany({
+    documents(strapi, 'api::course-section.course-section').findMany({
       filters: {
         course: {
           documentId: courseDocumentId,
@@ -1628,7 +1650,7 @@ const courseSetupForClass = async (strapi: StrapiService, classRecord: DocumentR
       limit: 200,
       sort: ['sortOrder:asc', 'createdAt:asc'],
     }),
-    documents(strapi, 'api::test.test').findMany({
+    documents(strapi, 'api::course-test.course-test').findMany({
       filters: {
         course: {
           documentId: courseDocumentId,
@@ -1638,6 +1660,21 @@ const courseSetupForClass = async (strapi: StrapiService, classRecord: DocumentR
       sort: ['createdAt:asc'],
     }),
   ]);
+  const sectionDocumentIds = sections.map(getDocumentId).filter((documentId): documentId is string => Boolean(documentId));
+  const modules = sectionDocumentIds.length
+    ? await documents(strapi, 'api::course-module.course-module').findMany({
+        filters: {
+          courseSection: {
+            documentId: {
+              $in: sectionDocumentIds,
+            },
+          },
+        },
+        limit: 500,
+        populate: ['courseSection'],
+        sort: ['sortOrder:asc', 'createdAt:asc'],
+      })
+    : [];
   const moduleDocumentIds = modules.map(getDocumentId).filter((documentId): documentId is string => Boolean(documentId));
   const [materials, moduleTests] = await Promise.all([
     moduleDocumentIds.length
@@ -1655,7 +1692,7 @@ const courseSetupForClass = async (strapi: StrapiService, classRecord: DocumentR
         })
       : [],
     moduleDocumentIds.length
-      ? documents(strapi, 'api::test.test').findMany({
+      ? documents(strapi, 'api::course-test.course-test').findMany({
           filters: {
             courseModule: {
               documentId: {
@@ -1679,15 +1716,25 @@ const courseSetupForClass = async (strapi: StrapiService, classRecord: DocumentR
           name: courses[0].name || null,
           sourceType: courses[0].sourceType || null,
           version: courses[0].version || null,
-        }
+      }
       : null,
+    sections: sections.map((section) => ({
+      description: section.description || null,
+      documentId: getDocumentId(section),
+      required: section.required === true,
+      sectionState: section.sectionState || null,
+      sortOrder: section.sortOrder ?? 0,
+      title: section.title || null,
+    })),
     materials: materials.map((material) => ({
+      completionMode: material.completionMode || null,
       documentId: getDocumentId(material),
       estimatedDurationMinutes: material.estimatedDurationMinutes ?? null,
       materialState: material.materialState || null,
       materialType: material.materialType || null,
       moduleDocumentId: getDocumentId(material.module),
       required: material.required === true,
+      requiredCompletionPercentage: material.requiredCompletionPercentage ?? null,
       sortOrder: material.sortOrder ?? 0,
       title: material.title || null,
     })),
@@ -1696,6 +1743,7 @@ const courseSetupForClass = async (strapi: StrapiService, classRecord: DocumentR
       documentId: getDocumentId(module),
       moduleState: module.moduleState || null,
       required: module.required === true,
+      sectionDocumentId: getDocumentId(module.courseSection),
       sortOrder: module.sortOrder ?? 0,
       title: module.title || null,
     })),

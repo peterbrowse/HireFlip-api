@@ -25,6 +25,7 @@
       "type": "enumeration",
       "enum": [
         "class",
+        "section",
         "module",
         "material",
         "test",
@@ -49,20 +50,25 @@
       "relation": "manyToOne",
       "target": "api::course-module.course-module"
     },
+    "courseSection": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::course-section.course-section"
+    },
     "courseMaterial": {
       "type": "relation",
       "relation": "manyToOne",
       "target": "api::course-material.course-material"
     },
-    "test": {
+    "courseTest": {
       "type": "relation",
       "relation": "manyToOne",
-      "target": "api::test.test"
+      "target": "api::course-test.course-test"
     },
-    "question": {
+    "courseQuestion": {
       "type": "relation",
       "relation": "manyToOne",
-      "target": "api::question.question"
+      "target": "api::course-question.course-question"
     },
     "startedAt": {
       "type": "datetime"

@@ -1,21 +1,21 @@
 {
   "kind": "collectionType",
-  "collectionName": "course_modules",
+  "collectionName": "course_sections",
   "info": {
-    "singularName": "course-module",
-    "pluralName": "course-modules",
-    "displayName": "Course Module",
-    "description": "A module within a HireFlip course."
+    "singularName": "course-section",
+    "pluralName": "course-sections",
+    "displayName": "Course Section",
+    "description": "A major section inside a HireFlip course."
   },
   "options": {
     "draftAndPublish": false
   },
   "attributes": {
-    "courseSection": {
+    "course": {
       "type": "relation",
       "relation": "manyToOne",
-      "target": "api::course-section.course-section",
-      "inversedBy": "modules"
+      "target": "api::course.course",
+      "inversedBy": "sections"
     },
     "title": {
       "type": "string",
@@ -37,7 +37,7 @@
       "default": true,
       "required": true
     },
-    "moduleState": {
+    "sectionState": {
       "type": "enumeration",
       "enum": [
         "draft",
@@ -47,11 +47,11 @@
       "default": "draft",
       "required": true
     },
-    "materials": {
+    "modules": {
       "type": "relation",
       "relation": "oneToMany",
-      "target": "api::course-material.course-material",
-      "mappedBy": "module"
+      "target": "api::course-module.course-module",
+      "mappedBy": "courseSection"
     }
   }
 }

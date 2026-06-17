@@ -29,6 +29,13 @@ type CandidateService = {
     context: RequestContext
   ): Promise<unknown>;
   createCurrentCandidateUnlistedInterest(auth: unknown, input: unknown, context: RequestContext): Promise<unknown>;
+  beginCurrentCandidateCourse(auth: unknown, context: RequestContext): Promise<unknown>;
+  createCurrentCandidateCourseAppeal(
+    auth: unknown,
+    testDocumentId: string,
+    input: unknown,
+    context: RequestContext
+  ): Promise<unknown>;
   declineCurrentCandidateWaitingListOffer(
     auth: unknown,
     offerDocumentId: string,
@@ -41,6 +48,7 @@ type CandidateService = {
   ): Promise<unknown>;
   getCandidatePreferenceOptions(auth: unknown): Promise<unknown>;
   getCurrentCandidateClassInterest(auth: unknown): Promise<unknown>;
+  getCurrentCandidateCourse(auth: unknown): Promise<unknown>;
   getCurrentCandidateClassReservation(
     auth: unknown,
     reservationDocumentId: string,
@@ -55,7 +63,19 @@ type CandidateService = {
     input: unknown,
     context: RequestContext
   ): Promise<unknown>;
+  recordCurrentCandidateCourseMaterialProgress(
+    auth: unknown,
+    materialDocumentId: string,
+    input: unknown,
+    context: RequestContext
+  ): Promise<unknown>;
   reserveCurrentCandidateClassPlace(auth: unknown, input: unknown, context: RequestContext): Promise<CreatedResponse>;
+  submitCurrentCandidateCourseTest(
+    auth: unknown,
+    testDocumentId: string,
+    input: unknown,
+    context: RequestContext
+  ): Promise<unknown>;
   syncCurrentCandidate(auth: unknown, input: unknown, context: RequestContext): Promise<unknown>;
   updateCurrentCandidateAccount(auth: unknown, input: unknown, context: RequestContext): Promise<unknown>;
   updateCurrentCandidateProfileImage(auth: unknown, file: unknown, context: RequestContext): Promise<unknown>;
@@ -129,6 +149,82 @@ export default factories.createCoreController('api::candidate.candidate', ({ str
   async classInterest(ctx) {
     const result = await candidateService(strapi).getCurrentCandidateClassInterest(
       ctx.state?.hireflipAuth
+    );
+
+    ctx.body = {
+      data: result,
+    };
+  },
+
+  async course(ctx) {
+    const result = await candidateService(strapi).getCurrentCandidateCourse(
+      ctx.state?.hireflipAuth
+    );
+
+    ctx.body = {
+      data: result,
+    };
+  },
+
+  async beginCourse(ctx) {
+    const result = await candidateService(strapi).beginCurrentCandidateCourse(
+      ctx.state?.hireflipAuth,
+      {
+        ipAddress: getForwardedClientIp(ctx),
+        requestId: ctx.state?.requestId,
+        userAgent: ctx.request.get('x-hireflip-client-user-agent') || ctx.request.get('user-agent'),
+      }
+    );
+
+    ctx.body = {
+      data: result,
+    };
+  },
+
+  async recordMaterialProgress(ctx) {
+    const result = await candidateService(strapi).recordCurrentCandidateCourseMaterialProgress(
+      ctx.state?.hireflipAuth,
+      ctx.params?.materialDocumentId,
+      ctx.request.body,
+      {
+        ipAddress: getForwardedClientIp(ctx),
+        requestId: ctx.state?.requestId,
+        userAgent: ctx.request.get('x-hireflip-client-user-agent') || ctx.request.get('user-agent'),
+      }
+    );
+
+    ctx.body = {
+      data: result,
+    };
+  },
+
+  async submitCourseTest(ctx) {
+    const result = await candidateService(strapi).submitCurrentCandidateCourseTest(
+      ctx.state?.hireflipAuth,
+      ctx.params?.testDocumentId,
+      ctx.request.body,
+      {
+        ipAddress: getForwardedClientIp(ctx),
+        requestId: ctx.state?.requestId,
+        userAgent: ctx.request.get('x-hireflip-client-user-agent') || ctx.request.get('user-agent'),
+      }
+    );
+
+    ctx.body = {
+      data: result,
+    };
+  },
+
+  async createCourseAppeal(ctx) {
+    const result = await candidateService(strapi).createCurrentCandidateCourseAppeal(
+      ctx.state?.hireflipAuth,
+      ctx.params?.testDocumentId,
+      ctx.request.body,
+      {
+        ipAddress: getForwardedClientIp(ctx),
+        requestId: ctx.state?.requestId,
+        userAgent: ctx.request.get('x-hireflip-client-user-agent') || ctx.request.get('user-agent'),
+      }
     );
 
     ctx.body = {

@@ -54,6 +54,22 @@
       "default": true,
       "required": true
     },
+    "completionMode": {
+      "type": "enumeration",
+      "enum": [
+        "read_to_end",
+        "watch_percentage",
+        "external_signal",
+        "not_required"
+      ],
+      "default": "read_to_end",
+      "required": true
+    },
+    "requiredCompletionPercentage": {
+      "type": "integer",
+      "min": 0,
+      "max": 100
+    },
     "estimatedDurationMinutes": {
       "type": "integer"
     },

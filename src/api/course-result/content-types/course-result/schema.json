@@ -1,0 +1,77 @@
+{
+  "kind": "collectionType",
+  "collectionName": "course_results",
+  "info": {
+    "singularName": "course-result",
+    "pluralName": "course-results",
+    "displayName": "Course Result",
+    "description": "Snapshot result for a candidate course outcome."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "candidate": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::candidate.candidate"
+    },
+    "enrollment": {
+      "type": "relation",
+      "relation": "oneToOne",
+      "target": "api::enrollment.enrollment"
+    },
+    "course": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::course.course"
+    },
+    "resultState": {
+      "type": "enumeration",
+      "enum": [
+        "not_started",
+        "in_progress",
+        "passed",
+        "failed",
+        "appealed",
+        "expired"
+      ],
+      "default": "not_started",
+      "required": true
+    },
+    "startedAt": {
+      "type": "datetime"
+    },
+    "completionDeadline": {
+      "type": "datetime"
+    },
+    "completedAt": {
+      "type": "datetime"
+    },
+    "passedAt": {
+      "type": "datetime"
+    },
+    "score": {
+      "type": "decimal"
+    },
+    "maxScore": {
+      "type": "decimal"
+    },
+    "requiredSectionsPassed": {
+      "type": "integer"
+    },
+    "requiredSectionsTotal": {
+      "type": "integer"
+    },
+    "deadlineExtensionSeconds": {
+      "type": "integer",
+      "default": 0
+    },
+    "credentialLabelSnapshot": {
+      "type": "string"
+    },
+    "metadata": {
+      "type": "json"
+    }
+  }
+}
