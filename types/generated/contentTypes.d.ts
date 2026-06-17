@@ -1039,15 +1039,7 @@ export interface ApiCandidateCandidate extends Struct.CollectionTypeSchema {
         maxLength: 120;
       }>;
     gender: Schema.Attribute.Enumeration<
-      [
-        'woman',
-        'man',
-        'non_binary',
-        'gender_diverse_or_gender_non_conforming',
-        'agender',
-        'self_describe',
-        'prefer_not_to_say',
-      ]
+      ['man', 'woman', 'non_binary', 'self_describe', 'prefer_not_to_say']
     >;
     genderSelfDescription: Schema.Attribute.String &
       Schema.Attribute.SetMinMaxLength<{

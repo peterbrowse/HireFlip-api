@@ -52,11 +52,9 @@
     "gender": {
       "type": "enumeration",
       "enum": [
-        "woman",
         "man",
+        "woman",
         "non_binary",
-        "gender_diverse_or_gender_non_conforming",
-        "agender",
         "self_describe",
         "prefer_not_to_say"
       ]

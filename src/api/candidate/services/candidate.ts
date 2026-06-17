@@ -208,11 +208,9 @@ const supportCaseService = (strapi: StrapiDocumentService) =>
 
 const communicationChannels = ['email', 'sms', 'phone'] as const;
 const candidateGenderValues = [
-  'woman',
   'man',
+  'woman',
   'non_binary',
-  'gender_diverse_or_gender_non_conforming',
-  'agender',
   'self_describe',
   'prefer_not_to_say',
 ] as const;
@@ -462,13 +460,6 @@ const updateCandidateAccountSchema = z
     workSectorPreferences: preferenceSelectionSchema,
   })
   .strict()
-  .refine(
-    (value) => value.gender !== 'self_describe' || Boolean(value.genderSelfDescription),
-    {
-      message: 'Enter your gender description or choose another option.',
-      path: ['genderSelfDescription'],
-    }
-  )
   .transform((value) => ({
     ...value,
     genderSelfDescription:
@@ -6090,7 +6081,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       workSectorPreferences: payload.workSectorPreferences,
     });
     const nextGenderSelfDescription =
-      payload.gender === 'self_describe' ? payload.genderSelfDescription : null;
+      payload.gender === 'self_describe' ? (payload.genderSelfDescription ?? null) : null;
 
     const profileSettings = {
       ...previousProfileSettings,
