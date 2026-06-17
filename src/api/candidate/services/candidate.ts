@@ -53,6 +53,7 @@ type DocumentRecord = Record<string, unknown> & {
   amountPence?: number;
   announcementState?: string;
   appealState?: string;
+  age?: number;
   attemptNumber?: number;
   attemptState?: string;
   authIdentityId?: string;
@@ -93,6 +94,8 @@ type DocumentRecord = Record<string, unknown> & {
   expiredAt?: string;
   expiresAt?: string;
   firstName?: string;
+  gender?: string;
+  genderSelfDescription?: string;
   id?: number;
   interestRegisteredAt?: string;
   interestType?: string;
@@ -204,6 +207,15 @@ const supportCaseService = (strapi: StrapiDocumentService) =>
   strapi.service('api::support-case.support-case') as unknown as SupportCaseService;
 
 const communicationChannels = ['email', 'sms', 'phone'] as const;
+const candidateGenderValues = [
+  'woman',
+  'man',
+  'non_binary',
+  'gender_diverse_or_gender_non_conforming',
+  'agender',
+  'self_describe',
+  'prefer_not_to_say',
+] as const;
 const notListedPreferenceValue = 'not_listed';
 const unlistedInterestTypes = ['class_area', 'work_sector'] as const;
 const unlistedInterestSources = ['class_page', 'onboarding', 'settings'] as const;
@@ -436,9 +448,12 @@ const validateSyncCandidate = validateZodSchema(syncCandidateSchema);
 
 const updateCandidateAccountSchema = z
   .object({
+    age: z.number().int().min(16).max(120).optional(),
     classAreaPreferences: preferenceSelectionSchema,
     communicationChannels: z.array(z.enum(communicationChannels)).optional(),
     firstName: z.string().trim().min(1).max(120),
+    gender: z.enum(candidateGenderValues),
+    genderSelfDescription: optionalString(120),
     lastName: optionalString(120),
     phone: mobilePhoneSchema,
     preferredCommunicationChannel: z.enum(communicationChannels).optional(),
@@ -446,7 +461,19 @@ const updateCandidateAccountSchema = z
     marketingConsentWordingVersion: optionalString(80),
     workSectorPreferences: preferenceSelectionSchema,
   })
-  .strict();
+  .strict()
+  .refine(
+    (value) => value.gender !== 'self_describe' || Boolean(value.genderSelfDescription),
+    {
+      message: 'Enter your gender description or choose another option.',
+      path: ['genderSelfDescription'],
+    }
+  )
+  .transform((value) => ({
+    ...value,
+    genderSelfDescription:
+      value.gender === 'self_describe' ? value.genderSelfDescription : undefined,
+  }));
 
 const validateUpdateCandidateAccount = validateZodSchema(updateCandidateAccountSchema);
 
@@ -654,9 +681,12 @@ const sanitizeProfileImage = async (strapi, profileImage) => {
 
 const sanitizeCandidate = async (strapi, candidate) => ({
   documentId: candidate.documentId,
+  age: candidate.age,
   classAreaPreferences: candidate.classAreaPreferences,
   email: candidate.email,
   firstName: candidate.firstName,
+  gender: candidate.gender,
+  genderSelfDescription: candidate.genderSelfDescription,
   lastName: candidate.lastName,
   profileImage: await sanitizeProfileImage(strapi, candidate.profileImage),
   notificationPreferences: candidate.notificationPreferences,
@@ -6014,6 +6044,17 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
     }
 
     const now = new Date().toISOString();
+    const existingAge = typeof existingCandidate.age === 'number' ? existingCandidate.age : undefined;
+    const nextAge = existingAge || payload.age;
+
+    if (!nextAge) {
+      throw new ValidationError('Age is required to complete candidate onboarding.');
+    }
+
+    if (existingAge && payload.age && payload.age !== existingAge) {
+      throw new ValidationError('Age cannot be updated after onboarding.');
+    }
+
     const marketingConsentState = payload.marketingConsent ? 'opted_in' : 'opted_out';
     const previousMarketingConsentState = existingCandidate.marketingConsentState || 'not_asked';
     const marketingConsentChanged = previousMarketingConsentState !== marketingConsentState;
@@ -6048,6 +6089,8 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       classAreaPreferences: payload.classAreaPreferences,
       workSectorPreferences: payload.workSectorPreferences,
     });
+    const nextGenderSelfDescription =
+      payload.gender === 'self_describe' ? payload.genderSelfDescription : null;
 
     const profileSettings = {
       ...previousProfileSettings,
@@ -6059,8 +6102,11 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
 
     const changes = diffDefinedFields(existingCandidate, {
       accountOnboardingCompletedAt: onboardingCompletedAt,
+      age: nextAge,
       classAreaPreferences: payload.classAreaPreferences,
       firstName: payload.firstName,
+      gender: payload.gender,
+      genderSelfDescription: nextGenderSelfDescription,
       lastName: payload.lastName,
       marketingConsentCapturedAt: consentCapturedAt,
       marketingConsentState,
@@ -6087,8 +6133,11 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
 
     const previousState = {
       accountOnboardingCompletedAt: existingCandidate.accountOnboardingCompletedAt,
+      age: existingCandidate.age,
       classAreaPreferences: existingCandidate.classAreaPreferences,
       firstName: existingCandidate.firstName,
+      gender: existingCandidate.gender,
+      genderSelfDescription: existingCandidate.genderSelfDescription,
       lastName: existingCandidate.lastName,
       marketingConsentCapturedAt: existingCandidate.marketingConsentCapturedAt,
       marketingConsentState: previousMarketingConsentState,

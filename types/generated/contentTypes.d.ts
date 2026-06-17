@@ -987,6 +987,14 @@ export interface ApiCandidateCandidate extends Struct.CollectionTypeSchema {
     > &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'active'>;
+    age: Schema.Attribute.Integer &
+      Schema.Attribute.SetMinMax<
+        {
+          max: 120;
+          min: 16;
+        },
+        number
+      >;
     authIdentityId: Schema.Attribute.String &
       Schema.Attribute.Unique &
       Schema.Attribute.SetMinMaxLength<{
@@ -1027,6 +1035,21 @@ export interface ApiCandidateCandidate extends Struct.CollectionTypeSchema {
         maxLength: 254;
       }>;
     firstName: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 120;
+      }>;
+    gender: Schema.Attribute.Enumeration<
+      [
+        'woman',
+        'man',
+        'non_binary',
+        'gender_diverse_or_gender_non_conforming',
+        'agender',
+        'self_describe',
+        'prefer_not_to_say',
+      ]
+    >;
+    genderSelfDescription: Schema.Attribute.String &
       Schema.Attribute.SetMinMaxLength<{
         maxLength: 120;
       }>;

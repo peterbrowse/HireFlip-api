@@ -44,6 +44,27 @@
       "type": "string",
       "maxLength": 40
     },
+    "age": {
+      "type": "integer",
+      "min": 16,
+      "max": 120
+    },
+    "gender": {
+      "type": "enumeration",
+      "enum": [
+        "woman",
+        "man",
+        "non_binary",
+        "gender_diverse_or_gender_non_conforming",
+        "agender",
+        "self_describe",
+        "prefer_not_to_say"
+      ]
+    },
+    "genderSelfDescription": {
+      "type": "string",
+      "maxLength": 120
+    },
     "profileImage": {
       "type": "media",
       "multiple": false,
