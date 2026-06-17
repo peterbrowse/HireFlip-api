@@ -4,6 +4,7 @@ import {
   publishCandidateClassRealtimeEvent,
   publishClassRealtimeEvent,
 } from '../../../utils/class-realtime-events';
+import { workingDayWindow } from '../../../utils/working-days';
 
 const { ForbiddenError, ValidationError } = errors;
 
@@ -171,6 +172,7 @@ const auditEvents = (strapi: StrapiDocumentService) =>
   strapi.service('api::audit-event.audit-event') as unknown as AuditEventService;
 
 const activeAppealStates = ['submitted', 'under_review'];
+const assessmentAppealResponseWorkingDays = 14;
 
 const getDocumentId = (record?: DocumentRecord | null) => {
   if (!record) {
@@ -511,6 +513,10 @@ const publicAppeal = (appeal: DocumentRecord) => ({
   decision: appeal.decision || null,
   documentId: getDocumentId(appeal) || null,
   reason: appeal.reason || null,
+  responseSla: workingDayWindow({
+    days: assessmentAppealResponseWorkingDays,
+    from: appeal.submittedAt || appeal.createdAt,
+  }),
   reviewedAt: appeal.reviewedAt || null,
   reviewedByAdminId: appeal.reviewedByAdminId || null,
   submittedAt: appeal.submittedAt || appeal.createdAt || null,
@@ -666,6 +672,10 @@ const publicReview = (context: AppealContext) => {
   const taskKey = assessmentAppealTaskKey(appealDocumentId);
   const title = 'Assessment appeal review';
   const canAction = activeAppealStates.includes(String(context.appeal.appealState || ''));
+  const responseSla = workingDayWindow({
+    days: assessmentAppealResponseWorkingDays,
+    from: context.appeal.submittedAt || context.appeal.createdAt,
+  });
 
   return {
     actionPath: assessmentAppealTaskPath(taskKey),
@@ -683,9 +693,10 @@ const publicReview = (context: AppealContext) => {
     courseTest: publicCourseTest(context.courseTest),
     createdAt: context.appeal.createdAt || null,
     enrollment: publicEnrollment(context.enrollment),
-    priority: 'high',
+    priority: responseSla.isOverdue ? 'urgent' : 'high',
     sourceDocumentId: appealDocumentId,
     sourceType: 'assessment_appeal',
+    responseSla,
     summary: reviewSummary(context),
     taskKey,
     title,
@@ -891,6 +902,10 @@ export default ({ strapi }) => ({
 
     return {
       counts: {
+        dueSoon: reviews.filter((review) =>
+          !review.responseSla.isOverdue && review.responseSla.workingDaysRemaining <= 2
+        ).length,
+        overdue: reviews.filter((review) => review.responseSla.isOverdue).length,
         total: reviews.length,
         underReview: reviews.filter((review) => review.appeal.appealState === 'under_review').length,
         waiting: reviews.filter((review) => review.appeal.appealState === 'submitted').length,

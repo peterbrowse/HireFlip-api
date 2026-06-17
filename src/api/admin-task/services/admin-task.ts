@@ -1,6 +1,7 @@
 import { factories } from '@strapi/strapi';
 import { errors, validateZodSchema, z } from '@strapi/utils';
 import { publishAdminRealtimeEvent } from '../../../utils/admin-realtime-events';
+import { workingDayWindow } from '../../../utils/working-days';
 
 const { ForbiddenError, ValidationError } = errors;
 
@@ -213,6 +214,7 @@ const taskTypeLabels: Record<AdminTaskType, string> = {
   refund_review: 'Refund review',
   system_alert: 'System alert',
 };
+const assessmentAppealResponseWorkingDays = 14;
 
 const priorityRank: Record<AdminTaskPriority, number> = {
   urgent: 0,
@@ -560,6 +562,10 @@ const assessmentAppealTask = (appeal: DocumentRecord): AdminTaskDraft | null => 
   const attempt = appeal.courseTestAttempt;
   const attemptNumber =
     typeof attempt?.attemptNumber === 'number' ? `Attempt ${attempt.attemptNumber}` : undefined;
+  const responseSla = workingDayWindow({
+    days: assessmentAppealResponseWorkingDays,
+    from: appeal.submittedAt || appeal.createdAt,
+  });
 
   return {
     actionLabel: 'Review appeal',
@@ -569,10 +575,14 @@ const assessmentAppealTask = (appeal: DocumentRecord): AdminTaskDraft | null => 
       sourceCreatedAt: appeal.createdAt,
       sourceDetectedAt: sourceTimestamp(appeal),
       submittedAt: appeal.submittedAt,
+      responseDueAt: responseSla.dueAt,
+      responseSlaOverdue: responseSla.isOverdue,
+      responseWorkingDaysElapsed: responseSla.workingDaysElapsed,
+      responseWorkingDaysRemaining: responseSla.workingDaysRemaining,
       attemptDocumentId: getDocumentId(attempt),
       attemptNumber: attempt?.attemptNumber ?? null,
     },
-    priority: 'high',
+    priority: responseSla.isOverdue ? 'urgent' : 'high',
     relatedDocumentId: getDocumentId(attempt),
     relatedType: 'course_test_attempt',
     sourceDocumentId: documentId,

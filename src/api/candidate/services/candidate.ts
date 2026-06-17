@@ -21,6 +21,7 @@ import {
   publishClassRealtimeEvent,
 } from '../../../utils/class-realtime-events';
 import { publishAdminRealtimeEvent } from '../../../utils/admin-realtime-events';
+import { workingDayWindow } from '../../../utils/working-days';
 
 const { ApplicationError, UnauthorizedError, ValidationError } = errors;
 
@@ -84,6 +85,7 @@ type DocumentRecord = Record<string, unknown> & {
   createdAt?: string;
   currency?: string;
   declinedAt?: string;
+  decidedAt?: string;
   displayTitle?: string;
   documentId?: string;
   deliveryState?: string;
@@ -250,6 +252,7 @@ const terminalEnrollmentStatuses = new Set([
   'archived',
 ]);
 const terminalClassStatuses = new Set(['cancelled', 'archived', 'completed']);
+const assessmentAppealSubmissionWorkingDays = 5;
 const candidateVisibleClassStates = new Set([
   'coming_soon',
   'waitlist_open',
@@ -4528,7 +4531,7 @@ const findCourseBundle = async (
       })).filter((module) => activeContentRecord(module, 'moduleState'))
     : [];
   const moduleDocumentIds = modules.map((module) => module.documentId).filter((documentId): documentId is string => Boolean(documentId));
-  const [materials, courseTests, moduleTests, progressRecords, attempts, appeals] = await Promise.all([
+  const [materials, courseTests, moduleTests, progressRecords, attempts, appeals, testResults] = await Promise.all([
     moduleDocumentIds.length
       ? documents(strapi, 'api::course-material.course-material').findMany({
           filters: {
@@ -4596,6 +4599,16 @@ const findCourseBundle = async (
       populate: ['courseTestAttempt'],
       sort: ['createdAt:desc'],
     }),
+    documents(strapi, 'api::course-test-result.course-test-result').findMany({
+      filters: {
+        enrollment: {
+          documentId: enrollment.documentId,
+        },
+      },
+      limit: 1000,
+      populate: ['courseTest', 'courseTestAttempt'],
+      sort: ['decidedAt:desc', 'createdAt:desc'],
+    }),
   ]);
   const tests = [...courseTests, ...moduleTests].filter((test) => activeContentRecord(test, 'testState'));
   const testDocumentIds = tests.map((test) => test.documentId).filter((documentId): documentId is string => Boolean(documentId));
@@ -4625,6 +4638,7 @@ const findCourseBundle = async (
     progressRecords,
     questions,
     sections,
+    testResults,
     tests,
   };
 };
@@ -4676,6 +4690,11 @@ const questionPoints = (question: DocumentRecord) => {
 const latestAttemptForTest = (attempts: DocumentRecord[], testDocumentId?: string) =>
   latestByTimestamp(attempts.filter((attempt) => attempt.courseTest?.documentId === testDocumentId));
 
+const latestTestResultForAttempt = (testResults: DocumentRecord[], attemptDocumentId?: string) =>
+  latestByTimestamp(
+    testResults.filter((result) => result.courseTestAttempt?.documentId === attemptDocumentId)
+  );
+
 const activeAppealForAttempt = (appeals: DocumentRecord[], attemptDocumentId?: string) =>
   appeals.find((appeal) =>
     appeal.courseTestAttempt?.documentId === attemptDocumentId &&
@@ -4700,6 +4719,15 @@ const hasAdminOverrideRetry = (attempt?: DocumentRecord) => {
     attempt.retryEligibilityState === 'eligible_conditional_retry'
   );
 };
+
+const appealDecisionTimestamp = (attempt?: DocumentRecord, testResult?: DocumentRecord) =>
+  testResult?.decidedAt || testResult?.createdAt || attempt?.submittedAt || attempt?.createdAt || null;
+
+const appealSubmissionWindow = (attempt?: DocumentRecord, testResult?: DocumentRecord) =>
+  workingDayWindow({
+    days: assessmentAppealSubmissionWorkingDays,
+    from: appealDecisionTimestamp(attempt, testResult),
+  });
 
 const buildCandidateCourseState = async (
   strapi: StrapiDocumentService,
@@ -4783,6 +4811,7 @@ const buildCandidateCourseState = async (
       });
       const tests = moduleTests.map((test) => {
         const latestAttempt = latestAttemptForTest(bundle.attempts, test.documentId);
+        const latestTestResult = latestTestResultForAttempt(bundle.testResults, latestAttempt?.documentId);
         const activeAppeal = activeAppealForAttempt(bundle.appeals, latestAttempt?.documentId);
         const latestAppeal = latestAppealForAttempt(bundle.appeals, latestAttempt?.documentId);
         const questions = questionsByTest.get(test.documentId || '') || [];
@@ -4790,6 +4819,9 @@ const buildCandidateCourseState = async (
         const testFailed = latestAttempt?.attemptState === 'failed';
         const retryEligibilityState = latestAttempt?.retryEligibilityState || 'not_assessed';
         const adminOverrideRetryAvailable = hasAdminOverrideRetry(latestAttempt);
+        const submissionWindow = testFailed && retryEligibilityState === 'exhausted'
+          ? appealSubmissionWindow(latestAttempt, latestTestResult)
+          : null;
 
         return {
           activeAppeal: activeAppeal
@@ -4799,8 +4831,9 @@ const buildCandidateCourseState = async (
                 submittedAt: activeAppeal.submittedAt,
               }
             : null,
+          appealWindow: submissionWindow,
           attemptLimit: test.attemptLimit ?? 3,
-          canAppeal: Boolean(testFailed && retryEligibilityState === 'exhausted' && !latestAppeal),
+          canAppeal: Boolean(testFailed && retryEligibilityState === 'exhausted' && !latestAppeal && submissionWindow?.isOpen),
           canSubmit:
             moduleUnlocked &&
             !testPassed &&
@@ -5789,9 +5822,16 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
     const payload = validateCourseAppeal(input ?? {});
     const bundle = await findCourseBundle(strapi, enrollment);
     const latestAttempt = latestAttemptForTest(bundle?.attempts || [], testDocumentId);
+    const latestTestResult = latestTestResultForAttempt(bundle?.testResults || [], latestAttempt?.documentId);
 
     if (!latestAttempt || latestAttempt.attemptState !== 'failed' || latestAttempt.retryEligibilityState !== 'exhausted') {
       throw new ValidationError('An appeal can only be submitted after retries are exhausted for a failed test.');
+    }
+
+    const submissionWindow = appealSubmissionWindow(latestAttempt, latestTestResult);
+
+    if (!submissionWindow.isOpen) {
+      throw new ValidationError('The 5-working-day appeal window for this failed assessment has closed.');
     }
 
     const existingAppeal = latestAppealForAttempt(bundle?.appeals || [], latestAttempt.documentId);
@@ -5814,6 +5854,9 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
           connect: [{ documentId: enrollment.documentId }],
         },
         metadata: {
+          appealSubmissionDueAt: submissionWindow.dueAt,
+          failedDecisionAt: submissionWindow.startedAt,
+          workingDaysToSubmit: assessmentAppealSubmissionWorkingDays,
           testDocumentId,
         },
         reason: payload.reason,

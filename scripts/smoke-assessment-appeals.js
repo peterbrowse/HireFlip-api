@@ -428,8 +428,45 @@ const main = async () => {
       strapi,
       suffix: 'reject',
     });
+    const lateSubmissionFixture = await createAppealFixture({
+      classRecord,
+      course,
+      courseTest,
+      question,
+      runId,
+      strapi,
+      suffix: 'late',
+    });
 
-    created.fixtures.push(approvalFixture, rejectionFixture);
+    created.fixtures.push(approvalFixture, rejectionFixture, lateSubmissionFixture);
+
+    const oldDecisionAt = new Date(Date.now() - 20 * 24 * 60 * 60 * 1000).toISOString();
+
+    await Promise.all([
+      documents(strapi, 'api::assessment-appeal.assessment-appeal').delete({
+        documentId: lateSubmissionFixture.appeal.documentId,
+      }),
+      documents(strapi, 'api::enrollment.enrollment').update({
+        documentId: lateSubmissionFixture.enrollment.documentId,
+        data: {
+          completionStatus: 'in_progress',
+          enrollmentState: 'in_class',
+          passStatus: 'failed',
+        },
+      }),
+      documents(strapi, 'api::course-test-attempt.course-test-attempt').update({
+        documentId: lateSubmissionFixture.attempt.documentId,
+        data: {
+          submittedAt: oldDecisionAt,
+        },
+      }),
+      documents(strapi, 'api::course-test-result.course-test-result').update({
+        documentId: lateSubmissionFixture.testResult.documentId,
+        data: {
+          decidedAt: oldDecisionAt,
+        },
+      }),
+    ]);
 
     const appealService = strapi.service('api::admin-assessment-appeal.admin-assessment-appeal');
     const sessionToken = 's'.repeat(32);
@@ -463,6 +500,8 @@ const main = async () => {
     assert(detailResult.review.appeal.appealState === 'under_review', 'Expected detail lookup to mark appeal under review.');
     assert(detailResult.review.answers.length === 1, 'Expected answer evidence in appeal detail.');
     assert(detailResult.review.attempts.length === 1, 'Expected attempt history in appeal detail.');
+    assert(detailResult.review.responseSla.dueAt, 'Expected assessment appeal response SLA due date.');
+    assert(detailResult.review.responseSla.workingDaysTotal === 14, 'Expected 14-working-day response SLA.');
 
     const approveResult = await appealService.approveReview(
       {
@@ -577,6 +616,26 @@ const main = async () => {
       auditEvents.some((event) => event.eventType === 'admin.assessment_appeal_rejected'),
       'Expected rejection audit event.'
     );
+
+    let lateAppealRejected = false;
+
+    try {
+      await strapi.service('api::candidate.candidate').createCurrentCandidateCourseAppeal(
+        {
+          subject: lateSubmissionFixture.candidate.authIdentityId,
+          type: 'auth0',
+        },
+        courseTest.documentId,
+        {
+          reason: 'Smoke test late appeal: this should be rejected because the window has closed.',
+        },
+        { requestId: `assessment-appeal-smoke-late-${runId}` }
+      );
+    } catch (error) {
+      lateAppealRejected = error instanceof Error && error.message.includes('5-working-day appeal window');
+    }
+
+    assert(lateAppealRejected, 'Expected late candidate assessment appeal submission to be rejected.');
 
     console.log('Assessment appeal smoke passed.');
   } finally {
