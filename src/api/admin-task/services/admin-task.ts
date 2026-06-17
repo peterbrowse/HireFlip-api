@@ -38,8 +38,10 @@ type DocumentRecord = Record<string, unknown> & {
   actionLabel?: string;
   actionPath?: string;
   amountPence?: number;
+  appealState?: string;
   candidate?: DocumentRecord;
   class?: DocumentRecord;
+  courseTestAttempt?: DocumentRecord;
   createdAt?: string;
   currency?: string;
   deliveryState?: string;
@@ -72,6 +74,7 @@ type DocumentRecord = Record<string, unknown> & {
   severity?: string;
   sourceDocumentId?: string;
   sourceType?: AdminTaskSourceType;
+  submittedAt?: string;
   subjectDisplayName?: string;
   subjectId?: string;
   subjectType?: string;
@@ -97,6 +100,7 @@ type StrapiDocumentService = {
 
 type AdminTaskPriority = 'low' | 'normal' | 'high' | 'urgent';
 type AdminTaskSourceType =
+  | 'assessment_appeal'
   | 'audit_event'
   | 'enrollment'
   | 'notification_event'
@@ -104,7 +108,12 @@ type AdminTaskSourceType =
   | 'refund'
   | 'reservation';
 type AdminTaskState = 'acknowledged' | 'dismissed' | 'open' | 'resolved';
-type AdminTaskType = 'notification_failure' | 'payment_review' | 'refund_review' | 'system_alert';
+type AdminTaskType =
+  | 'assessment_appeal'
+  | 'notification_failure'
+  | 'payment_review'
+  | 'refund_review'
+  | 'system_alert';
 
 type AdminTaskDraft = {
   actionLabel: string;
@@ -167,6 +176,7 @@ const trimToLength = (value: string, maxLength: number) =>
   value.length > maxLength ? `${value.slice(0, maxLength - 1)}…` : value;
 
 const taskRouteSegment = (taskKey: string) => encodeURIComponent(taskKey);
+const assessmentAppealTaskPath = (taskKey: string) => `/assessment-appeals/${taskRouteSegment(taskKey)}`;
 const taskDetailPath = (taskKey: string) => `/tasks/${taskRouteSegment(taskKey)}`;
 const refundTaskPath = (taskKey: string) => `/refunds/${taskRouteSegment(taskKey)}`;
 
@@ -194,9 +204,10 @@ const formatMoney = (amountPence?: number, currency = 'GBP') => {
 };
 
 const sourceTimestamp = (record: DocumentRecord) =>
-  record.failedAt || record.occurredAt || record.createdAt || new Date().toISOString();
+  record.submittedAt || record.failedAt || record.occurredAt || record.createdAt || new Date().toISOString();
 
 const taskTypeLabels: Record<AdminTaskType, string> = {
+  assessment_appeal: 'Assessment appeal',
   notification_failure: 'Notification failure',
   payment_review: 'Payment review',
   refund_review: 'Refund review',
@@ -211,6 +222,7 @@ const priorityRank: Record<AdminTaskPriority, number> = {
 };
 
 const monitoredTaskTypes: AdminTaskType[] = [
+  'assessment_appeal',
   'payment_review',
   'refund_review',
   'notification_failure',
@@ -536,6 +548,48 @@ const refundTask = (refund: DocumentRecord): AdminTaskDraft | null => {
   };
 };
 
+const assessmentAppealTask = (appeal: DocumentRecord): AdminTaskDraft | null => {
+  const documentId = getDocumentId(appeal);
+
+  if (!documentId) {
+    return null;
+  }
+
+  const taskKey = `assessment-appeal:${documentId}`;
+  const candidateName = candidateDisplayName(appeal.candidate);
+  const attempt = appeal.courseTestAttempt;
+  const attemptNumber =
+    typeof attempt?.attemptNumber === 'number' ? `Attempt ${attempt.attemptNumber}` : undefined;
+
+  return {
+    actionLabel: 'Review appeal',
+    actionPath: assessmentAppealTaskPath(taskKey),
+    metadata: {
+      appealState: appeal.appealState,
+      sourceCreatedAt: appeal.createdAt,
+      sourceDetectedAt: sourceTimestamp(appeal),
+      submittedAt: appeal.submittedAt,
+      attemptDocumentId: getDocumentId(attempt),
+      attemptNumber: attempt?.attemptNumber ?? null,
+    },
+    priority: 'high',
+    relatedDocumentId: getDocumentId(attempt),
+    relatedType: 'course_test_attempt',
+    sourceDocumentId: documentId,
+    sourceType: 'assessment_appeal',
+    summary: trimToLength(
+      [
+        candidateName ? `${candidateName} submitted a course assessment appeal.` : 'Course assessment appeal needs review.',
+        attemptNumber ? `${attemptNumber} is linked to this appeal.` : '',
+      ].filter(Boolean).join(' '),
+      500
+    ),
+    taskKey,
+    taskType: 'assessment_appeal',
+    title: 'Assessment appeal review',
+  };
+};
+
 const notificationTask = (event: DocumentRecord): AdminTaskDraft | null => {
   const documentId = getDocumentId(event);
 
@@ -708,6 +762,21 @@ const collectRefundTasks = async (strapi: StrapiDocumentService) => {
   return refunds.map(refundTask).filter((task): task is AdminTaskDraft => Boolean(task));
 };
 
+const collectAssessmentAppealTasks = async (strapi: StrapiDocumentService) => {
+  const appeals = await documents(strapi, 'api::assessment-appeal.assessment-appeal').findMany({
+    filters: {
+      appealState: {
+        $in: ['submitted', 'under_review'],
+      },
+    },
+    limit: 100,
+    populate: ['candidate', 'courseTestAttempt', 'enrollment'],
+    sort: ['submittedAt:desc', 'createdAt:desc'],
+  });
+
+  return appeals.map(assessmentAppealTask).filter((task): task is AdminTaskDraft => Boolean(task));
+};
+
 const collectNotificationTasks = async (strapi: StrapiDocumentService) => {
   const events = await documents(strapi, 'api::notification-event.notification-event').findMany({
     filters: {
@@ -740,6 +809,7 @@ const collectAuditTasks = async (strapi: StrapiDocumentService) => {
 
 const collectTaskDrafts = async (strapi: StrapiDocumentService) => {
   const [
+    assessmentAppeals,
     payments,
     reservations,
     enrollments,
@@ -747,6 +817,7 @@ const collectTaskDrafts = async (strapi: StrapiDocumentService) => {
     notifications,
     auditEvents,
   ] = await Promise.all([
+    collectAssessmentAppealTasks(strapi),
     collectPaymentTasks(strapi),
     collectReservationTasks(strapi),
     collectEnrollmentTasks(strapi),
@@ -756,6 +827,7 @@ const collectTaskDrafts = async (strapi: StrapiDocumentService) => {
   ]);
 
   return [
+    ...assessmentAppeals,
     ...payments,
     ...reservations,
     ...enrollments,
@@ -825,6 +897,7 @@ const taskCounts = (tasks: ReturnType<typeof publicTask>[]) => {
   const totalActiveTasks = tasks.length;
 
   return {
+    assessmentAppeals: tasks.filter((task) => task.taskType === 'assessment_appeal').length,
     criticalEvents: tasks.filter((task) => task.taskType === 'system_alert').length,
     notificationFailures: tasks.filter((task) => task.taskType === 'notification_failure').length,
     paymentChecks: tasks.filter((task) =>

@@ -4682,6 +4682,25 @@ const activeAppealForAttempt = (appeals: DocumentRecord[], attemptDocumentId?: s
     ['submitted', 'under_review'].includes(String(appeal.appealState || ''))
   );
 
+const latestAppealForAttempt = (appeals: DocumentRecord[], attemptDocumentId?: string) =>
+  latestByTimestamp(
+    appeals.filter((appeal) =>
+      appeal.courseTestAttempt?.documentId === attemptDocumentId &&
+      appeal.appealState !== 'withdrawn'
+    )
+  );
+
+const hasAdminOverrideRetry = (attempt?: DocumentRecord) => {
+  const metadata = objectValue(attempt?.metadata);
+
+  return Boolean(
+    attempt &&
+    metadata.adminOverrideRetryGrantedAt &&
+    metadata.assessmentAppealDocumentId &&
+    attempt.retryEligibilityState === 'eligible_conditional_retry'
+  );
+};
+
 const buildCandidateCourseState = async (
   strapi: StrapiDocumentService,
   candidate: DocumentRecord,
@@ -4765,10 +4784,12 @@ const buildCandidateCourseState = async (
       const tests = moduleTests.map((test) => {
         const latestAttempt = latestAttemptForTest(bundle.attempts, test.documentId);
         const activeAppeal = activeAppealForAttempt(bundle.appeals, latestAttempt?.documentId);
+        const latestAppeal = latestAppealForAttempt(bundle.appeals, latestAttempt?.documentId);
         const questions = questionsByTest.get(test.documentId || '') || [];
         const testPassed = latestAttempt?.passed === true || latestAttempt?.attemptState === 'passed';
         const testFailed = latestAttempt?.attemptState === 'failed';
         const retryEligibilityState = latestAttempt?.retryEligibilityState || 'not_assessed';
+        const adminOverrideRetryAvailable = hasAdminOverrideRetry(latestAttempt);
 
         return {
           activeAppeal: activeAppeal
@@ -4779,8 +4800,12 @@ const buildCandidateCourseState = async (
               }
             : null,
           attemptLimit: test.attemptLimit ?? 3,
-          canAppeal: Boolean(testFailed && retryEligibilityState === 'exhausted' && !activeAppeal),
-          canSubmit: moduleUnlocked && !testPassed && !activeAppeal,
+          canAppeal: Boolean(testFailed && retryEligibilityState === 'exhausted' && !latestAppeal),
+          canSubmit:
+            moduleUnlocked &&
+            !testPassed &&
+            !activeAppeal &&
+            (retryEligibilityState !== 'exhausted' || adminOverrideRetryAvailable),
           description: test.description || null,
           documentId: test.documentId,
           latestAttempt: latestAttempt
@@ -4792,6 +4817,15 @@ const buildCandidateCourseState = async (
                 score: latestAttempt.score ?? null,
                 state: latestAttempt.attemptState,
                 submittedAt: latestAttempt.submittedAt,
+              }
+            : null,
+          latestAppeal: latestAppeal
+            ? {
+                decision: latestAppeal.decision || null,
+                documentId: latestAppeal.documentId,
+                reviewedAt: latestAppeal.reviewedAt || null,
+                state: latestAppeal.appealState,
+                submittedAt: latestAppeal.submittedAt,
               }
             : null,
           maxScore: test.maxScore ?? questions.reduce((total, question) => total + questionPoints(question), 0),
@@ -5544,16 +5578,24 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       .sort((first, second) => Number(first.attemptNumber || 0) - Number(second.attemptNumber || 0));
     const latestAttempt = previousAttempts[previousAttempts.length - 1];
     const attemptLimit = Number(test.attemptLimit || 3);
+    const adminOverrideRetryAvailable = hasAdminOverrideRetry(latestAttempt);
 
     if (latestAttempt?.passed === true || latestAttempt?.attemptState === 'passed') {
       throw new ValidationError('This test has already been passed.');
     }
 
-    if (previousAttempts.length >= attemptLimit || latestAttempt?.retryEligibilityState === 'exhausted') {
+    if (
+      (previousAttempts.length >= attemptLimit || latestAttempt?.retryEligibilityState === 'exhausted') &&
+      !adminOverrideRetryAvailable
+    ) {
       throw new ValidationError('No retries are available for this test.');
     }
 
-    if (previousAttempts.length >= 2 && latestAttempt?.retryEligibilityState !== 'eligible_conditional_retry') {
+    if (
+      previousAttempts.length >= 2 &&
+      latestAttempt?.retryEligibilityState !== 'eligible_conditional_retry' &&
+      !adminOverrideRetryAvailable
+    ) {
       throw new ValidationError('The conditional retry is not available for this test.');
     }
 
@@ -5575,7 +5617,9 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
     const attemptNumber = previousAttempts.length + 1;
     const retryEligibilityState = passed
       ? 'not_eligible'
-      : attemptNumber === 1 && attemptLimit >= 2
+      : adminOverrideRetryAvailable
+        ? 'exhausted'
+        : attemptNumber === 1 && attemptLimit >= 2
         ? 'eligible_open_retry'
         : attemptNumber === 2 && attemptLimit >= 3 && scorePercent >= passMark - 15
           ? 'eligible_conditional_retry'
@@ -5596,13 +5640,21 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
         },
         maxScore,
         metadata: {
+          ...(adminOverrideRetryAvailable
+            ? {
+                adminOverrideRetrySourceAttemptDocumentId: latestAttempt?.documentId,
+                assessmentAppealDocumentId: objectValue(latestAttempt?.metadata).assessmentAppealDocumentId,
+              }
+            : {}),
           scorePercent,
         },
         passed,
         passMarkSnapshot: passMark,
         retryEligibilityState,
         retryType:
-          attemptNumber === 1
+          adminOverrideRetryAvailable
+            ? 'admin_override'
+            : attemptNumber === 1
             ? 'first_attempt'
             : attemptNumber === 2
               ? 'open_retry'
@@ -5742,10 +5794,10 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       throw new ValidationError('An appeal can only be submitted after retries are exhausted for a failed test.');
     }
 
-    const existingAppeal = activeAppealForAttempt(bundle?.appeals || [], latestAttempt.documentId);
+    const existingAppeal = latestAppealForAttempt(bundle?.appeals || [], latestAttempt.documentId);
 
     if (existingAppeal) {
-      throw new ValidationError('This failed attempt already has an active appeal.');
+      throw new ValidationError('This failed attempt already has an appeal.');
     }
 
     const now = new Date().toISOString();

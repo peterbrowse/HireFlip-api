@@ -518,7 +518,7 @@ export interface ApiAdminReviewClaimAdminReviewClaim
         maxLength: 240;
       }>;
     resourceType: Schema.Attribute.Enumeration<
-      ['admin_task', 'refund_review', 'support_case']
+      ['admin_task', 'assessment_appeal', 'refund_review', 'support_case']
     > &
       Schema.Attribute.Required;
     takeoverCount: Schema.Attribute.Integer &
@@ -591,6 +591,7 @@ export interface ApiAdminTaskAdminTask extends Struct.CollectionTypeSchema {
       }>;
     sourceType: Schema.Attribute.Enumeration<
       [
+        'assessment_appeal',
         'payment',
         'refund',
         'reservation',
@@ -615,6 +616,7 @@ export interface ApiAdminTaskAdminTask extends Struct.CollectionTypeSchema {
       Schema.Attribute.DefaultTo<'open'>;
     taskType: Schema.Attribute.Enumeration<
       [
+        'assessment_appeal',
         'payment_review',
         'refund_review',
         'notification_failure',

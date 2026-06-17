@@ -5,6 +5,7 @@ type Logger = {
 };
 
 export type AdminRealtimeEventType =
+  | 'assessment_appeals_changed'
   | 'admin_tasks_changed'
   | 'classes_changed'
   | 'refund_reviews_changed'

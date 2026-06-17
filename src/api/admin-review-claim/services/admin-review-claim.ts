@@ -45,7 +45,7 @@ type AuditEventService = {
   record(input: Record<string, unknown>): Promise<unknown>;
 };
 
-type AdminReviewResourceType = 'admin_task' | 'refund_review' | 'support_case';
+type AdminReviewResourceType = 'admin_task' | 'assessment_appeal' | 'refund_review' | 'support_case';
 
 type DocumentRecord = Record<string, unknown> & {
   claimKey?: string;
@@ -87,7 +87,7 @@ const resourceSchema = z.object({
   resourceDocumentId: z.string().trim().max(160).optional(),
   resourceKey: z.string().trim().min(1).max(300),
   resourceLabel: z.string().trim().max(240).optional(),
-  resourceType: z.enum(['admin_task', 'refund_review', 'support_case']),
+  resourceType: z.enum(['admin_task', 'assessment_appeal', 'refund_review', 'support_case']),
 });
 
 const claimInputSchema = resourceSchema

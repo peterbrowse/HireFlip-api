@@ -22,6 +22,7 @@
       "type": "enumeration",
       "enum": [
         "admin_task",
+        "assessment_appeal",
         "refund_review",
         "support_case"
       ],

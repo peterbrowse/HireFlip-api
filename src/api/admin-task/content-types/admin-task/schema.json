@@ -21,6 +21,7 @@
     "taskType": {
       "type": "enumeration",
       "enum": [
+        "assessment_appeal",
         "payment_review",
         "refund_review",
         "notification_failure",
@@ -62,6 +63,7 @@
     "sourceType": {
       "type": "enumeration",
       "enum": [
+        "assessment_appeal",
         "payment",
         "refund",
         "reservation",
