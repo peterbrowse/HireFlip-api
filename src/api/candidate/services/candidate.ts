@@ -53,7 +53,6 @@ type DocumentRecord = Record<string, unknown> & {
   amountPence?: number;
   announcementState?: string;
   appealState?: string;
-  age?: number;
   attemptNumber?: number;
   attemptState?: string;
   authIdentityId?: string;
@@ -94,6 +93,7 @@ type DocumentRecord = Record<string, unknown> & {
   expiredAt?: string;
   expiresAt?: string;
   firstName?: string;
+  dateOfBirth?: string;
   gender?: string;
   genderSelfDescription?: string;
   id?: number;
@@ -387,6 +387,59 @@ const optionalString = (maxLength: number) =>
     z.string().trim().max(maxLength).optional()
   );
 
+const dateOnlyPattern = /^\d{4}-\d{2}-\d{2}$/;
+
+const parseDateOnly = (value: string) => {
+  if (!dateOnlyPattern.test(value)) {
+    return undefined;
+  }
+
+  const [year, month, day] = value.split('-').map((part) => Number.parseInt(part, 10));
+  const parsedDate = new Date(Date.UTC(year, month - 1, day));
+
+  if (
+    parsedDate.getUTCFullYear() !== year ||
+    parsedDate.getUTCMonth() !== month - 1 ||
+    parsedDate.getUTCDate() !== day
+  ) {
+    return undefined;
+  }
+
+  return { day, month, year };
+};
+
+const getAgeFromDateOfBirth = (dateOfBirth: string, now = new Date()) => {
+  const parsedDate = parseDateOnly(dateOfBirth);
+
+  if (!parsedDate) {
+    return undefined;
+  }
+
+  const currentYear = now.getUTCFullYear();
+  const currentMonth = now.getUTCMonth() + 1;
+  const currentDay = now.getUTCDate();
+  let age = currentYear - parsedDate.year;
+
+  if (
+    currentMonth < parsedDate.month ||
+    (currentMonth === parsedDate.month && currentDay < parsedDate.day)
+  ) {
+    age -= 1;
+  }
+
+  return age;
+};
+
+const dateOfBirthSchema = z
+  .string()
+  .trim()
+  .refine((value) => {
+    const age = getAgeFromDateOfBirth(value);
+    return typeof age === 'number' && age >= 16 && age <= 120;
+  }, {
+    message: 'Enter a valid date of birth. Candidates must be between 16 and 120.',
+  });
+
 const mobilePhoneSchema = z
   .string()
   .trim()
@@ -446,9 +499,9 @@ const validateSyncCandidate = validateZodSchema(syncCandidateSchema);
 
 const updateCandidateAccountSchema = z
   .object({
-    age: z.number().int().min(16).max(120).optional(),
     classAreaPreferences: preferenceSelectionSchema,
     communicationChannels: z.array(z.enum(communicationChannels)).optional(),
+    dateOfBirth: dateOfBirthSchema.optional(),
     firstName: z.string().trim().min(1).max(120),
     gender: z.enum(candidateGenderValues),
     genderSelfDescription: optionalString(120),
@@ -672,8 +725,8 @@ const sanitizeProfileImage = async (strapi, profileImage) => {
 
 const sanitizeCandidate = async (strapi, candidate) => ({
   documentId: candidate.documentId,
-  age: candidate.age,
   classAreaPreferences: candidate.classAreaPreferences,
+  dateOfBirth: candidate.dateOfBirth,
   email: candidate.email,
   firstName: candidate.firstName,
   gender: candidate.gender,
@@ -6035,15 +6088,20 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
     }
 
     const now = new Date().toISOString();
-    const existingAge = typeof existingCandidate.age === 'number' ? existingCandidate.age : undefined;
-    const nextAge = existingAge || payload.age;
+    const existingDateOfBirth =
+      typeof existingCandidate.dateOfBirth === 'string' ? existingCandidate.dateOfBirth : undefined;
+    const nextDateOfBirth = existingDateOfBirth || payload.dateOfBirth;
 
-    if (!nextAge) {
-      throw new ValidationError('Age is required to complete candidate onboarding.');
+    if (!nextDateOfBirth) {
+      throw new ValidationError('Date of birth is required to complete candidate onboarding.');
     }
 
-    if (existingAge && payload.age && payload.age !== existingAge) {
-      throw new ValidationError('Age cannot be updated after onboarding.');
+    if (
+      existingDateOfBirth &&
+      payload.dateOfBirth &&
+      payload.dateOfBirth !== existingDateOfBirth
+    ) {
+      throw new ValidationError('Date of birth cannot be updated after onboarding.');
     }
 
     const marketingConsentState = payload.marketingConsent ? 'opted_in' : 'opted_out';
@@ -6093,8 +6151,8 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
 
     const changes = diffDefinedFields(existingCandidate, {
       accountOnboardingCompletedAt: onboardingCompletedAt,
-      age: nextAge,
       classAreaPreferences: payload.classAreaPreferences,
+      dateOfBirth: nextDateOfBirth,
       firstName: payload.firstName,
       gender: payload.gender,
       genderSelfDescription: nextGenderSelfDescription,
@@ -6124,8 +6182,8 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
 
     const previousState = {
       accountOnboardingCompletedAt: existingCandidate.accountOnboardingCompletedAt,
-      age: existingCandidate.age,
       classAreaPreferences: existingCandidate.classAreaPreferences,
+      dateOfBirth: existingCandidate.dateOfBirth,
       firstName: existingCandidate.firstName,
       gender: existingCandidate.gender,
       genderSelfDescription: existingCandidate.genderSelfDescription,

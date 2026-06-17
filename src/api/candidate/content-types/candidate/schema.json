@@ -44,10 +44,8 @@
       "type": "string",
       "maxLength": 40
     },
-    "age": {
-      "type": "integer",
-      "min": 16,
-      "max": 120
+    "dateOfBirth": {
+      "type": "date"
     },
     "gender": {
       "type": "enumeration",

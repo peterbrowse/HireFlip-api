@@ -987,14 +987,6 @@ export interface ApiCandidateCandidate extends Struct.CollectionTypeSchema {
     > &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'active'>;
-    age: Schema.Attribute.Integer &
-      Schema.Attribute.SetMinMax<
-        {
-          max: 120;
-          min: 16;
-        },
-        number
-      >;
     authIdentityId: Schema.Attribute.String &
       Schema.Attribute.Unique &
       Schema.Attribute.SetMinMaxLength<{
@@ -1028,6 +1020,7 @@ export interface ApiCandidateCandidate extends Struct.CollectionTypeSchema {
     createdAt: Schema.Attribute.DateTime;
     createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
+    dateOfBirth: Schema.Attribute.Date;
     email: Schema.Attribute.Email &
       Schema.Attribute.Required &
       Schema.Attribute.Unique &
