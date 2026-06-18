@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { errors, validateZodSchema, z } from '@strapi/utils';
 
 const { ValidationError } = errors;
@@ -26,6 +27,7 @@ type DocumentRecord = Record<string, unknown> & {
   employerContact?: DocumentRecord;
   endTime?: string;
   enrollment?: DocumentRecord;
+  expiresAt?: string;
   firstName?: string;
   id?: number | string;
   interview?: DocumentRecord;
@@ -38,7 +40,10 @@ type DocumentRecord = Record<string, unknown> & {
   locationType?: string;
   meetingUrl?: string;
   offerState?: string;
+  inviteEmail?: string;
+  inviteState?: string;
   progressionState?: string;
+  metadata?: unknown;
   region?: string;
   requestedDetailsAt?: string;
   roleTitle?: string;
@@ -92,14 +97,32 @@ const createInterviewSlotOfferSchema = identitySchema
   })
   .strict();
 
+const inviteTokenSchema = z
+  .object({
+    inviteToken: z.string().trim().min(24).max(256),
+  })
+  .strict();
+
+const acceptInviteSchema = inviteTokenSchema
+  .extend({
+    authIdentityId: z.string().trim().min(1).max(160),
+    email: z.string().trim().email().max(254).transform((value) => value.toLowerCase()),
+    name: z.string().trim().max(240).optional().transform((value) => value || undefined),
+  })
+  .strict();
+
 const validateIdentity = validateZodSchema(identitySchema);
 const validateCreateInterviewSlotOffer = validateZodSchema(createInterviewSlotOfferSchema);
+const validateInviteToken = validateZodSchema(inviteTokenSchema);
+const validateAcceptInvite = validateZodSchema(acceptInviteSchema);
 
 const documents = (strapi: StrapiDocumentService, uid: string) =>
   strapi.documents(uid) as DocumentCollection;
 
 const getDocumentId = (record?: DocumentRecord | null) =>
   typeof record?.documentId === 'string' ? record.documentId : null;
+
+const hashInviteToken = (token: string) => createHash('sha256').update(token).digest('hex');
 
 const compact = <T>(items: Array<T | false | null | undefined>) =>
   items.filter((item): item is T => Boolean(item));
@@ -227,8 +250,16 @@ const findEmployerContact = async (
     throw new ValidationError('Employer contact could not be found.');
   }
 
-  if (contact.contactState && !['active', 'invited'].includes(String(contact.contactState))) {
+  if (contact.contactState !== 'active') {
     throw new ValidationError('Employer contact is not active.');
+  }
+
+  if (
+    identity.authIdentityId &&
+    contact.authIdentityId &&
+    contact.authIdentityId !== identity.authIdentityId
+  ) {
+    throw new ValidationError('Employer contact is linked to another Auth0 account.');
   }
 
   return contact;
@@ -264,6 +295,63 @@ const accountPayload = (contact: DocumentRecord) => {
     region: employer?.region || null,
     statusLabel: humanize(String(employer?.employerState || contact.contactState || 'not_connected')),
   };
+};
+
+const publicInvitePayload = (invite: DocumentRecord) => ({
+  companyName: invite.employer?.companyName || 'Employer',
+  contactEmail: invite.inviteEmail || invite.employerContact?.email || null,
+  contactName: contactDisplayName(invite.employerContact || {}),
+  employerState: invite.employer?.employerState || null,
+  expiresAt: invite.expiresAt || null,
+  inviteState: invite.inviteState || 'pending',
+  region: invite.employer?.region || null,
+  roleTitle: invite.employerContact?.roleTitle || null,
+});
+
+const findInviteByToken = async (strapi: StrapiDocumentService, inviteToken: string) => {
+  const invites = await documents(strapi, 'api::employer-invite.employer-invite').findMany({
+    filters: {
+      tokenHash: hashInviteToken(inviteToken),
+    },
+    limit: 1,
+    populate: ['employer', 'employerContact'],
+  });
+
+  return invites[0] || null;
+};
+
+const assertValidInvite = async (strapi: StrapiDocumentService, inviteToken: string) => {
+  const invite = await findInviteByToken(strapi, inviteToken);
+
+  if (!invite) {
+    throw new ValidationError('Employer invite could not be found.');
+  }
+
+  if (invite.inviteState !== 'pending') {
+    throw new ValidationError('Employer invite is no longer active.');
+  }
+
+  if (invite.expiresAt && Date.parse(invite.expiresAt) <= Date.now()) {
+    const inviteDocumentId = getDocumentId(invite);
+
+    if (!inviteDocumentId) {
+      throw new ValidationError('Employer invite could not be updated.');
+    }
+
+    await documents(strapi, 'api::employer-invite.employer-invite').update({
+      documentId: inviteDocumentId,
+      data: {
+        inviteState: 'expired',
+      },
+    });
+    throw new ValidationError('Employer invite has expired.');
+  }
+
+  if (!invite.employer || !invite.employerContact) {
+    throw new ValidationError('Employer invite is missing linked account records.');
+  }
+
+  return invite;
 };
 
 const availabilityRequestPayload = (offer: DocumentRecord) => ({
@@ -307,6 +395,93 @@ const progressionPayload = (offer: DocumentRecord) => ({
 });
 
 export default ({ strapi }) => ({
+  async validateInvite(input: unknown) {
+    const body = validateInviteToken(input);
+    const invite = await assertValidInvite(strapi, body.inviteToken);
+
+    return {
+      invite: publicInvitePayload(invite),
+      valid: true,
+    };
+  },
+
+  async acceptInvite(input: unknown, requestContext: RequestContext = {}) {
+    const body = validateAcceptInvite(input);
+    const invite = await assertValidInvite(strapi, body.inviteToken);
+    const inviteEmail = String(invite.inviteEmail || invite.employerContact?.email || '').toLowerCase();
+    const employerDocumentId = getDocumentId(invite.employer);
+    const employerContactDocumentId = getDocumentId(invite.employerContact);
+    const inviteDocumentId = getDocumentId(invite);
+
+    if (!inviteEmail || inviteEmail !== body.email) {
+      throw new ValidationError('This invite must be accepted using the invited email address.');
+    }
+
+    if (!employerDocumentId || !employerContactDocumentId || !inviteDocumentId) {
+      throw new ValidationError('Employer invite is missing linked account records.');
+    }
+
+    const existingContacts = await documents(strapi, 'api::employer-contact.employer-contact').findMany({
+      filters: {
+        authIdentityId: body.authIdentityId,
+      },
+      limit: 5,
+    });
+    const conflictingContact = existingContacts.find(
+      (contact) => getDocumentId(contact) !== employerContactDocumentId
+    );
+
+    if (conflictingContact) {
+      throw new ValidationError('This Auth0 account is already linked to another employer contact.');
+    }
+
+    if (
+      invite.employerContact.authIdentityId &&
+      invite.employerContact.authIdentityId !== body.authIdentityId
+    ) {
+      throw new ValidationError('This employer contact is already linked to another Auth0 account.');
+    }
+
+    const now = new Date().toISOString();
+    const updatedContact = await documents(strapi, 'api::employer-contact.employer-contact').update({
+      documentId: employerContactDocumentId,
+      data: {
+        accountCreatedAt: invite.employerContact.accountCreatedAt || now,
+        authIdentityId: body.authIdentityId,
+        authProvider: 'auth0',
+        contactState: 'active',
+      },
+      populate: ['employer'],
+    });
+    await documents(strapi, 'api::employer.employer').update({
+      documentId: employerDocumentId,
+      data: {
+        employerState: 'active',
+      },
+    });
+    const acceptedInvite = await documents(strapi, 'api::employer-invite.employer-invite').update({
+      documentId: inviteDocumentId,
+      data: {
+        acceptedAt: now,
+        acceptedByAuthIdentityId: body.authIdentityId,
+        acceptedByEmail: body.email,
+        inviteState: 'accepted',
+        metadata: {
+          ...(invite.metadata && typeof invite.metadata === 'object' ? invite.metadata : {}),
+          acceptedRequestId: requestContext.requestId,
+          acceptedUserAgent: requestContext.userAgent,
+        },
+      },
+      populate: ['employer', 'employerContact'],
+    });
+
+    return {
+      accepted: true,
+      account: accountPayload(updatedContact),
+      invite: publicInvitePayload(acceptedInvite),
+    };
+  },
+
   async getOverview(input: unknown) {
     const identity = validateIdentity(input);
     const contact = await findEmployerContact(strapi, identity);

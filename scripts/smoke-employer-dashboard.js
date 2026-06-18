@@ -2,6 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { createHash, randomBytes } = require('node:crypto');
 const { compileStrapi, createStrapi } = require('@strapi/strapi');
 
 process.env.CLASS_WORKFLOW_BOOTSTRAP_ENABLED = 'false';
@@ -86,8 +87,11 @@ const main = async () => {
     candidate: null,
     employer: null,
     employerContact: null,
+    employerInvite: null,
     enrollment: null,
     feedback: null,
+    invitedEmployer: null,
+    invitedEmployerContact: null,
     interview: null,
     progressionRequest: null,
     slotOffer: null,
@@ -96,6 +100,112 @@ const main = async () => {
 
   try {
     const employerDashboardService = strapi.service('api::employer-dashboard.employer-dashboard');
+    const inviteToken = randomBytes(32).toString('base64url');
+    const invitedEmployer = await documents(strapi, 'api::employer.employer').create({
+      data: {
+        assignmentMode: 'automatic',
+        companyName: `Invited Employer Smoke ${runId}`,
+        employerState: 'invited',
+        interviewCommitmentCadence: 'quarterly',
+        interviewCommitmentVolume: 3,
+        region: 'Manchester',
+      },
+    });
+    const invitedEmployerContact = await documents(strapi, 'api::employer-contact.employer-contact').create({
+      data: {
+        authProvider: 'auth0',
+        contactState: 'invited',
+        email: `invited-employer-dashboard-smoke-${runId}@example.test`,
+        employer: connect(invitedEmployer),
+        firstName: 'Invited',
+        lastName: 'Employer',
+        invitedAt: new Date().toISOString(),
+        roleTitle: 'Talent lead',
+      },
+      populate: ['employer'],
+    });
+    const employerInvite = await documents(strapi, 'api::employer-invite.employer-invite').create({
+      data: {
+        employer: connect(invitedEmployer),
+        employerContact: connect(invitedEmployerContact),
+        expiresAt: addDays(14),
+        inviteEmail: invitedEmployerContact.email,
+        inviteState: 'pending',
+        lastSentAt: new Date().toISOString(),
+        tokenHash: createHash('sha256').update(inviteToken).digest('hex'),
+      },
+      populate: ['employer', 'employerContact'],
+    });
+
+    created.invitedEmployer = invitedEmployer;
+    created.invitedEmployerContact = invitedEmployerContact;
+    created.employerInvite = employerInvite;
+
+    const inviteValidation = await employerDashboardService.validateInvite({ inviteToken });
+
+    assert(inviteValidation.valid === true, 'Expected employer invite to validate.');
+    assert(
+      inviteValidation.invite.companyName === invitedEmployer.companyName,
+      'Expected invite validation company name.'
+    );
+
+    let rejectedUnacceptedOverview = false;
+
+    try {
+      await employerDashboardService.getOverview({
+        authIdentityId: `auth0|invited-employer-dashboard-smoke-${runId}`,
+        email: invitedEmployerContact.email,
+      });
+    } catch (error) {
+      rejectedUnacceptedOverview = true;
+    }
+
+    assert(rejectedUnacceptedOverview, 'Expected unaccepted employer invite to be blocked.');
+
+    let rejectedMismatchedEmail = false;
+
+    try {
+      await employerDashboardService.acceptInvite({
+        authIdentityId: `auth0|invited-employer-dashboard-smoke-${runId}`,
+        email: `wrong-employer-dashboard-smoke-${runId}@example.test`,
+        inviteToken,
+      });
+    } catch (error) {
+      rejectedMismatchedEmail = true;
+    }
+
+    assert(rejectedMismatchedEmail, 'Expected mismatched invited email to be rejected.');
+
+    const acceptedInvite = await employerDashboardService.acceptInvite({
+      authIdentityId: `auth0|invited-employer-dashboard-smoke-${runId}`,
+      email: invitedEmployerContact.email,
+      inviteToken,
+      name: 'Invited Employer',
+    });
+
+    assert(acceptedInvite.accepted === true, 'Expected employer invite to be accepted.');
+    assert(acceptedInvite.account.companyName === invitedEmployer.companyName, 'Expected accepted account.');
+
+    const acceptedOverview = await employerDashboardService.getOverview({
+      authIdentityId: `auth0|invited-employer-dashboard-smoke-${runId}`,
+      email: invitedEmployerContact.email,
+    });
+
+    assert(
+      acceptedOverview.account.companyName === invitedEmployer.companyName,
+      'Expected accepted invited employer to access overview.'
+    );
+
+    let rejectedReusedInvite = false;
+
+    try {
+      await employerDashboardService.validateInvite({ inviteToken });
+    } catch (error) {
+      rejectedReusedInvite = true;
+    }
+
+    assert(rejectedReusedInvite, 'Expected accepted employer invite to be inactive.');
+
     const employer = await documents(strapi, 'api::employer.employer').create({
       data: {
         assignmentMode: 'automatic',
@@ -310,6 +420,9 @@ const main = async () => {
     await deleteDocument(strapi, 'api::employer-contact.employer-contact', created.employerContact?.documentId);
     await deleteDocument(strapi, 'api::employer.employer', created.employer?.documentId);
     await deleteDocument(strapi, 'api::candidate.candidate', created.candidate?.documentId);
+    await deleteDocument(strapi, 'api::employer-invite.employer-invite', created.employerInvite?.documentId);
+    await deleteDocument(strapi, 'api::employer-contact.employer-contact', created.invitedEmployerContact?.documentId);
+    await deleteDocument(strapi, 'api::employer.employer', created.invitedEmployer?.documentId);
     await strapi.destroy();
   }
 };

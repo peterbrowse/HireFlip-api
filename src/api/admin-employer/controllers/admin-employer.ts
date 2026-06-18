@@ -5,15 +5,15 @@ type RequestContext = {
   userAgent?: string;
 };
 
-type EmployerDashboardService = {
-  acceptInvite(input: unknown, context: RequestContext): Promise<unknown>;
-  createInterviewSlotOffer(input: unknown, context: RequestContext): Promise<unknown>;
-  getOverview(input: unknown, context: RequestContext): Promise<unknown>;
-  validateInvite(input: unknown, context: RequestContext): Promise<unknown>;
+type AdminEmployerService = {
+  createInvite(input: unknown, context: RequestContext): Promise<unknown>;
+  listInvites(input: unknown, context: RequestContext): Promise<unknown>;
+  resendInvite(input: unknown, context: RequestContext): Promise<unknown>;
+  revokeInvite(input: unknown, context: RequestContext): Promise<unknown>;
 };
 
-const employerDashboardService = (strapi: { service(uid: string): unknown }): EmployerDashboardService =>
-  strapi.service('api::employer-dashboard.employer-dashboard') as unknown as EmployerDashboardService;
+const adminEmployerService = (strapi: { service(uid: string): unknown }): AdminEmployerService =>
+  strapi.service('api::admin-employer.admin-employer') as unknown as AdminEmployerService;
 
 const getForwardedClientIp = (ctx) =>
   ctx.request.get('x-hireflip-client-ip') ||
@@ -29,36 +29,36 @@ const getRequestContext = (ctx): RequestContext => ({
 });
 
 export default ({ strapi }) => ({
-  async overview(ctx) {
+  async listInvites(ctx) {
     ctx.body = {
-      data: await employerDashboardService(strapi).getOverview(
+      data: await adminEmployerService(strapi).listInvites(
         ctx.request.body,
         getRequestContext(ctx)
       ),
     };
   },
 
-  async createInterviewSlotOffer(ctx) {
+  async createInvite(ctx) {
     ctx.body = {
-      data: await employerDashboardService(strapi).createInterviewSlotOffer(
+      data: await adminEmployerService(strapi).createInvite(
         ctx.request.body,
         getRequestContext(ctx)
       ),
     };
   },
 
-  async validateInvite(ctx) {
+  async resendInvite(ctx) {
     ctx.body = {
-      data: await employerDashboardService(strapi).validateInvite(
+      data: await adminEmployerService(strapi).resendInvite(
         ctx.request.body,
         getRequestContext(ctx)
       ),
     };
   },
 
-  async acceptInvite(ctx) {
+  async revokeInvite(ctx) {
     ctx.body = {
-      data: await employerDashboardService(strapi).acceptInvite(
+      data: await adminEmployerService(strapi).revokeInvite(
         ctx.request.body,
         getRequestContext(ctx)
       ),

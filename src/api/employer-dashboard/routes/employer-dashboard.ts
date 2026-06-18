@@ -18,6 +18,24 @@ export default {
     },
     {
       method: 'POST',
+      path: '/internal/employer-dashboard/invites/validate',
+      handler: 'employer-dashboard.validateInvite',
+      config: {
+        auth: false,
+        policies: [employerDashboardServicePolicy],
+      },
+    },
+    {
+      method: 'POST',
+      path: '/internal/employer-dashboard/invites/accept',
+      handler: 'employer-dashboard.acceptInvite',
+      config: {
+        auth: false,
+        policies: [employerDashboardServicePolicy],
+      },
+    },
+    {
+      method: 'POST',
       path: '/internal/employer-dashboard/interview-slot-offers/create',
       handler: 'employer-dashboard.createInterviewSlotOffer',
       config: {

@@ -1,0 +1,83 @@
+{
+  "kind": "collectionType",
+  "collectionName": "employer_invites",
+  "info": {
+    "singularName": "employer-invite",
+    "pluralName": "employer-invites",
+    "displayName": "Employer Invite",
+    "description": "Invite/session-key record for gated employer dashboard onboarding."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "employer": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::employer.employer"
+    },
+    "employerContact": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::employer-contact.employer-contact"
+    },
+    "inviteEmail": {
+      "type": "email",
+      "maxLength": 254,
+      "required": true
+    },
+    "tokenHash": {
+      "type": "string",
+      "maxLength": 128,
+      "required": true,
+      "unique": true
+    },
+    "inviteState": {
+      "type": "enumeration",
+      "enum": [
+        "pending",
+        "accepted",
+        "revoked",
+        "expired"
+      ],
+      "default": "pending",
+      "required": true
+    },
+    "expiresAt": {
+      "type": "datetime",
+      "required": true
+    },
+    "lastSentAt": {
+      "type": "datetime"
+    },
+    "acceptedAt": {
+      "type": "datetime"
+    },
+    "acceptedByAuthIdentityId": {
+      "type": "string",
+      "maxLength": 160
+    },
+    "acceptedByEmail": {
+      "type": "email",
+      "maxLength": 254
+    },
+    "revokedAt": {
+      "type": "datetime"
+    },
+    "createdByStaffUserId": {
+      "type": "string",
+      "maxLength": 160
+    },
+    "createdByStaffEmail": {
+      "type": "email",
+      "maxLength": 254
+    },
+    "createdByStaffDisplayName": {
+      "type": "string",
+      "maxLength": 240
+    },
+    "metadata": {
+      "type": "json"
+    }
+  }
+}
