@@ -2592,6 +2592,89 @@ export interface ApiInterviewFeedbackInterviewFeedback
   };
 }
 
+export interface ApiInterviewSlotOfferInterviewSlotOffer
+  extends Struct.CollectionTypeSchema {
+  collectionName: 'interview_slot_offers';
+  info: {
+    description: 'A grouped 3-option employer interview slot offer for candidate selection.';
+    displayName: 'Interview Slot Offer';
+    pluralName: 'interview-slot-offers';
+    singularName: 'interview-slot-offer';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    candidate: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::candidate.candidate'
+    >;
+    candidateNotifiedAt: Schema.Attribute.DateTime;
+    candidateRespondedAt: Schema.Attribute.DateTime;
+    candidateResponseDeadline: Schema.Attribute.DateTime;
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    declineNote: Schema.Attribute.Text;
+    declineReason: Schema.Attribute.Enumeration<
+      [
+        'health_or_family_emergency',
+        'another_interview',
+        'travel_disruption',
+        'other',
+      ]
+    >;
+    employer: Schema.Attribute.Relation<'manyToOne', 'api::employer.employer'>;
+    employerContact: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::employer-contact.employer-contact'
+    >;
+    enrollment: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::enrollment.enrollment'
+    >;
+    internalNote: Schema.Attribute.Text;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::interview-slot-offer.interview-slot-offer'
+    > &
+      Schema.Attribute.Private;
+    metadata: Schema.Attribute.JSON;
+    offerState: Schema.Attribute.Enumeration<
+      [
+        'draft',
+        'submitted',
+        'sent',
+        'candidate_selected',
+        'candidate_declined',
+        'expired',
+        'cancelled',
+        'completed',
+        'replacement_required',
+      ]
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'submitted'>;
+    publishedAt: Schema.Attribute.DateTime;
+    selectedInterview: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::interview.interview'
+    >;
+    selectedSlot: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::interview-slot.interview-slot'
+    >;
+    slots: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::interview-slot.interview-slot'
+    >;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+  };
+}
+
 export interface ApiInterviewSlotInterviewSlot
   extends Struct.CollectionTypeSchema {
   collectionName: 'interview_slots';
@@ -2632,6 +2715,10 @@ export interface ApiInterviewSlotInterviewSlot
     meetingUrl: Schema.Attribute.String;
     metadata: Schema.Attribute.JSON;
     publishedAt: Schema.Attribute.DateTime;
+    slotOffer: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::interview-slot-offer.interview-slot-offer'
+    >;
     slotState: Schema.Attribute.Enumeration<
       [
         'draft',
@@ -4592,6 +4679,7 @@ declare module '@strapi/strapi' {
       'api::employer.employer': ApiEmployerEmployer;
       'api::enrollment.enrollment': ApiEnrollmentEnrollment;
       'api::interview-feedback.interview-feedback': ApiInterviewFeedbackInterviewFeedback;
+      'api::interview-slot-offer.interview-slot-offer': ApiInterviewSlotOfferInterviewSlotOffer;
       'api::interview-slot.interview-slot': ApiInterviewSlotInterviewSlot;
       'api::interview.interview': ApiInterviewInterview;
       'api::notification-event.notification-event': ApiNotificationEventNotificationEvent;

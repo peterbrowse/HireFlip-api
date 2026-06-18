@@ -1,0 +1,94 @@
+{
+  "kind": "collectionType",
+  "collectionName": "interview_slot_offers",
+  "info": {
+    "singularName": "interview-slot-offer",
+    "pluralName": "interview-slot-offers",
+    "displayName": "Interview Slot Offer",
+    "description": "A grouped 3-option employer interview slot offer for candidate selection."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "candidate": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::candidate.candidate"
+    },
+    "enrollment": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::enrollment.enrollment"
+    },
+    "employer": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::employer.employer"
+    },
+    "employerContact": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::employer-contact.employer-contact"
+    },
+    "slots": {
+      "type": "relation",
+      "relation": "oneToMany",
+      "target": "api::interview-slot.interview-slot",
+      "mappedBy": "slotOffer"
+    },
+    "selectedSlot": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::interview-slot.interview-slot"
+    },
+    "selectedInterview": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::interview.interview"
+    },
+    "offerState": {
+      "type": "enumeration",
+      "enum": [
+        "draft",
+        "submitted",
+        "sent",
+        "candidate_selected",
+        "candidate_declined",
+        "expired",
+        "cancelled",
+        "completed",
+        "replacement_required"
+      ],
+      "default": "submitted",
+      "required": true
+    },
+    "candidateNotifiedAt": {
+      "type": "datetime"
+    },
+    "candidateResponseDeadline": {
+      "type": "datetime"
+    },
+    "candidateRespondedAt": {
+      "type": "datetime"
+    },
+    "declineReason": {
+      "type": "enumeration",
+      "enum": [
+        "health_or_family_emergency",
+        "another_interview",
+        "travel_disruption",
+        "other"
+      ]
+    },
+    "declineNote": {
+      "type": "text"
+    },
+    "internalNote": {
+      "type": "text"
+    },
+    "metadata": {
+      "type": "json"
+    }
+  }
+}

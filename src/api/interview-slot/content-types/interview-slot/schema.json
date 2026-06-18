@@ -66,6 +66,12 @@
       "default": 1,
       "required": true
     },
+    "slotOffer": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::interview-slot-offer.interview-slot-offer",
+      "inversedBy": "slots"
+    },
     "metadata": {
       "type": "json"
     }

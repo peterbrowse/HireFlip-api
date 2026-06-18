@@ -8,7 +8,7 @@ const adminDashboardServicePolicy = {
 const staffAuthServicePolicy = {
   name: 'global::service-token',
   config: {
-    allowedServices: ['admin-dashboard', 'candidate-dashboard'],
+    allowedServices: ['admin-dashboard', 'candidate-dashboard', 'employer-dashboard'],
   },
 };
 
