@@ -24,6 +24,8 @@ type DocumentRecord = Record<string, unknown> & {
   contactState?: string;
   completedAt?: string;
   createdAt?: string;
+  createdByStaffDisplayName?: string;
+  createdByStaffEmail?: string;
   documentId?: string;
   email?: string;
   employer?: DocumentRecord;
@@ -167,6 +169,16 @@ const contactDisplayName = (contact: DocumentRecord) =>
   compact([contact.firstName, contact.lastName]).join(' ') ||
   contact.email ||
   'Employer contact';
+
+const firstNameFrom = (value?: string | null) => {
+  const name = String(value || '').trim();
+
+  if (!name) {
+    return null;
+  }
+
+  return name.split(/\s+/)[0] || null;
+};
 
 const candidateDisplayName = (candidate?: DocumentRecord | null) =>
   compact([candidate?.firstName, candidate?.lastName]).join(' ') ||
@@ -312,6 +324,7 @@ const publicInvitePayload = (invite: DocumentRecord) => ({
   companyName: invite.employer?.companyName || 'Employer',
   contactEmail: invite.inviteEmail || invite.employerContact?.email || null,
   contactName: contactDisplayName(invite.employerContact || {}),
+  createdByFirstName: firstNameFrom(invite.createdByStaffDisplayName) || 'HireFlip',
   employerState: invite.employer?.employerState || null,
   expiresAt: invite.expiresAt || null,
   inviteState: invite.inviteState || 'pending',
