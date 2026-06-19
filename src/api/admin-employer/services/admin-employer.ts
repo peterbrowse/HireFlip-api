@@ -1081,6 +1081,73 @@ export default ({ strapi }) => ({
     };
   },
 
+  async generateInviteLink(input: unknown, requestContext: RequestContext = {}) {
+    const body = validateInviteAction(input);
+    const session = await assertEmployerManageSession(strapi, body.sessionToken, requestContext);
+    const invite = await expireIfNeeded(
+      strapi,
+      await findInviteByDocumentId(strapi, body.employerInviteDocumentId)
+    );
+
+    if (!invite) {
+      throw new ValidationError('Employer invite could not be found.');
+    }
+
+    const inviteDocumentId = getDocumentId(invite);
+
+    if (!inviteDocumentId) {
+      throw new ValidationError('Employer invite could not be updated.');
+    }
+
+    if (!['pending', 'expired'].includes(String(invite.inviteState))) {
+      throw new ValidationError('Only pending or expired employer invites can have a new link generated.');
+    }
+
+    const rawToken = generateInviteToken();
+    const authProvision = await createEmployerPasswordTicket(invite.employerContact || {}, rawToken);
+    const authProvisionedAt = new Date().toISOString();
+    const employerContactDocumentId = getDocumentId(invite.employerContact);
+
+    if (employerContactDocumentId) {
+      await documents(strapi, 'api::employer-contact.employer-contact').update({
+        documentId: employerContactDocumentId,
+        data: {
+          authIdentityId: authProvision.userId,
+          authProvider: 'auth0',
+        },
+      });
+    }
+
+    const updatedInvite = await documents(strapi, 'api::employer-invite.employer-invite').update({
+      documentId: inviteDocumentId,
+      data: {
+        authIdentityId: authProvision.userId,
+        authPasswordTicketCreatedAt: authProvisionedAt,
+        authPasswordTicketExpiresAt: authProvision.expiresAt,
+        authPasswordTicketUrl: authProvision.ticketUrl,
+        authProvisionedAt,
+        expiresAt: addDays(14),
+        inviteState: 'pending',
+        metadata: {
+          ...(invite.metadata && typeof invite.metadata === 'object' ? invite.metadata : {}),
+          authUserCreated: authProvision.authUserCreated,
+          linkGeneratedByStaffDisplayName: session.user.displayName,
+          linkGeneratedByStaffEmail: session.user.email,
+          linkGeneratedByStaffUserId: session.user.id,
+          linkGeneratedRequestId: requestContext.requestId,
+        },
+        tokenHash: tokenHash(rawToken),
+      },
+      populate: ['employer', 'employerContact'],
+    });
+
+    return {
+      generated: true,
+      invite: publicInvite(updatedInvite, rawToken),
+      user: session.user,
+    };
+  },
+
   async revokeInvite(input: unknown, requestContext: RequestContext = {}) {
     const body = validateInviteAction(input);
     const session = await assertEmployerManageSession(strapi, body.sessionToken, requestContext);

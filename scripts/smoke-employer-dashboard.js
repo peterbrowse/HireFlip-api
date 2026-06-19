@@ -394,6 +394,33 @@ const main = async () => {
       'Expected setup ticket URL.'
     );
 
+    const generatedAdminInviteLink = await adminEmployerService.generateInviteLink({
+      employerInviteDocumentId: createdAdminInvite.invite.documentId,
+      sessionToken: 's'.repeat(32),
+    });
+
+    assert(generatedAdminInviteLink.generated === true, 'Expected employer invite link generation.');
+    assert(
+      generatedAdminInviteLink.invite.inviteUrl?.includes('/invite/'),
+      'Expected generated employer invite URL.'
+    );
+    assert(
+      smokeFetch.notifications.length === 1,
+      'Expected employer invite link generation not to queue another notification.'
+    );
+
+    const generatedAdminInviteToken = decodeURIComponent(
+      generatedAdminInviteLink.invite.inviteUrl.split('/invite/')[1] || ''
+    );
+    const generatedSetupTicket = await employerDashboardService.createInviteSetupTicket({
+      inviteToken: generatedAdminInviteToken,
+    });
+
+    assert(
+      generatedSetupTicket.setupUrl.startsWith(`https://${process.env.AUTH0_MANAGEMENT_DOMAIN}/`),
+      'Expected generated invite setup ticket URL.'
+    );
+
     const resentAdminInvite = await adminEmployerService.resendInvite({
       employerInviteDocumentId: createdAdminInvite.invite.documentId,
       sessionToken: 's'.repeat(32),

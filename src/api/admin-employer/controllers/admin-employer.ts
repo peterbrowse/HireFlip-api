@@ -7,6 +7,7 @@ type RequestContext = {
 
 type AdminEmployerService = {
   createInvite(input: unknown, context: RequestContext): Promise<unknown>;
+  generateInviteLink(input: unknown, context: RequestContext): Promise<unknown>;
   getEmployerDetail(input: unknown, context: RequestContext): Promise<unknown>;
   getInviteOptions(input: unknown, context: RequestContext): Promise<unknown>;
   listEmployers(input: unknown, context: RequestContext): Promise<unknown>;
@@ -80,6 +81,15 @@ export default ({ strapi }) => ({
   async resendInvite(ctx) {
     ctx.body = {
       data: await adminEmployerService(strapi).resendInvite(
+        ctx.request.body,
+        getRequestContext(ctx)
+      ),
+    };
+  },
+
+  async generateInviteLink(ctx) {
+    ctx.body = {
+      data: await adminEmployerService(strapi).generateInviteLink(
         ctx.request.body,
         getRequestContext(ctx)
       ),

@@ -63,6 +63,15 @@ export default {
     },
     {
       method: 'POST',
+      path: '/internal/admin/employers/invites/link',
+      handler: 'admin-employer.generateInviteLink',
+      config: {
+        auth: false,
+        policies: [adminDashboardServicePolicy],
+      },
+    },
+    {
+      method: 'POST',
       path: '/internal/admin/employers/invites/revoke',
       handler: 'admin-employer.revokeInvite',
       config: {
