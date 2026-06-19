@@ -440,6 +440,29 @@ const main = async () => {
       'Expected revoked invite to block Auth0 user.'
     );
 
+    const invitesAfterRevoke = await adminEmployerService.listInvites({
+      sessionToken: 's'.repeat(32),
+    });
+
+    assert(
+      !invitesAfterRevoke.invites.some((invite) => invite.documentId === createdAdminInvite.invite.documentId),
+      'Expected revoked employer invite to be hidden from the global invite list.'
+    );
+
+    const employerDetailAfterRevoke = await adminEmployerService.getEmployerDetail({
+      employerDocumentId: created.adminEmployer.documentId,
+      sessionToken: 's'.repeat(32),
+    });
+
+    assert(
+      employerDetailAfterRevoke.invites.some(
+        (invite) =>
+          invite.documentId === createdAdminInvite.invite.documentId &&
+          invite.inviteState === 'revoked'
+      ),
+      'Expected revoked employer invite to remain in employer invite history.'
+    );
+
     const inviteToken = randomBytes(32).toString('base64url');
     const invitedEmployer = await documents(strapi, 'api::employer.employer').create({
       data: {

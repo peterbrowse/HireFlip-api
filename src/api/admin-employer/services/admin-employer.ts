@@ -841,7 +841,9 @@ export default ({ strapi }) => ({
     const normalizedInvites = await Promise.all(
       invites.map((invite) => expireIfNeeded(strapi, invite))
     );
-    const publicInvites = compact(normalizedInvites).map((invite) => publicInvite(invite));
+    const publicInvites = compact(normalizedInvites)
+      .filter((invite) => invite.inviteState !== 'revoked')
+      .map((invite) => publicInvite(invite));
 
     return {
       invites: publicInvites,
