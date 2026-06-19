@@ -99,6 +99,29 @@ const sessionTokenSchema = z
   .strict();
 
 const cadenceSchema = z.enum(['not_set', 'quarterly', 'biannually', 'annually']);
+const employerCommitmentFilterSchema = z.enum(['all', 'committed', 'not_set']);
+const employerSortDirectionSchema = z.enum(['asc', 'desc']);
+const employerSortKeySchema = z.enum([
+  'commitment',
+  'companyName',
+  'employerState',
+  'inviteCount',
+  'leadContact',
+  'region',
+  'updatedAt',
+]);
+const employerStateSchema = z.enum(['active', 'archived', 'invited', 'paused', 'prospect']);
+
+const listEmployersSchema = sessionTokenSchema
+  .extend({
+    commitment: employerCommitmentFilterSchema.default('all'),
+    region: z.string().trim().max(120).optional().transform((value) => value || undefined),
+    search: z.string().trim().max(120).optional().transform((value) => value || undefined),
+    sortBy: employerSortKeySchema.default('companyName'),
+    sortDirection: employerSortDirectionSchema.default('asc'),
+    state: employerStateSchema.or(z.literal('all')).default('all'),
+  })
+  .strict();
 
 const createInviteSchema = sessionTokenSchema
   .extend({
@@ -127,6 +150,7 @@ const employerDetailSchema = sessionTokenSchema
   .strict();
 
 const validateSessionToken = validateZodSchema(sessionTokenSchema);
+const validateListEmployers = validateZodSchema(listEmployersSchema);
 const validateCreateInvite = validateZodSchema(createInviteSchema);
 const validateEmployerDetail = validateZodSchema(employerDetailSchema);
 const validateInviteAction = validateZodSchema(inviteActionSchema);
@@ -251,6 +275,97 @@ const publicEmployer = (employer: DocumentRecord, invites: DocumentRecord[] = []
     region: employer.region || null,
     updatedAt: employer.updatedAt || null,
   };
+};
+
+type PublicEmployerSummary = ReturnType<typeof publicEmployer>;
+
+const employerMatchesSearch = (employer: PublicEmployerSummary, search?: string) => {
+  if (!search) {
+    return true;
+  }
+
+  const value = search.toLowerCase();
+
+  return [
+    employer.assignmentModeLabel,
+    employer.commitmentLabel,
+    employer.companyName,
+    employer.employerStateLabel,
+    employer.leadContact?.email,
+    employer.leadContact?.name,
+    employer.leadContact?.phone,
+    employer.leadContact?.roleTitle,
+    employer.region,
+  ].some((item) => String(item || '').toLowerCase().includes(value));
+};
+
+const employerMatchesCommitment = (
+  employer: PublicEmployerSummary,
+  commitment: z.infer<typeof employerCommitmentFilterSchema>
+) => {
+  if (commitment === 'committed') {
+    return Boolean(employer.commitmentLabel);
+  }
+
+  if (commitment === 'not_set') {
+    return !employer.commitmentLabel;
+  }
+
+  return true;
+};
+
+const employerSortValue = (
+  employer: PublicEmployerSummary,
+  sortBy: z.infer<typeof employerSortKeySchema>
+) => {
+  if (sortBy === 'inviteCount') {
+    return employer.inviteCount;
+  }
+
+  if (sortBy === 'updatedAt') {
+    return employer.updatedAt ? Date.parse(employer.updatedAt) : 0;
+  }
+
+  if (sortBy === 'leadContact') {
+    return String(employer.leadContact?.name || employer.leadContact?.email || '').toLowerCase();
+  }
+
+  if (sortBy === 'employerState') {
+    return String(employer.employerStateLabel || employer.employerState).toLowerCase();
+  }
+
+  if (sortBy === 'commitment') {
+    return String(employer.commitmentLabel || '').toLowerCase();
+  }
+
+  return String(employer[sortBy] || '').toLowerCase();
+};
+
+const compareEmployers = (
+  sortBy: z.infer<typeof employerSortKeySchema>,
+  sortDirection: z.infer<typeof employerSortDirectionSchema>
+) => (left: PublicEmployerSummary, right: PublicEmployerSummary) => {
+  const leftValue = employerSortValue(left, sortBy);
+  const rightValue = employerSortValue(right, sortBy);
+  let result = 0;
+
+  if (typeof leftValue === 'number' && typeof rightValue === 'number') {
+    result = leftValue - rightValue;
+  } else {
+    result = String(leftValue).localeCompare(String(rightValue), 'en-GB', {
+      numeric: true,
+      sensitivity: 'base',
+    });
+  }
+
+  if (result === 0 && sortBy !== 'companyName') {
+    result = String(left.companyName).localeCompare(String(right.companyName), 'en-GB', {
+      numeric: true,
+      sensitivity: 'base',
+    });
+  }
+
+  return sortDirection === 'asc' ? result : -result;
 };
 
 const publicClassAreaOption = (classArea: DocumentRecord) => ({
@@ -618,11 +733,11 @@ const revokePendingInvitesForContact = async (
 
 export default ({ strapi }) => ({
   async listEmployers(input: unknown, requestContext: RequestContext = {}) {
-    const body = validateSessionToken(input);
+    const body = validateListEmployers(input);
     const session = await assertEmployerManageSession(strapi, body.sessionToken, requestContext);
     const [employers, invites] = await Promise.all([
       documents(strapi, 'api::employer.employer').findMany({
-        limit: 500,
+        limit: 1000,
         populate: ['contacts'],
         sort: ['companyName:asc'],
       }),
@@ -646,11 +761,19 @@ export default ({ strapi }) => ({
         invite,
       ]);
     }
+    const employerSummaries = employers.map((employer) =>
+      publicEmployer(employer, invitesByEmployer.get(getDocumentId(employer) || '') || [])
+    );
+    const filteredEmployers = employerSummaries
+      .filter((employer) => body.state === 'all' || employer.employerState === body.state)
+      .filter((employer) => !body.region || employer.region === body.region)
+      .filter((employer) => employerMatchesCommitment(employer, body.commitment))
+      .filter((employer) => employerMatchesSearch(employer, body.search))
+      .sort(compareEmployers(body.sortBy, body.sortDirection));
 
     return {
-      employers: employers.map((employer) =>
-        publicEmployer(employer, invitesByEmployer.get(getDocumentId(employer) || '') || [])
-      ),
+      employers: filteredEmployers,
+      filteredEmployers: filteredEmployers.length,
       generatedAt: new Date().toISOString(),
       totalEmployers: employers.length,
       user: session.user,
