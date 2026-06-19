@@ -208,6 +208,10 @@ const createSmokeFetch = ({ authDomain, connectionId, connectionName, notificati
     if (url.pathname === '/api/v2/tickets/password-change' && init.method === 'POST') {
       const body = JSON.parse(String(init.body || '{}'));
 
+      if (body.client_id && body.result_url) {
+        return jsonResponse({ message: 'result_url cannot be used together with client_id' }, 400);
+      }
+
       return jsonResponse({
         ticket: `https://${authDomain}/lo/reset?ticket=smoke-${encodeURIComponent(body.user_id || 'user')}`,
       });
@@ -241,7 +245,6 @@ const main = async () => {
   process.env.AUTH0_MANAGEMENT_CLIENT_SECRET = 'smoke-management-secret';
   process.env.AUTH0_EMPLOYER_CONNECTION_NAME = 'hireflip-employers-smoke';
   process.env.AUTH0_EMPLOYER_CONNECTION_ID = `con_smoke_${runId.replace(/[^a-zA-Z0-9]/g, '')}`;
-  process.env.AUTH0_EMPLOYER_APP_CLIENT_ID = 'smoke-employer-app';
   process.env.AUTH0_EMPLOYER_PASSWORD_TICKET_TTL_SECONDS = '172800';
   process.env.EMPLOYER_DASHBOARD_BASE_URL = 'http://localhost:3004';
   process.env.NOTIFICATION_SERVICE_URL = `https://notification-smoke-${runId}.example.test`;

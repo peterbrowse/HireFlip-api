@@ -27,7 +27,6 @@ type Auth0PasswordTicket = {
 };
 
 type Auth0ClientConfig = {
-  appClientId: string;
   audience: string;
   clientId: string;
   clientSecret: string;
@@ -69,7 +68,6 @@ const getConfig = (): Auth0ClientConfig => {
   const domain = normalizeDomain(requireEnv('AUTH0_MANAGEMENT_DOMAIN'));
 
   return {
-    appClientId: requireEnv('AUTH0_EMPLOYER_APP_CLIENT_ID'),
     audience: `https://${domain}/api/v2/`,
     clientId: requireEnv('AUTH0_MANAGEMENT_CLIENT_ID'),
     clientSecret: requireEnv('AUTH0_MANAGEMENT_CLIENT_SECRET'),
@@ -184,7 +182,6 @@ export const getAuth0ManagementClient = () => {
         '/tickets/password-change',
         {
           body: JSON.stringify({
-            client_id: config.appClientId,
             includeEmailInRedirect: false,
             mark_email_as_verified: true,
             result_url: inviteUrl,
