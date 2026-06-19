@@ -177,7 +177,7 @@ const trimToLength = (value: string, maxLength: number) =>
   value.length > maxLength ? `${value.slice(0, maxLength - 1)}…` : value;
 
 const taskRouteSegment = (taskKey: string) => encodeURIComponent(taskKey);
-const assessmentAppealTaskPath = (taskKey: string) => `/assessment-appeals/${taskRouteSegment(taskKey)}`;
+const assessmentAppealTaskPath = (taskKey: string) => `/classes/appeals/${taskRouteSegment(taskKey)}`;
 const taskDetailPath = (taskKey: string) => `/tasks/${taskRouteSegment(taskKey)}`;
 const refundTaskPath = (taskKey: string) => `/refunds/${taskRouteSegment(taskKey)}`;
 
