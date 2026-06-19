@@ -2327,6 +2327,99 @@ export interface ApiEmployerContactEmployerContact
   };
 }
 
+export interface ApiEmployerInviteEmployerInvite
+  extends Struct.CollectionTypeSchema {
+  collectionName: 'employer_invites';
+  info: {
+    description: 'Invite/session-key record for gated employer dashboard onboarding.';
+    displayName: 'Employer Invite';
+    pluralName: 'employer-invites';
+    singularName: 'employer-invite';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    acceptedAt: Schema.Attribute.DateTime;
+    acceptedByAuthIdentityId: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 160;
+      }>;
+    acceptedByEmail: Schema.Attribute.Email &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 254;
+      }>;
+    authIdentityId: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 160;
+      }>;
+    authPasswordTicketCreatedAt: Schema.Attribute.DateTime;
+    authPasswordTicketExpiresAt: Schema.Attribute.DateTime;
+    authPasswordTicketUrl: Schema.Attribute.Text & Schema.Attribute.Private;
+    authProvisionedAt: Schema.Attribute.DateTime;
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    createdByStaffDisplayName: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 240;
+      }>;
+    createdByStaffEmail: Schema.Attribute.Email &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 254;
+      }>;
+    createdByStaffUserId: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 160;
+      }>;
+    deliveryFailureMessage: Schema.Attribute.Text;
+    deliveryState: Schema.Attribute.Enumeration<
+      ['not_required', 'queued', 'failed']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'not_required'>;
+    employer: Schema.Attribute.Relation<'manyToOne', 'api::employer.employer'>;
+    employerContact: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::employer-contact.employer-contact'
+    >;
+    expiresAt: Schema.Attribute.DateTime & Schema.Attribute.Required;
+    inviteEmail: Schema.Attribute.Email &
+      Schema.Attribute.Required &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 254;
+      }>;
+    inviteState: Schema.Attribute.Enumeration<
+      ['pending', 'accepted', 'revoked', 'expired']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'pending'>;
+    lastSentAt: Schema.Attribute.DateTime;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::employer-invite.employer-invite'
+    > &
+      Schema.Attribute.Private;
+    metadata: Schema.Attribute.JSON;
+    notificationServiceJobId: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 160;
+      }>;
+    publishedAt: Schema.Attribute.DateTime;
+    revokedAt: Schema.Attribute.DateTime;
+    tokenHash: Schema.Attribute.String &
+      Schema.Attribute.Required &
+      Schema.Attribute.Unique &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 128;
+      }>;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+  };
+}
+
 export interface ApiEmployerEmployer extends Struct.CollectionTypeSchema {
   collectionName: 'employers';
   info: {
@@ -4676,6 +4769,7 @@ declare module '@strapi/strapi' {
       'api::course.course': ApiCourseCourse;
       'api::employer-capacity-change-request.employer-capacity-change-request': ApiEmployerCapacityChangeRequestEmployerCapacityChangeRequest;
       'api::employer-contact.employer-contact': ApiEmployerContactEmployerContact;
+      'api::employer-invite.employer-invite': ApiEmployerInviteEmployerInvite;
       'api::employer.employer': ApiEmployerEmployer;
       'api::enrollment.enrollment': ApiEnrollmentEnrollment;
       'api::interview-feedback.interview-feedback': ApiInterviewFeedbackInterviewFeedback;

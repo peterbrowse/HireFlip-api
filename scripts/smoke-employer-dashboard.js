@@ -260,6 +260,7 @@ const main = async () => {
   const appContext = await compileStrapi();
   const strapi = await createStrapi(appContext).load();
   const created = {
+    adminClassArea: null,
     adminEmployer: null,
     adminEmployerContact: null,
     adminEmployerInvite: null,
@@ -301,6 +302,26 @@ const main = async () => {
     const adminEmployerService = strapi.service('api::admin-employer.admin-employer');
     const employerDashboardService = strapi.service('api::employer-dashboard.employer-dashboard');
     const adminInviteEmail = `admin-created-employer-smoke-${runId}@example.test`;
+    const adminClassArea = await documents(strapi, 'api::class-area.class-area').create({
+      data: {
+        name: `Employer Invite Smoke Area ${runId}`,
+        slug: `employer-invite-smoke-area-${runId}`.replace(/[^a-zA-Z0-9-]/g, '-'),
+        sortOrder: 1,
+        state: 'active',
+      },
+    });
+
+    created.adminClassArea = adminClassArea;
+
+    const inviteOptions = await adminEmployerService.getInviteOptions({
+      sessionToken: 's'.repeat(32),
+    });
+
+    assert(
+      inviteOptions.regions.some((region) => region.name === adminClassArea.name),
+      'Expected invite options to include active class area regions.'
+    );
+
     const createdAdminInvite = await adminEmployerService.createInvite({
       companyName: `Admin Created Employer Smoke ${runId}`,
       contactEmail: adminInviteEmail,
@@ -309,7 +330,7 @@ const main = async () => {
       interviewCommitmentCadence: 'quarterly',
       interviewCommitmentVolume: 4,
       lastName: 'Invite',
-      region: 'Leeds',
+      region: adminClassArea.name,
       roleTitle: 'People lead',
       sessionToken: 's'.repeat(32),
     });
@@ -340,6 +361,23 @@ const main = async () => {
 
     assert(created.adminEmployerInvite?.authIdentityId, 'Expected invite to store Auth0 identity.');
     assert(created.adminEmployerInvite?.authPasswordTicketUrl, 'Expected invite to store setup ticket.');
+
+    const employersList = await adminEmployerService.listEmployers({
+      sessionToken: 's'.repeat(32),
+    });
+
+    assert(
+      employersList.employers.some((employer) => employer.documentId === created.adminEmployer?.documentId),
+      'Expected employer list to include created employer.'
+    );
+
+    const employerDetail = await adminEmployerService.getEmployerDetail({
+      employerDocumentId: created.adminEmployer.documentId,
+      sessionToken: 's'.repeat(32),
+    });
+
+    assert(employerDetail.employer.companyName === created.adminEmployer.companyName, 'Expected employer detail.');
+    assert(employerDetail.totalInvites >= 1, 'Expected employer detail invite history.');
 
     const adminInviteToken = decodeURIComponent(
       createdAdminInvite.invite.inviteUrl.split('/invite/')[1] || ''
@@ -699,6 +737,7 @@ const main = async () => {
     await deleteDocument(strapi, 'api::employer-invite.employer-invite', created.adminEmployerInvite?.documentId);
     await deleteDocument(strapi, 'api::employer-contact.employer-contact', created.adminEmployerContact?.documentId);
     await deleteDocument(strapi, 'api::employer.employer', created.adminEmployer?.documentId);
+    await deleteDocument(strapi, 'api::class-area.class-area', created.adminClassArea?.documentId);
     await strapi.destroy();
     global.fetch = globalThis.__hireflipOriginalFetch;
   }

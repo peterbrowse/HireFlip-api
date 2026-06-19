@@ -9,6 +9,33 @@ export default {
   routes: [
     {
       method: 'POST',
+      path: '/internal/admin/employers',
+      handler: 'admin-employer.listEmployers',
+      config: {
+        auth: false,
+        policies: [adminDashboardServicePolicy],
+      },
+    },
+    {
+      method: 'POST',
+      path: '/internal/admin/employers/detail',
+      handler: 'admin-employer.employerDetail',
+      config: {
+        auth: false,
+        policies: [adminDashboardServicePolicy],
+      },
+    },
+    {
+      method: 'POST',
+      path: '/internal/admin/employers/invites/options',
+      handler: 'admin-employer.inviteOptions',
+      config: {
+        auth: false,
+        policies: [adminDashboardServicePolicy],
+      },
+    },
+    {
+      method: 'POST',
       path: '/internal/admin/employers/invites',
       handler: 'admin-employer.listInvites',
       config: {

@@ -7,6 +7,9 @@ type RequestContext = {
 
 type AdminEmployerService = {
   createInvite(input: unknown, context: RequestContext): Promise<unknown>;
+  getEmployerDetail(input: unknown, context: RequestContext): Promise<unknown>;
+  getInviteOptions(input: unknown, context: RequestContext): Promise<unknown>;
+  listEmployers(input: unknown, context: RequestContext): Promise<unknown>;
   listInvites(input: unknown, context: RequestContext): Promise<unknown>;
   resendInvite(input: unknown, context: RequestContext): Promise<unknown>;
   revokeInvite(input: unknown, context: RequestContext): Promise<unknown>;
@@ -29,6 +32,33 @@ const getRequestContext = (ctx): RequestContext => ({
 });
 
 export default ({ strapi }) => ({
+  async listEmployers(ctx) {
+    ctx.body = {
+      data: await adminEmployerService(strapi).listEmployers(
+        ctx.request.body,
+        getRequestContext(ctx)
+      ),
+    };
+  },
+
+  async employerDetail(ctx) {
+    ctx.body = {
+      data: await adminEmployerService(strapi).getEmployerDetail(
+        ctx.request.body,
+        getRequestContext(ctx)
+      ),
+    };
+  },
+
+  async inviteOptions(ctx) {
+    ctx.body = {
+      data: await adminEmployerService(strapi).getInviteOptions(
+        ctx.request.body,
+        getRequestContext(ctx)
+      ),
+    };
+  },
+
   async listInvites(ctx) {
     ctx.body = {
       data: await adminEmployerService(strapi).listInvites(

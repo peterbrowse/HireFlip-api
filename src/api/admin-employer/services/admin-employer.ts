@@ -35,7 +35,10 @@ type DocumentRecord = Record<string, unknown> & {
   authPasswordTicketExpiresAt?: string;
   authPasswordTicketUrl?: string;
   authProvisionedAt?: string;
+  assignmentMode?: string;
+  capacityChangeRequestStatus?: string;
   companyName?: string;
+  contacts?: DocumentRecord[];
   contactState?: string;
   createdAt?: string;
   createdByStaffDisplayName?: string;
@@ -61,8 +64,12 @@ type DocumentRecord = Record<string, unknown> & {
   lastSentAt?: string;
   metadata?: unknown;
   notificationServiceJobId?: string;
+  phone?: string;
   region?: string;
   roleTitle?: string;
+  slug?: string;
+  sortOrder?: number;
+  state?: string;
   updatedAt?: string;
 };
 
@@ -113,8 +120,15 @@ const inviteActionSchema = sessionTokenSchema
   })
   .strict();
 
+const employerDetailSchema = sessionTokenSchema
+  .extend({
+    employerDocumentId: z.string().trim().min(1).max(80),
+  })
+  .strict();
+
 const validateSessionToken = validateZodSchema(sessionTokenSchema);
 const validateCreateInvite = validateZodSchema(createInviteSchema);
+const validateEmployerDetail = validateZodSchema(employerDetailSchema);
 const validateInviteAction = validateZodSchema(inviteActionSchema);
 
 const documents = (strapi: StrapiDocumentService, uid: string) =>
@@ -182,6 +196,96 @@ const contactName = (contact?: DocumentRecord | null) =>
   compact([contact?.firstName, contact?.lastName]).join(' ') ||
   contact?.email ||
   'Employer contact';
+
+const employerCommitmentLabel = (employer?: DocumentRecord | null) => {
+  const volume = employer?.interviewCommitmentVolume;
+  const cadence = employer?.interviewCommitmentCadence;
+
+  if (typeof volume !== 'number' || volume <= 0) {
+    return null;
+  }
+
+  return `${volume} interview${volume === 1 ? '' : 's'} per ${humanize(String(cadence || 'cadence')).toLowerCase()}`;
+};
+
+const publicEmployerContact = (contact: DocumentRecord) => ({
+  accountCreatedAt: contact.accountCreatedAt || null,
+  contactState: contact.contactState || 'invited',
+  contactStateLabel: humanize(String(contact.contactState || 'invited')),
+  documentId: getDocumentId(contact) || String(contact.id || ''),
+  email: contact.email || null,
+  firstName: contact.firstName || null,
+  invitedAt: contact.invitedAt || null,
+  lastName: contact.lastName || null,
+  name: contactName(contact),
+  phone: contact.phone || null,
+  roleTitle: contact.roleTitle || null,
+});
+
+const primaryContact = (employer: DocumentRecord) => {
+  const contacts = Array.isArray(employer.contacts) ? employer.contacts : [];
+
+  return contacts.find((contact) => contact.contactState === 'active') || contacts[0] || null;
+};
+
+const publicEmployer = (employer: DocumentRecord, invites: DocumentRecord[] = []) => {
+  const contacts = Array.isArray(employer.contacts) ? employer.contacts : [];
+  const leadContact = primaryContact(employer);
+  const pendingInvites = invites.filter((invite) => invite.inviteState === 'pending').length;
+
+  return {
+    activeContactsCount: contacts.filter((contact) => contact.contactState === 'active').length,
+    assignmentMode: employer.assignmentMode || 'automatic',
+    assignmentModeLabel: humanize(String(employer.assignmentMode || 'automatic')),
+    capacityChangeRequestStatus: employer.capacityChangeRequestStatus || 'none',
+    commitmentLabel: employerCommitmentLabel(employer),
+    companyName: employer.companyName || 'Employer',
+    contactsCount: contacts.length,
+    createdAt: employer.createdAt || null,
+    documentId: getDocumentId(employer) || String(employer.id || ''),
+    employerState: employer.employerState || 'prospect',
+    employerStateLabel: humanize(String(employer.employerState || 'prospect')),
+    inviteCount: invites.length,
+    leadContact: leadContact ? publicEmployerContact(leadContact) : null,
+    pendingInvitesCount: pendingInvites,
+    region: employer.region || null,
+    updatedAt: employer.updatedAt || null,
+  };
+};
+
+const publicClassAreaOption = (classArea: DocumentRecord) => ({
+  documentId: getDocumentId(classArea) || String(classArea.id || ''),
+  label: classArea.name || 'Region',
+  name: classArea.name || null,
+  slug: classArea.slug || null,
+  state: classArea.state || 'active',
+});
+
+const getOperationalClassAreas = async (strapi: StrapiDocumentService) => {
+  const classAreas = await documents(strapi, 'api::class-area.class-area').findMany({
+    limit: 500,
+    sort: ['sortOrder:asc', 'name:asc'],
+  });
+
+  return classAreas.filter((classArea) => ['active', 'coming_soon'].includes(String(classArea.state)));
+};
+
+const assertOperationalRegion = async (strapi: StrapiDocumentService, region?: string) => {
+  if (!region) {
+    return undefined;
+  }
+
+  const classAreas = await getOperationalClassAreas(strapi);
+  const matchedArea = classAreas.find(
+    (classArea) => String(classArea.name || '').toLowerCase() === region.toLowerCase()
+  );
+
+  if (!matchedArea?.name) {
+    throw new ValidationError('Region must match a current HireFlip operating area.');
+  }
+
+  return matchedArea.name;
+};
 
 const displayNameForContact = (contact: DocumentRecord) =>
   compact([contact.firstName, contact.lastName]).join(' ') || contact.email || undefined;
@@ -513,6 +617,96 @@ const revokePendingInvitesForContact = async (
 };
 
 export default ({ strapi }) => ({
+  async listEmployers(input: unknown, requestContext: RequestContext = {}) {
+    const body = validateSessionToken(input);
+    const session = await assertEmployerManageSession(strapi, body.sessionToken, requestContext);
+    const [employers, invites] = await Promise.all([
+      documents(strapi, 'api::employer.employer').findMany({
+        limit: 500,
+        populate: ['contacts'],
+        sort: ['companyName:asc'],
+      }),
+      documents(strapi, 'api::employer-invite.employer-invite').findMany({
+        limit: 1000,
+        populate: ['employer', 'employerContact'],
+        sort: ['createdAt:desc'],
+      }),
+    ]);
+    const invitesByEmployer = new Map<string, DocumentRecord[]>();
+
+    for (const invite of invites) {
+      const employerDocumentId = getDocumentId(invite.employer);
+
+      if (!employerDocumentId) {
+        continue;
+      }
+
+      invitesByEmployer.set(employerDocumentId, [
+        ...(invitesByEmployer.get(employerDocumentId) || []),
+        invite,
+      ]);
+    }
+
+    return {
+      employers: employers.map((employer) =>
+        publicEmployer(employer, invitesByEmployer.get(getDocumentId(employer) || '') || [])
+      ),
+      generatedAt: new Date().toISOString(),
+      totalEmployers: employers.length,
+      user: session.user,
+    };
+  },
+
+  async getEmployerDetail(input: unknown, requestContext: RequestContext = {}) {
+    const body = validateEmployerDetail(input);
+    const session = await assertEmployerManageSession(strapi, body.sessionToken, requestContext);
+    const employers = await documents(strapi, 'api::employer.employer').findMany({
+      filters: {
+        documentId: body.employerDocumentId,
+      },
+      limit: 1,
+      populate: ['contacts'],
+    });
+    const employer = employers[0];
+
+    if (!employer) {
+      throw new ValidationError('Employer could not be found.');
+    }
+
+    const invites = await documents(strapi, 'api::employer-invite.employer-invite').findMany({
+      filters: {
+        employer: {
+          documentId: body.employerDocumentId,
+        },
+      },
+      limit: 200,
+      populate: ['employer', 'employerContact'],
+      sort: ['createdAt:desc'],
+    });
+
+    return {
+      contacts: (Array.isArray(employer.contacts) ? employer.contacts : []).map(publicEmployerContact),
+      employer: publicEmployer(employer, invites),
+      generatedAt: new Date().toISOString(),
+      invites: invites.map((invite) => publicInvite(invite)),
+      totalContacts: Array.isArray(employer.contacts) ? employer.contacts.length : 0,
+      totalInvites: invites.length,
+      user: session.user,
+    };
+  },
+
+  async getInviteOptions(input: unknown, requestContext: RequestContext = {}) {
+    const body = validateSessionToken(input);
+    const session = await assertEmployerManageSession(strapi, body.sessionToken, requestContext);
+    const classAreas = await getOperationalClassAreas(strapi);
+
+    return {
+      generatedAt: new Date().toISOString(),
+      regions: classAreas.map(publicClassAreaOption),
+      user: session.user,
+    };
+  },
+
   async listInvites(input: unknown, requestContext: RequestContext = {}) {
     const body = validateSessionToken(input);
     const session = await assertEmployerManageSession(strapi, body.sessionToken, requestContext);
@@ -537,6 +731,7 @@ export default ({ strapi }) => ({
     const body = validateCreateInvite(input);
     const session = await assertEmployerManageSession(strapi, body.sessionToken, requestContext);
     const now = new Date().toISOString();
+    const region = await assertOperationalRegion(strapi, body.region);
     let employerContact = await findEmployerContactByEmail(strapi, body.contactEmail);
     let employer = employerContact?.employer || null;
 
@@ -554,7 +749,7 @@ export default ({ strapi }) => ({
           initialInterviewCommitmentVolume: body.interviewCommitmentVolume ?? null,
           interviewCommitmentCadence: body.interviewCommitmentCadence,
           interviewCommitmentVolume: body.interviewCommitmentVolume ?? null,
-          region: body.region || null,
+          region: region || null,
         },
       });
     } else {
@@ -573,7 +768,7 @@ export default ({ strapi }) => ({
           initialInterviewCommitmentVolume: body.interviewCommitmentVolume ?? null,
           interviewCommitmentCadence: body.interviewCommitmentCadence,
           interviewCommitmentVolume: body.interviewCommitmentVolume ?? null,
-          region: body.region || null,
+          region: region || null,
         },
       });
     }
