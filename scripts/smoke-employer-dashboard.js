@@ -70,6 +70,25 @@ const deleteDocument = async (strapi, uid, documentId) => {
   await documents(strapi, uid).delete({ documentId }).catch(() => undefined);
 };
 
+const deleteNotificationEventsForEmail = async (strapi, email) => {
+  if (!email) {
+    return;
+  }
+
+  const events = await documents(strapi, 'api::notification-event.notification-event')
+    .findMany({
+      filters: {
+        recipientEmail: email,
+      },
+      limit: 50,
+    })
+    .catch(() => []);
+
+  for (const event of events) {
+    await deleteDocument(strapi, 'api::notification-event.notification-event', event.documentId);
+  }
+};
+
 const addDays = (days, hour = 10) => {
   const date = new Date();
   date.setUTCDate(date.getUTCDate() + days);
@@ -77,13 +96,173 @@ const addDays = (days, hour = 10) => {
   return date.toISOString();
 };
 
+const jsonResponse = (body, status = 200) =>
+  new Response(JSON.stringify(body), {
+    headers: {
+      'content-type': 'application/json',
+    },
+    status,
+  });
+
+const createSmokeFetch = ({ authDomain, connectionId, connectionName, notificationUrl, runId }) => {
+  const usersByEmail = new Map();
+  const usersById = new Map();
+  const notifications = [];
+  const blockedUsers = new Set();
+  const tokenPayload = Buffer.from(
+    JSON.stringify({
+      scope: 'create:users read:users update:users create:user_tickets read:connections',
+    })
+  ).toString('base64url');
+  const managementToken = `header.${tokenPayload}.signature`;
+
+  const fetch = async (input, init = {}) => {
+    const url = new URL(String(input));
+
+    if (url.origin === notificationUrl) {
+      const body = JSON.parse(String(init.body || '{}'));
+      notifications.push(body);
+
+      return jsonResponse(
+        {
+          data: {
+            jobId: `notification-job-${notifications.length}`,
+            queued: true,
+            type: body.type,
+          },
+        },
+        202
+      );
+    }
+
+    if (url.hostname !== authDomain) {
+      return globalThis.__hireflipOriginalFetch(input, init);
+    }
+
+    if (url.pathname === '/oauth/token' && init.method === 'POST') {
+      return jsonResponse({
+        access_token: managementToken,
+        expires_in: 3600,
+        token_type: 'Bearer',
+      });
+    }
+
+    if (url.pathname === '/api/v2/users-by-email') {
+      const email = String(url.searchParams.get('email') || '').toLowerCase();
+      const user = usersByEmail.get(email);
+
+      return jsonResponse(user ? [user] : []);
+    }
+
+    if (url.pathname === '/api/v2/users' && init.method === 'POST') {
+      const body = JSON.parse(String(init.body || '{}'));
+      const email = String(body.email || '').toLowerCase();
+      const user = {
+        blocked: false,
+        email,
+        identities: [
+          {
+            connection: connectionName,
+            connection_id: connectionId,
+            provider: 'auth0',
+          },
+        ],
+        user_id: `auth0|employer-smoke-${runId}-${usersByEmail.size + 1}`,
+      };
+
+      usersByEmail.set(email, user);
+      usersById.set(user.user_id, user);
+
+      return jsonResponse(user, 201);
+    }
+
+    if (url.pathname.startsWith('/api/v2/users/') && init.method === 'PATCH') {
+      const userId = decodeURIComponent(url.pathname.slice('/api/v2/users/'.length));
+      const body = JSON.parse(String(init.body || '{}'));
+      const user = usersById.get(userId) || {
+        identities: [
+          {
+            connection: connectionName,
+            connection_id: connectionId,
+            provider: 'auth0',
+          },
+        ],
+        user_id: userId,
+      };
+
+      Object.assign(user, body);
+
+      if (body.blocked === true) {
+        blockedUsers.add(userId);
+      }
+
+      usersById.set(userId, user);
+
+      if (user.email) {
+        usersByEmail.set(String(user.email).toLowerCase(), user);
+      }
+
+      return jsonResponse(user);
+    }
+
+    if (url.pathname === '/api/v2/tickets/password-change' && init.method === 'POST') {
+      const body = JSON.parse(String(init.body || '{}'));
+
+      return jsonResponse({
+        ticket: `https://${authDomain}/lo/reset?ticket=smoke-${encodeURIComponent(body.user_id || 'user')}`,
+      });
+    }
+
+    if (url.pathname.startsWith('/api/v2/connections/')) {
+      return jsonResponse({
+        id: connectionId,
+        name: connectionName,
+        strategy: 'auth0',
+      });
+    }
+
+    return jsonResponse({ message: `Unhandled Auth0 smoke route: ${url.pathname}` }, 404);
+  };
+
+  return {
+    blockedUsers,
+    fetch,
+    notifications,
+    usersByEmail,
+  };
+};
+
 const main = async () => {
   loadEnvFile();
 
   const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  process.env.AUTH0_MANAGEMENT_DOMAIN = `auth-smoke-${runId}.example.test`;
+  process.env.AUTH0_MANAGEMENT_CLIENT_ID = 'smoke-management-client';
+  process.env.AUTH0_MANAGEMENT_CLIENT_SECRET = 'smoke-management-secret';
+  process.env.AUTH0_EMPLOYER_CONNECTION_NAME = 'hireflip-employers-smoke';
+  process.env.AUTH0_EMPLOYER_CONNECTION_ID = `con_smoke_${runId.replace(/[^a-zA-Z0-9]/g, '')}`;
+  process.env.AUTH0_EMPLOYER_APP_CLIENT_ID = 'smoke-employer-app';
+  process.env.AUTH0_EMPLOYER_PASSWORD_TICKET_TTL_SECONDS = '172800';
+  process.env.EMPLOYER_DASHBOARD_BASE_URL = 'http://localhost:3004';
+  process.env.NOTIFICATION_SERVICE_URL = `https://notification-smoke-${runId}.example.test`;
+  process.env.NOTIFICATION_SERVICE_TOKEN = 'smoke-notification-token';
+
+  const smokeFetch = createSmokeFetch({
+    authDomain: process.env.AUTH0_MANAGEMENT_DOMAIN,
+    connectionId: process.env.AUTH0_EMPLOYER_CONNECTION_ID,
+    connectionName: process.env.AUTH0_EMPLOYER_CONNECTION_NAME,
+    notificationUrl: process.env.NOTIFICATION_SERVICE_URL,
+    runId,
+  });
+  globalThis.__hireflipOriginalFetch = global.fetch;
+  global.fetch = smokeFetch.fetch;
+
   const appContext = await compileStrapi();
   const strapi = await createStrapi(appContext).load();
   const created = {
+    adminEmployer: null,
+    adminEmployerContact: null,
+    adminEmployerInvite: null,
     candidate: null,
     employer: null,
     employerContact: null,
@@ -99,7 +278,100 @@ const main = async () => {
   };
 
   try {
+    const originalService = strapi.service.bind(strapi);
+
+    strapi.service = (uid) => {
+      if (uid === 'api::admin-auth.admin-auth') {
+        return {
+          getSession: async () => ({
+            user: {
+              displayName: 'Smoke Super Admin',
+              email: `admin-employer-smoke-${runId}@example.test`,
+              id: `staff-smoke-${runId}`,
+              roleKeys: ['super_admin'],
+              roles: ['Super Admin'],
+            },
+          }),
+        };
+      }
+
+      return originalService(uid);
+    };
+
+    const adminEmployerService = strapi.service('api::admin-employer.admin-employer');
     const employerDashboardService = strapi.service('api::employer-dashboard.employer-dashboard');
+    const adminInviteEmail = `admin-created-employer-smoke-${runId}@example.test`;
+    const createdAdminInvite = await adminEmployerService.createInvite({
+      companyName: `Admin Created Employer Smoke ${runId}`,
+      contactEmail: adminInviteEmail,
+      expiresInDays: 14,
+      firstName: 'Admin',
+      interviewCommitmentCadence: 'quarterly',
+      interviewCommitmentVolume: 4,
+      lastName: 'Invite',
+      region: 'Leeds',
+      roleTitle: 'People lead',
+      sessionToken: 's'.repeat(32),
+    });
+
+    assert(createdAdminInvite.created === true, 'Expected admin employer invite to be created.');
+    assert(createdAdminInvite.inviteSent === true, 'Expected employer invite email to queue.');
+    assert(
+      createdAdminInvite.invite.inviteUrl?.includes('/invite/'),
+      'Expected admin employer invite URL.'
+    );
+    assert(smokeFetch.notifications.length === 1, 'Expected one employer invite notification.');
+    assert(
+      smokeFetch.notifications[0].template?.key === 'employer_invite',
+      'Expected employer invite template.'
+    );
+
+    const adminInviteRecords = await documents(strapi, 'api::employer-invite.employer-invite').findMany({
+      filters: {
+        documentId: createdAdminInvite.invite.documentId,
+      },
+      limit: 1,
+      populate: ['employer', 'employerContact'],
+    });
+
+    created.adminEmployerInvite = adminInviteRecords[0];
+    created.adminEmployer = created.adminEmployerInvite?.employer || null;
+    created.adminEmployerContact = created.adminEmployerInvite?.employerContact || null;
+
+    assert(created.adminEmployerInvite?.authIdentityId, 'Expected invite to store Auth0 identity.');
+    assert(created.adminEmployerInvite?.authPasswordTicketUrl, 'Expected invite to store setup ticket.');
+
+    const adminInviteToken = decodeURIComponent(
+      createdAdminInvite.invite.inviteUrl.split('/invite/')[1] || ''
+    );
+    const setupTicket = await employerDashboardService.createInviteSetupTicket({
+      inviteToken: adminInviteToken,
+    });
+
+    assert(
+      setupTicket.setupUrl.startsWith(`https://${process.env.AUTH0_MANAGEMENT_DOMAIN}/`),
+      'Expected setup ticket URL.'
+    );
+
+    const resentAdminInvite = await adminEmployerService.resendInvite({
+      employerInviteDocumentId: createdAdminInvite.invite.documentId,
+      sessionToken: 's'.repeat(32),
+    });
+
+    assert(resentAdminInvite.resent === true, 'Expected employer invite resend.');
+    assert(resentAdminInvite.inviteSent === true, 'Expected resent employer invite email to queue.');
+    assert(smokeFetch.notifications.length === 2, 'Expected resend notification.');
+
+    await adminEmployerService.revokeInvite({
+      employerInviteDocumentId: createdAdminInvite.invite.documentId,
+      sessionToken: 's'.repeat(32),
+    });
+
+    assert(
+      smokeFetch.blockedUsers.has(created.adminEmployerInvite.authIdentityId),
+      'Expected revoked invite to block Auth0 user.'
+    );
+
     const inviteToken = randomBytes(32).toString('base64url');
     const invitedEmployer = await documents(strapi, 'api::employer.employer').create({
       data: {
@@ -423,7 +695,12 @@ const main = async () => {
     await deleteDocument(strapi, 'api::employer-invite.employer-invite', created.employerInvite?.documentId);
     await deleteDocument(strapi, 'api::employer-contact.employer-contact', created.invitedEmployerContact?.documentId);
     await deleteDocument(strapi, 'api::employer.employer', created.invitedEmployer?.documentId);
+    await deleteNotificationEventsForEmail(strapi, created.adminEmployerContact?.email);
+    await deleteDocument(strapi, 'api::employer-invite.employer-invite', created.adminEmployerInvite?.documentId);
+    await deleteDocument(strapi, 'api::employer-contact.employer-contact', created.adminEmployerContact?.documentId);
+    await deleteDocument(strapi, 'api::employer.employer', created.adminEmployer?.documentId);
     await strapi.destroy();
+    global.fetch = globalThis.__hireflipOriginalFetch;
   }
 };
 

@@ -43,6 +43,40 @@
       "default": "pending",
       "required": true
     },
+    "authIdentityId": {
+      "type": "string",
+      "maxLength": 160
+    },
+    "authProvisionedAt": {
+      "type": "datetime"
+    },
+    "authPasswordTicketCreatedAt": {
+      "type": "datetime"
+    },
+    "authPasswordTicketExpiresAt": {
+      "type": "datetime"
+    },
+    "authPasswordTicketUrl": {
+      "type": "text",
+      "private": true
+    },
+    "deliveryState": {
+      "type": "enumeration",
+      "enum": [
+        "not_required",
+        "queued",
+        "failed"
+      ],
+      "default": "not_required",
+      "required": true
+    },
+    "deliveryFailureMessage": {
+      "type": "text"
+    },
+    "notificationServiceJobId": {
+      "type": "string",
+      "maxLength": 160
+    },
     "expiresAt": {
       "type": "datetime",
       "required": true

@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { errors, validateZodSchema, z } from '@strapi/utils';
+import { getAuth0ManagementClient } from '../../../utils/auth0-management';
 
 const { ValidationError } = errors;
 
@@ -14,6 +15,8 @@ type DocumentRecord = Record<string, unknown> & {
   accountCreatedAt?: string;
   assignmentMode?: string;
   authIdentityId?: string;
+  authPasswordTicketExpiresAt?: string;
+  authPasswordTicketUrl?: string;
   candidate?: DocumentRecord;
   candidateNotifiedAt?: string;
   candidateResponseDeadline?: string;
@@ -123,6 +126,14 @@ const getDocumentId = (record?: DocumentRecord | null) =>
   typeof record?.documentId === 'string' ? record.documentId : null;
 
 const hashInviteToken = (token: string) => createHash('sha256').update(token).digest('hex');
+
+const trimTrailingSlash = (value: string) => value.replace(/\/+$/, '');
+
+const employerDashboardBaseUrl = () =>
+  trimTrailingSlash(process.env.EMPLOYER_DASHBOARD_BASE_URL || 'http://localhost:3004');
+
+const employerInviteUrl = (token: string) =>
+  `${employerDashboardBaseUrl()}/invite/${encodeURIComponent(token)}`;
 
 const compact = <T>(items: Array<T | false | null | undefined>) =>
   items.filter((item): item is T => Boolean(item));
@@ -402,6 +413,53 @@ export default ({ strapi }) => ({
     return {
       invite: publicInvitePayload(invite),
       valid: true,
+    };
+  },
+
+  async createInviteSetupTicket(input: unknown) {
+    const body = validateInviteToken(input);
+    const invite = await assertValidInvite(strapi, body.inviteToken);
+    const inviteDocumentId = getDocumentId(invite);
+    const authIdentityId = invite.authIdentityId || invite.employerContact?.authIdentityId;
+
+    if (!inviteDocumentId) {
+      throw new ValidationError('Employer invite could not be updated.');
+    }
+
+    if (!authIdentityId) {
+      throw new ValidationError('Employer invite has not been provisioned for sign-in yet.');
+    }
+
+    if (
+      invite.authPasswordTicketUrl &&
+      invite.authPasswordTicketExpiresAt &&
+      Date.parse(invite.authPasswordTicketExpiresAt) > Date.now() + 300_000
+    ) {
+      return {
+        setupUrl: invite.authPasswordTicketUrl,
+      };
+    }
+
+    const ticket = await getAuth0ManagementClient().createPasswordSetupTicket({
+      inviteUrl: employerInviteUrl(body.inviteToken),
+      userId: authIdentityId,
+    });
+
+    await documents(strapi, 'api::employer-invite.employer-invite').update({
+      documentId: inviteDocumentId,
+      data: {
+        authPasswordTicketCreatedAt: new Date().toISOString(),
+        authPasswordTicketExpiresAt: ticket.expiresAt,
+        authPasswordTicketUrl: ticket.ticketUrl,
+        metadata: {
+          ...(invite.metadata && typeof invite.metadata === 'object' ? invite.metadata : {}),
+          setupTicketRefreshedAt: new Date().toISOString(),
+        },
+      },
+    });
+
+    return {
+      setupUrl: ticket.ticketUrl,
     };
   },
 

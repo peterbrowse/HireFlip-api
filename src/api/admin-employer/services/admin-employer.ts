@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { errors, validateZodSchema, z } from '@strapi/utils';
+import { getAuth0ManagementClient } from '../../../utils/auth0-management';
 
 const { ForbiddenError, ValidationError } = errors;
 
@@ -30,11 +31,17 @@ type DocumentRecord = Record<string, unknown> & {
   acceptedByAuthIdentityId?: string;
   accountCreatedAt?: string;
   authIdentityId?: string;
+  authPasswordTicketCreatedAt?: string;
+  authPasswordTicketExpiresAt?: string;
+  authPasswordTicketUrl?: string;
+  authProvisionedAt?: string;
   companyName?: string;
   contactState?: string;
   createdAt?: string;
   createdByStaffDisplayName?: string;
   createdByStaffEmail?: string;
+  deliveryFailureMessage?: string;
+  deliveryState?: string;
   documentId?: string;
   email?: string;
   employer?: DocumentRecord;
@@ -53,6 +60,7 @@ type DocumentRecord = Record<string, unknown> & {
   lastName?: string;
   lastSentAt?: string;
   metadata?: unknown;
+  notificationServiceJobId?: string;
   region?: string;
   roleTitle?: string;
   updatedAt?: string;
@@ -67,6 +75,14 @@ type DocumentCollection = {
 type StrapiDocumentService = {
   documents(uid: string): unknown;
   service(uid: string): unknown;
+};
+
+type NotificationServiceQueueResponse = {
+  data?: {
+    jobId?: string | number;
+    queued?: boolean;
+    type?: string;
+  };
 };
 
 const sessionTokenSchema = z
@@ -142,6 +158,15 @@ const employerDashboardBaseUrl = () =>
 const inviteUrl = (token: string) =>
   `${employerDashboardBaseUrl()}/invite/${encodeURIComponent(token)}`;
 
+const inviteSetupUrl = (token: string) =>
+  `${employerDashboardBaseUrl()}/invite/${encodeURIComponent(token)}/setup`;
+
+const getIntegerEnv = (key: string, fallback: number) => {
+  const value = Number.parseInt(process.env[key] || '', 10);
+
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+};
+
 const addDays = (days: number) => {
   const date = new Date();
   date.setUTCDate(date.getUTCDate() + days);
@@ -158,6 +183,9 @@ const contactName = (contact?: DocumentRecord | null) =>
   contact?.email ||
   'Employer contact';
 
+const displayNameForContact = (contact: DocumentRecord) =>
+  compact([contact.firstName, contact.lastName]).join(' ') || contact.email || undefined;
+
 const publicInvite = (invite: DocumentRecord, rawToken?: string) => ({
   acceptedAt: invite.acceptedAt || null,
   acceptedByEmail: invite.acceptedByEmail || null,
@@ -166,6 +194,9 @@ const publicInvite = (invite: DocumentRecord, rawToken?: string) => ({
   contactName: contactName(invite.employerContact),
   createdAt: invite.createdAt || null,
   createdBy: invite.createdByStaffDisplayName || invite.createdByStaffEmail || null,
+  deliveryFailureMessage: invite.deliveryFailureMessage || null,
+  deliveryState: invite.deliveryState || 'not_required',
+  deliveryStateLabel: humanize(String(invite.deliveryState || 'not_required')),
   documentId: getDocumentId(invite) || String(invite.id || ''),
   employerDocumentId: getDocumentId(invite.employer),
   expiresAt: invite.expiresAt || null,
@@ -173,10 +204,228 @@ const publicInvite = (invite: DocumentRecord, rawToken?: string) => ({
   inviteStateLabel: humanize(String(invite.inviteState || 'pending')),
   inviteUrl: rawToken ? inviteUrl(rawToken) : null,
   lastSentAt: invite.lastSentAt || null,
+  notificationServiceJobId: invite.notificationServiceJobId || null,
   region: invite.employer?.region || null,
   roleTitle: invite.employerContact?.roleTitle || null,
   updatedAt: invite.updatedAt || null,
 });
+
+const createEmployerPasswordTicket = async (contact: DocumentRecord, rawToken: string) => {
+  const email = contact.email;
+
+  if (!email) {
+    throw new ValidationError('Employer contact is missing an email address.');
+  }
+
+  const auth0 = getAuth0ManagementClient();
+  const authUser = await auth0.ensureEmployerUser({
+    email,
+    firstName: contact.firstName || null,
+    lastName: contact.lastName || null,
+    name: displayNameForContact(contact) || null,
+  });
+  const ticket = await auth0.createPasswordSetupTicket({
+    inviteUrl: inviteUrl(rawToken),
+    userId: authUser.userId,
+  });
+
+  return {
+    authUserCreated: authUser.created,
+    expiresAt: ticket.expiresAt,
+    ticketUrl: ticket.ticketUrl,
+    userId: authUser.userId,
+  };
+};
+
+const requestNotificationServiceEmail = async ({
+  correlationId,
+  template,
+  to,
+  type,
+}: {
+  correlationId?: string;
+  template: {
+    key: string;
+    variables?: Record<string, unknown>;
+  };
+  to: string;
+  type: string;
+}): Promise<NotificationServiceQueueResponse> => {
+  const baseUrl = process.env.NOTIFICATION_SERVICE_URL;
+  const serviceToken = process.env.NOTIFICATION_SERVICE_TOKEN;
+
+  if (!baseUrl || !serviceToken) {
+    throw new Error('Notification service is not configured.');
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    getIntegerEnv('NOTIFICATION_SERVICE_TIMEOUT_MS', 5000)
+  );
+
+  try {
+    const response = await fetch(`${trimTrailingSlash(baseUrl)}/api/internal/notifications/email`, {
+      body: JSON.stringify({
+        correlationId,
+        priority: 'transactional',
+        source: 'core-api',
+        template,
+        to,
+        type,
+      }),
+      headers: {
+        'content-type': 'application/json',
+        'x-hireflip-service-name': 'core-api',
+        'x-hireflip-service-token': serviceToken,
+      },
+      method: 'POST',
+      signal: controller.signal,
+    });
+    const payload = (await response.json().catch(() => null)) as NotificationServiceQueueResponse | null;
+
+    if (!response.ok || !payload?.data) {
+      throw new Error('Employer invite notification could not be queued.');
+    }
+
+    return payload;
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
+const createNotificationEvent = async (
+  strapi: StrapiDocumentService,
+  {
+    deliveryState,
+    errorMessage,
+    eventType,
+    invite,
+    jobId,
+  }: {
+    deliveryState: 'queued' | 'failed';
+    errorMessage?: string;
+    eventType: string;
+    invite: DocumentRecord;
+    jobId?: string | number;
+  }
+) => {
+  const employerDocumentId = getDocumentId(invite.employer);
+  const inviteDocumentId = getDocumentId(invite);
+  const contactDocumentId = getDocumentId(invite.employerContact);
+  const now = new Date().toISOString();
+
+  return documents(strapi, 'api::notification-event.notification-event').create({
+    data: {
+      channel: 'email',
+      deliveryState,
+      ...(deliveryState === 'failed' ? { failedAt: now } : {}),
+      errorMessage: errorMessage || null,
+      eventType,
+      ...(employerDocumentId
+        ? {
+            employer: {
+              connect: [{ documentId: employerDocumentId }],
+            },
+          }
+        : {}),
+      metadata: {
+        notificationServiceJobId: typeof jobId === 'undefined' ? null : String(jobId),
+      },
+      priority: deliveryState === 'failed' ? 'high' : 'normal',
+      recipientEmail: invite.inviteEmail || invite.employerContact?.email || null,
+      recipientId: contactDocumentId || undefined,
+      recipientType: 'employer_contact',
+      relatedId: inviteDocumentId || undefined,
+      relatedType: 'employer_invite',
+      templateKey: 'employer_invite',
+    },
+  });
+};
+
+const queueEmployerInviteEmail = async (
+  strapi: StrapiDocumentService,
+  {
+    eventType,
+    invite,
+    rawToken,
+  }: {
+    eventType: 'employer_invite_created' | 'employer_invite_resent';
+    invite: DocumentRecord;
+    rawToken: string;
+  }
+) => {
+  const inviteDocumentId = getDocumentId(invite);
+  const contact = invite.employerContact || {};
+  const email = String(invite.inviteEmail || contact.email || '').trim().toLowerCase();
+  const now = new Date().toISOString();
+
+  if (!inviteDocumentId) {
+    throw new ValidationError('Employer invite could not be updated.');
+  }
+
+  if (!email) {
+    throw new ValidationError('Employer invite is missing an email address.');
+  }
+
+  try {
+    const response = await requestNotificationServiceEmail({
+      correlationId: `employer-invite:${inviteDocumentId}:${Date.now()}`,
+      template: {
+        key: 'employer_invite',
+        variables: {
+          companyName: invite.employer?.companyName || 'your company',
+          contactFirstName: contact.firstName || undefined,
+          expiresAt: invite.expiresAt || undefined,
+          inviteUrl: inviteSetupUrl(rawToken),
+          reviewInviteUrl: inviteUrl(rawToken),
+        },
+      },
+      to: email,
+      type: eventType,
+    });
+    const jobId = response.data?.jobId;
+
+    await createNotificationEvent(strapi, {
+      deliveryState: 'queued',
+      eventType,
+      invite,
+      jobId,
+    });
+
+    return documents(strapi, 'api::employer-invite.employer-invite').update({
+      documentId: inviteDocumentId,
+      data: {
+        deliveryFailureMessage: null,
+        deliveryState: 'queued',
+        lastSentAt: now,
+        notificationServiceJobId: typeof jobId === 'undefined' ? null : String(jobId),
+      },
+      populate: ['employer', 'employerContact'],
+    });
+  } catch (error) {
+    const errorMessage =
+      error instanceof Error ? error.message : 'Employer invite notification could not be queued.';
+
+    await createNotificationEvent(strapi, {
+      deliveryState: 'failed',
+      errorMessage,
+      eventType,
+      invite,
+    });
+
+    return documents(strapi, 'api::employer-invite.employer-invite').update({
+      documentId: inviteDocumentId,
+      data: {
+        deliveryFailureMessage: errorMessage,
+        deliveryState: 'failed',
+        lastSentAt: null,
+        notificationServiceJobId: null,
+      },
+      populate: ['employer', 'employerContact'],
+    });
+  }
+};
 
 const findEmployerContactByEmail = async (strapi: StrapiDocumentService, email: string) => {
   const contacts = await documents(strapi, 'api::employer-contact.employer-contact').findMany({
@@ -383,11 +632,29 @@ export default ({ strapi }) => ({
     await revokePendingInvitesForContact(strapi, employerContactDocumentId);
 
     const rawToken = generateInviteToken();
+    const authProvision = await createEmployerPasswordTicket(employerContact, rawToken);
+    const authProvisionedAt = new Date().toISOString();
+
+    employerContact = await documents(strapi, 'api::employer-contact.employer-contact').update({
+      documentId: employerContactDocumentId,
+      data: {
+        authIdentityId: authProvision.userId,
+        authProvider: 'auth0',
+      },
+      populate: ['employer'],
+    });
+
     const invite = await documents(strapi, 'api::employer-invite.employer-invite').create({
       data: {
+        authIdentityId: authProvision.userId,
+        authPasswordTicketCreatedAt: authProvisionedAt,
+        authPasswordTicketExpiresAt: authProvision.expiresAt,
+        authPasswordTicketUrl: authProvision.ticketUrl,
+        authProvisionedAt,
         createdByStaffDisplayName: session.user.displayName,
         createdByStaffEmail: session.user.email,
         createdByStaffUserId: session.user.id,
+        deliveryState: 'not_required',
         employer: {
           connect: [{ documentId: employerDocumentId }],
         },
@@ -397,8 +664,8 @@ export default ({ strapi }) => ({
         expiresAt: addDays(body.expiresInDays),
         inviteEmail: body.contactEmail,
         inviteState: 'pending',
-        lastSentAt: now,
         metadata: {
+          authUserCreated: authProvision.authUserCreated,
           requestId: requestContext.requestId,
           source: 'admin_dashboard',
         },
@@ -406,10 +673,16 @@ export default ({ strapi }) => ({
       },
       populate: ['employer', 'employerContact'],
     });
+    const deliveredInvite = await queueEmployerInviteEmail(strapi, {
+      eventType: 'employer_invite_created',
+      invite,
+      rawToken,
+    });
 
     return {
       created: true,
-      invite: publicInvite(invite, rawToken),
+      invite: publicInvite(deliveredInvite, rawToken),
+      inviteSent: deliveredInvite.deliveryState === 'queued',
       user: session.user,
     };
   },
@@ -437,14 +710,36 @@ export default ({ strapi }) => ({
     }
 
     const rawToken = generateInviteToken();
+    const authProvision = await createEmployerPasswordTicket(invite.employerContact || {}, rawToken);
+    const authProvisionedAt = new Date().toISOString();
+    const employerContactDocumentId = getDocumentId(invite.employerContact);
+
+    if (employerContactDocumentId) {
+      await documents(strapi, 'api::employer-contact.employer-contact').update({
+        documentId: employerContactDocumentId,
+        data: {
+          authIdentityId: authProvision.userId,
+          authProvider: 'auth0',
+        },
+      });
+    }
+
     const updatedInvite = await documents(strapi, 'api::employer-invite.employer-invite').update({
       documentId: inviteDocumentId,
       data: {
+        authIdentityId: authProvision.userId,
+        authPasswordTicketCreatedAt: authProvisionedAt,
+        authPasswordTicketExpiresAt: authProvision.expiresAt,
+        authPasswordTicketUrl: authProvision.ticketUrl,
+        authProvisionedAt,
+        deliveryFailureMessage: null,
+        deliveryState: 'not_required',
         expiresAt: addDays(14),
         inviteState: 'pending',
-        lastSentAt: new Date().toISOString(),
+        lastSentAt: null,
         metadata: {
           ...(invite.metadata && typeof invite.metadata === 'object' ? invite.metadata : {}),
+          authUserCreated: authProvision.authUserCreated,
           resentByStaffDisplayName: session.user.displayName,
           resentByStaffEmail: session.user.email,
           resentByStaffUserId: session.user.id,
@@ -454,9 +749,15 @@ export default ({ strapi }) => ({
       },
       populate: ['employer', 'employerContact'],
     });
+    const deliveredInvite = await queueEmployerInviteEmail(strapi, {
+      eventType: 'employer_invite_resent',
+      invite: updatedInvite,
+      rawToken,
+    });
 
     return {
-      invite: publicInvite(updatedInvite, rawToken),
+      invite: publicInvite(deliveredInvite, rawToken),
+      inviteSent: deliveredInvite.deliveryState === 'queued',
       resent: true,
       user: session.user,
     };
@@ -479,6 +780,22 @@ export default ({ strapi }) => ({
 
     if (invite.inviteState !== 'pending') {
       throw new ValidationError('Only pending employer invites can be revoked.');
+    }
+
+    const authIdentityId = invite.authIdentityId || invite.employerContact?.authIdentityId;
+    const employerContactDocumentId = getDocumentId(invite.employerContact);
+
+    if (authIdentityId) {
+      await getAuth0ManagementClient().blockUser(authIdentityId);
+    }
+
+    if (employerContactDocumentId && invite.employerContact?.contactState !== 'active') {
+      await documents(strapi, 'api::employer-contact.employer-contact').update({
+        documentId: employerContactDocumentId,
+        data: {
+          contactState: 'disabled',
+        },
+      });
     }
 
     const updatedInvite = await documents(strapi, 'api::employer-invite.employer-invite').update({
