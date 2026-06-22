@@ -19,6 +19,8 @@ type AdminAuthService = {
   resendStaffInvite(input: unknown, context: RequestContext): Promise<unknown>;
   resetStaffPassword(input: unknown, context: RequestContext): Promise<unknown>;
   resendTwoFactorChallenge(input: unknown, context: RequestContext): Promise<unknown>;
+  updateCurrentStaffProfile(input: unknown, context: RequestContext): Promise<unknown>;
+  updateCurrentStaffProfileImage(input: unknown, file: unknown, context: RequestContext): Promise<unknown>;
   updateStaffUserRole(input: unknown, context: RequestContext): Promise<unknown>;
   updateStaffUserStatus(input: unknown, context: RequestContext): Promise<unknown>;
   verifyTwoFactorChallenge(input: unknown, context: RequestContext): Promise<unknown>;
@@ -39,6 +41,12 @@ const getRequestContext = (ctx): RequestContext => ({
   serviceName: ctx.state?.hireflipAuth?.serviceName,
   userAgent: ctx.request.get('x-hireflip-client-user-agent') || ctx.request.get('user-agent'),
 });
+
+const getUploadedProfileImage = (files) => {
+  const file = files?.profileImage || files?.image || files?.file;
+
+  return Array.isArray(file) ? file[0] : file;
+};
 
 export default ({ strapi }) => ({
   async login(ctx) {
@@ -88,6 +96,29 @@ export default ({ strapi }) => ({
   async logout(ctx) {
     const result = await adminAuthService(strapi).logout(
       ctx.request.body,
+      getRequestContext(ctx)
+    );
+
+    ctx.body = {
+      data: result,
+    };
+  },
+
+  async updateCurrentStaffProfile(ctx) {
+    const result = await adminAuthService(strapi).updateCurrentStaffProfile(
+      ctx.request.body,
+      getRequestContext(ctx)
+    );
+
+    ctx.body = {
+      data: result,
+    };
+  },
+
+  async updateCurrentStaffProfileImage(ctx) {
+    const result = await adminAuthService(strapi).updateCurrentStaffProfileImage(
+      ctx.request.body,
+      getUploadedProfileImage(ctx.request.files),
       getRequestContext(ctx)
     );
 

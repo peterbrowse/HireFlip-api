@@ -14,6 +14,8 @@ type EmployerDashboardService = {
   getOnboarding(input: unknown, context: RequestContext): Promise<unknown>;
   getOverview(input: unknown, context: RequestContext): Promise<unknown>;
   inviteTeamContact(input: unknown, context: RequestContext): Promise<unknown>;
+  updateProfile(input: unknown, context: RequestContext): Promise<unknown>;
+  updateProfileImage(input: unknown, file: unknown, context: RequestContext): Promise<unknown>;
   updateSettings(input: unknown, context: RequestContext): Promise<unknown>;
   validateInvite(input: unknown, context: RequestContext): Promise<unknown>;
 };
@@ -33,6 +35,12 @@ const getRequestContext = (ctx): RequestContext => ({
   serviceName: ctx.state?.hireflipAuth?.serviceName,
   userAgent: ctx.request.get('x-hireflip-client-user-agent') || ctx.request.get('user-agent'),
 });
+
+const getUploadedProfileImage = (files) => {
+  const file = files?.profileImage || files?.image || files?.file;
+
+  return Array.isArray(file) ? file[0] : file;
+};
 
 export default ({ strapi }) => ({
   async overview(ctx) {
@@ -75,6 +83,25 @@ export default ({ strapi }) => ({
 	    ctx.body = {
 	      data: await employerDashboardService(strapi).updateSettings(
 	        ctx.request.body,
+	        getRequestContext(ctx)
+	      ),
+	    };
+	  },
+
+	  async updateProfile(ctx) {
+	    ctx.body = {
+	      data: await employerDashboardService(strapi).updateProfile(
+	        ctx.request.body,
+	        getRequestContext(ctx)
+	      ),
+	    };
+	  },
+
+	  async updateProfileImage(ctx) {
+	    ctx.body = {
+	      data: await employerDashboardService(strapi).updateProfileImage(
+	        ctx.request.body,
+	        getUploadedProfileImage(ctx.request.files),
 	        getRequestContext(ctx)
 	      ),
 	    };

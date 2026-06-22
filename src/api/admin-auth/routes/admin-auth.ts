@@ -61,6 +61,24 @@ export default {
     },
     {
       method: 'POST',
+      path: '/internal/admin/staff/me/profile',
+      handler: 'admin-auth.updateCurrentStaffProfile',
+      config: {
+        auth: false,
+        policies: [adminDashboardServicePolicy],
+      },
+    },
+    {
+      method: 'POST',
+      path: '/internal/admin/staff/me/profile-image',
+      handler: 'admin-auth.updateCurrentStaffProfileImage',
+      config: {
+        auth: false,
+        policies: [adminDashboardServicePolicy],
+      },
+    },
+    {
+      method: 'POST',
       path: '/internal/admin/staff/reset-password',
       handler: 'admin-auth.requestStaffPasswordReset',
       config: {

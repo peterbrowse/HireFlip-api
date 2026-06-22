@@ -2455,6 +2455,7 @@ export interface ApiEmployerContactEmployerContact
       Schema.Attribute.SetMinMaxLength<{
         maxLength: 40;
       }>;
+    profileImage: Schema.Attribute.Media<'images'>;
     publishedAt: Schema.Attribute.DateTime;
     roleTitle: Schema.Attribute.String &
       Schema.Attribute.SetMinMaxLength<{
@@ -4095,6 +4096,42 @@ export interface ApiReservationReservation extends Struct.CollectionTypeSchema {
   };
 }
 
+export interface ApiStaffProfileStaffProfile
+  extends Struct.CollectionTypeSchema {
+  collectionName: 'staff_profiles';
+  info: {
+    description: 'Dashboard profile media for HireFlip staff users.';
+    displayName: 'Staff Profile';
+    pluralName: 'staff-profiles';
+    singularName: 'staff-profile';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    adminUserId: Schema.Attribute.String &
+      Schema.Attribute.Required &
+      Schema.Attribute.Unique &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 80;
+      }>;
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::staff-profile.staff-profile'
+    > &
+      Schema.Attribute.Private;
+    profileImage: Schema.Attribute.Media<'images'>;
+    publishedAt: Schema.Attribute.DateTime;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+  };
+}
+
 export interface ApiStoredFileStoredFile extends Struct.CollectionTypeSchema {
   collectionName: 'stored_files';
   info: {
@@ -5166,6 +5203,7 @@ declare module '@strapi/strapi' {
       'api::public-interest-lead.public-interest-lead': ApiPublicInterestLeadPublicInterestLead;
       'api::refund.refund': ApiRefundRefund;
       'api::reservation.reservation': ApiReservationReservation;
+      'api::staff-profile.staff-profile': ApiStaffProfileStaffProfile;
       'api::stored-file.stored-file': ApiStoredFileStoredFile;
       'api::support-case.support-case': ApiSupportCaseSupportCase;
       'api::support-message.support-message': ApiSupportMessageSupportMessage;

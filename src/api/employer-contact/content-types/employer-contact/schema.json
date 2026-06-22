@@ -49,6 +49,13 @@
       "type": "string",
       "maxLength": 40
     },
+    "profileImage": {
+      "type": "media",
+      "multiple": false,
+      "allowedTypes": [
+        "images"
+      ]
+    },
     "roleTitle": {
       "type": "string",
       "maxLength": 160

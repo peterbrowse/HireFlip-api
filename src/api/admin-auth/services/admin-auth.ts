@@ -6,8 +6,12 @@ import {
   scrypt,
   timingSafeEqual,
 } from 'node:crypto';
+import { mkdtemp, rm, stat } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { promisify } from 'node:util';
 import { errors, validateZodSchema, z } from '@strapi/utils';
+import sharp from 'sharp';
 
 const { ApplicationError, ForbiddenError, RateLimitError, UnauthorizedError, ValidationError } = errors;
 
@@ -48,9 +52,25 @@ type AdminUser = Record<string, unknown> & {
 type AdminSessionUser = {
   displayName: string;
   email: string;
+  firstname: string;
   id: string;
+  lastname: string;
+  profileImage?: StaffProfileImage | null;
   roleKeys: AdminRoleKey[];
   roles: string[];
+};
+
+type StaffProfileImage = {
+  alternativeText?: string | null;
+  documentId?: string | null;
+  ext?: string | null;
+  height?: number | null;
+  id?: number | string | null;
+  mime?: string | null;
+  name?: string | null;
+  size?: number | null;
+  url: string;
+  width?: number | null;
 };
 
 type StaffUserStatus = 'active' | 'blocked' | 'inactive' | 'pending_invite';
@@ -117,6 +137,27 @@ type AdminUserService = {
     };
   }): Promise<AdminUser>;
   updateById(id: string | number, input: Record<string, unknown>): Promise<AdminUser | null>;
+};
+
+type DocumentRecord = Record<string, unknown> & {
+  adminUserId?: string;
+  documentId?: string;
+  id?: number | string;
+  profileImage?: Record<string, unknown> | null;
+};
+
+type DocumentCollection = {
+  create(input: Record<string, unknown>): Promise<DocumentRecord>;
+  findMany(input: Record<string, unknown>): Promise<DocumentRecord[]>;
+  update(input: Record<string, unknown>): Promise<DocumentRecord>;
+};
+
+type UploadedFile = {
+  filepath?: string;
+  mimetype?: string;
+  originalFilename?: string;
+  path?: string;
+  size?: number;
 };
 
 type AdminRoleService = {
@@ -189,6 +230,13 @@ const staffListSchema = sessionTokenSchema
   })
   .strict();
 
+const staffProfileUpdateSchema = sessionTokenSchema
+  .extend({
+    firstname: z.string().trim().min(1).max(80),
+    lastname: z.string().trim().max(80).optional().transform((value) => value || ''),
+  })
+  .strict();
+
 const staffUserRoleSchema = staffUserActionSchema
   .extend({
     roleKey: staffRoleKeySchema,
@@ -246,6 +294,7 @@ const validateVerifyTwoFactor = validateZodSchema(verifyTwoFactorSchema);
 const validateResendTwoFactor = validateZodSchema(resendTwoFactorSchema);
 const validateSessionToken = validateZodSchema(sessionTokenSchema);
 const validateStaffList = validateZodSchema(staffListSchema);
+const validateStaffProfileUpdate = validateZodSchema(staffProfileUpdateSchema);
 const validateStaffPasswordReset = validateZodSchema(staffPasswordResetSchema);
 const validateStaffUserAction = validateZodSchema(staffUserActionSchema);
 const validateStaffUserRole = validateZodSchema(staffUserRoleSchema);
@@ -294,6 +343,75 @@ const token = () => randomBytes(sessionTokenBytes).toString('base64url');
 const resetPasswordToken = () => randomBytes(resetPasswordTokenBytes).toString('hex');
 const addSeconds = (seconds: number) => new Date(Date.now() + seconds * 1000).toISOString();
 const isPast = (isoDate?: string) => !isoDate || new Date(isoDate).getTime() <= Date.now();
+const profileImageFormats = ['webp', 'avif'] as const;
+
+const getUploadedFilePath = (file?: UploadedFile) => file?.filepath || file?.path;
+
+const profileImageFormat = () => {
+  const configuredFormat = (process.env.ADMIN_PROFILE_IMAGE_FORMAT || 'webp').toLowerCase();
+
+  return profileImageFormats.includes(configuredFormat as (typeof profileImageFormats)[number])
+    ? (configuredFormat as (typeof profileImageFormats)[number])
+    : 'webp';
+};
+
+const profileImageMime = (format: (typeof profileImageFormats)[number]) =>
+  format === 'avif' ? 'image/avif' : 'image/webp';
+
+const processProfileImage = async (file?: UploadedFile) => {
+  const inputPath = getUploadedFilePath(file);
+
+  if (!inputPath) {
+    throw new ValidationError('A profile image file is required.');
+  }
+
+  const maxBytes = secondsEnv('ADMIN_PROFILE_IMAGE_MAX_BYTES', 6 * 1024 * 1024);
+
+  if (file?.size && file.size > maxBytes) {
+    throw new ValidationError('Profile image is too large.');
+  }
+
+  const format = profileImageFormat();
+  const mime = profileImageMime(format);
+  const size = secondsEnv('ADMIN_PROFILE_IMAGE_SIZE', 512);
+  const quality = Math.min(
+    100,
+    Math.max(1, secondsEnv('ADMIN_PROFILE_IMAGE_QUALITY', format === 'avif' ? 58 : 82))
+  );
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), 'hireflip-admin-profile-image-'));
+  const outputPath = path.join(tmpDir, `profile-image.${format}`);
+
+  try {
+    const transformer = sharp(inputPath, { failOn: 'error' })
+      .rotate()
+      .resize(size, size, {
+        fit: 'cover',
+        position: 'attention',
+      });
+
+    if (format === 'avif') {
+      await transformer.avif({ quality }).toFile(outputPath);
+    } else {
+      await transformer.webp({ quality }).toFile(outputPath);
+    }
+
+    const outputStats = await stat(outputPath);
+
+    return {
+      format,
+      mime,
+      outputPath,
+      sizeInBytes: outputStats.size,
+      tmpDir,
+    };
+  } catch (error) {
+    await rm(tmpDir, { force: true, recursive: true });
+
+    throw new ValidationError(
+      error instanceof Error ? `Profile image could not be processed: ${error.message}` : 'Profile image could not be processed.'
+    );
+  }
+};
 
 const createCodeHash = async (challengeId: string, code: string, salt: string) => {
   const derivedKey = (await scryptAsync(`${challengeId}:${code}`, salt, 64)) as Buffer;
@@ -363,6 +481,97 @@ const getAdminUserService = () => strapi.service('admin::user') as unknown as Ad
 const getAdminRoleService = () => strapi.service('admin::role') as unknown as AdminRoleService;
 const getAuditEventService = () =>
   strapi.service('api::audit-event.audit-event') as unknown as AuditEventService;
+const documents = (uid: string) => strapi.documents(uid as never) as DocumentCollection;
+
+const findStaffProfile = async (adminUserId: string) => {
+  const profiles = await documents('api::staff-profile.staff-profile').findMany({
+    filters: {
+      adminUserId,
+    },
+    limit: 1,
+    populate: ['profileImage'],
+  });
+
+  return profiles[0] || null;
+};
+
+const recoverUploadPath = (file) => {
+  if (!file?.url || file.path || !file.hash) {
+    return file;
+  }
+
+  try {
+    const objectKey = decodeURIComponent(new URL(file.url).pathname.replace(/^\/+/, ''));
+    const expectedFileName = `${file.hash}${file.ext || ''}`;
+
+    if (!expectedFileName || !objectKey.endsWith(expectedFileName)) {
+      return file;
+    }
+
+    const prefix = objectKey.slice(0, -expectedFileName.length).replace(/\/+$/, '');
+
+    return prefix
+      ? {
+          ...file,
+          path: prefix,
+        }
+      : file;
+  } catch {
+    return file;
+  }
+};
+
+const withRecoveredUploadPath = (file) => {
+  const recoveredFile = recoverUploadPath(file);
+
+  if (!recoveredFile?.formats) {
+    return recoveredFile;
+  }
+
+  return {
+    ...recoveredFile,
+    formats: Object.fromEntries(
+      Object.entries(recoveredFile.formats).map(([key, format]) => [
+        key,
+        recoverUploadPath(format),
+      ])
+    ),
+  };
+};
+
+const sanitizeStaffProfileImage = async (profileImage?: Record<string, unknown> | null): Promise<StaffProfileImage | null> => {
+  if (!profileImage) {
+    return null;
+  }
+
+  const signedProfileImage = await strapi
+    .plugin('upload')
+    .service('file')
+    .signFileUrls(withRecoveredUploadPath(profileImage));
+
+  if (!signedProfileImage?.url) {
+    return null;
+  }
+
+  return {
+    id: signedProfileImage.id,
+    documentId: signedProfileImage.documentId,
+    name: signedProfileImage.name,
+    alternativeText: signedProfileImage.alternativeText,
+    ext: signedProfileImage.ext,
+    mime: signedProfileImage.mime,
+    size: signedProfileImage.size,
+    width: signedProfileImage.width,
+    height: signedProfileImage.height,
+    url: signedProfileImage.url,
+  };
+};
+
+const profileImageForStaffUser = async (staffUserId: string) => {
+  const staffProfile = await findStaffProfile(staffUserId);
+
+  return sanitizeStaffProfileImage(staffProfile?.profileImage);
+};
 
 const staffRoleDefinitions: Record<Exclude<AdminRoleKey, 'super_admin'>, { code: string; label: string }> = {
   admin: {
@@ -451,9 +660,21 @@ const toSessionUser = (user: AdminUser): AdminSessionUser => {
   return {
     displayName: displayName(user),
     email: user.email,
+    firstname: typeof user.firstname === 'string' ? user.firstname : '',
     id: String(user.id),
+    lastname: typeof user.lastname === 'string' ? user.lastname : '',
+    profileImage: null,
     roleKeys,
     roles: roleKeys.map(roleLabel),
+  };
+};
+
+const toSessionUserWithProfile = async (user: AdminUser): Promise<AdminSessionUser> => {
+  const sessionUser = toSessionUser(user);
+
+  return {
+    ...sessionUser,
+    profileImage: await profileImageForStaffUser(sessionUser.id),
   };
 };
 
@@ -826,9 +1047,12 @@ const getStoredSession = async (store: Store, sessionToken: string, context?: Re
     throw new UnauthorizedError('Admin session expired.');
   }
 
+  const currentUser = await findAdminUserById(session.userId).catch(() => null);
+  const hydratedUser = currentUser ? await toSessionUserWithProfile(currentUser) : session.user;
   const nextSession = {
     ...session,
     lastSeenAt: new Date().toISOString(),
+    user: hydratedUser,
   };
 
   await store.set({
@@ -838,12 +1062,12 @@ const getStoredSession = async (store: Store, sessionToken: string, context?: Re
 
   if (context) {
     void recordAuditEvent('admin.auth.session_validated', context, {
-      actorEmail: session.user.email,
-      actorId: session.user.id,
-      actorDisplayName: session.user.displayName,
+      actorEmail: hydratedUser.email,
+      actorId: hydratedUser.id,
+      actorDisplayName: hydratedUser.displayName,
       metadata: {
         rememberMe: session.rememberMe,
-        roleKeys: session.user.roleKeys,
+        roleKeys: hydratedUser.roleKeys,
       },
     });
   }
@@ -851,7 +1075,7 @@ const getStoredSession = async (store: Store, sessionToken: string, context?: Re
   return {
     expiresAt: session.expiresAt,
     rememberMe: session.rememberMe,
-    user: session.user,
+    user: hydratedUser,
   };
 };
 
@@ -908,7 +1132,7 @@ export default () => ({
     await clearFailedAttempt(store, 'login:ip', requestContext.ipAddress);
 
     const fullUser = await findAdminUserById(user.id || '');
-    const sessionUser = toSessionUser(fullUser || user);
+    const sessionUser = await toSessionUserWithProfile(fullUser || user);
     const challengeId = randomUUID();
     const code = numericCode();
     const salt = randomBytes(16).toString('hex');
@@ -1142,7 +1366,7 @@ export default () => ({
     return getStoredSession(getStore(), body.sessionToken, requestContext);
   },
 
-  async logout(input: unknown, requestContext: RequestContext = {}) {
+	  async logout(input: unknown, requestContext: RequestContext = {}) {
     const body = validateSessionToken(input);
     const store = getStore();
     const sessionHash = hashValue(body.sessionToken);
@@ -1158,12 +1382,163 @@ export default () => ({
       });
     }
 
-    return {
-      loggedOut: true,
-    };
-  },
+	    return {
+	      loggedOut: true,
+	    };
+	  },
 
-  async requestStaffPasswordReset(input: unknown, requestContext: RequestContext = {}) {
+	  async updateCurrentStaffProfile(input: unknown, requestContext: RequestContext = {}) {
+	    const body = validateStaffProfileUpdate(input);
+	    const store = getStore();
+	    const sessionHash = hashValue(body.sessionToken);
+	    const session = await getStoredSession(store, body.sessionToken, requestContext);
+	    const updatedUser = await getAdminUserService().updateById(session.user.id, {
+	      firstname: body.firstname,
+	      lastname: body.lastname || null,
+	    });
+
+	    if (!updatedUser?.id) {
+	      throw new ValidationError('Staff profile could not be updated.');
+	    }
+
+	    const fullStaffUser = await findAdminUserById(updatedUser.id);
+	    const sessionUser = await toSessionUserWithProfile(fullStaffUser || updatedUser);
+	    const nextSession: AdminSession = {
+	      ...(await store.get({ key: sessionKey(sessionHash) }) as AdminSession),
+	      user: sessionUser,
+	      userId: sessionUser.id,
+	    };
+
+	    await store.set({
+	      key: sessionKey(sessionHash),
+	      value: nextSession,
+	    });
+
+	    await recordAuditEvent('admin.staff.profile_updated', requestContext, {
+	      actorEmail: sessionUser.email,
+	      actorId: sessionUser.id,
+	      actorDisplayName: sessionUser.displayName,
+	      eventCategory: 'security',
+	      metadata: {
+	        changedFields: ['firstname', 'lastname'],
+	      },
+	      subjectDisplayName: sessionUser.displayName,
+	      subjectId: sessionUser.id,
+	      subjectType: 'admin_user',
+	    });
+
+	    return {
+	      staffUser: sessionUser,
+	      updated: true,
+	    };
+	  },
+
+	  async updateCurrentStaffProfileImage(
+	    input: unknown,
+	    file: UploadedFile | undefined,
+	    requestContext: RequestContext = {}
+	  ) {
+	    const body = validateSessionToken(input);
+	    const store = getStore();
+	    const sessionHash = hashValue(body.sessionToken);
+	    const session = await getStoredSession(store, body.sessionToken, requestContext);
+	    const processedImage = await processProfileImage(file);
+	    let staffProfile = await findStaffProfile(session.user.id);
+	    const previousProfileImage = staffProfile?.profileImage || null;
+
+	    try {
+	      if (!staffProfile?.documentId) {
+	        staffProfile = await documents('api::staff-profile.staff-profile').create({
+	          data: {
+	            adminUserId: session.user.id,
+	          },
+	        });
+	      }
+
+	      if (!staffProfile?.id || !staffProfile.documentId) {
+	        throw new ValidationError('Staff profile record could not be created.');
+	      }
+
+	      const uploadedFiles = await strapi.plugin('upload').service('upload').upload({
+	        data: {
+	          fileInfo: {
+	            alternativeText: `${session.user.displayName} profile image`,
+	            name: `admin-profile-${session.user.id}.${processedImage.format}`,
+	          },
+	          field: 'profileImage',
+	          ref: 'api::staff-profile.staff-profile',
+	          refId: staffProfile.id,
+	        },
+	        files: {
+	          filepath: processedImage.outputPath,
+	          mimetype: processedImage.mime,
+	          originalFilename: `admin-profile-${session.user.id}.${processedImage.format}`,
+	          size: processedImage.sizeInBytes,
+	        },
+	      });
+
+	      const uploadedFile = uploadedFiles[0];
+
+	      if (!uploadedFile?.id) {
+	        throw new ValidationError('Profile image upload did not return a stored file.');
+	      }
+
+	      const updatedProfile = await documents('api::staff-profile.staff-profile').update({
+	        documentId: staffProfile.documentId,
+	        data: {
+	          profileImage: uploadedFile.id,
+	        },
+	        populate: ['profileImage'],
+	      });
+	      const profileImage = await sanitizeStaffProfileImage(updatedProfile.profileImage);
+	      const nextSessionUser: AdminSessionUser = {
+	        ...session.user,
+	        profileImage,
+	      };
+	      const nextSession: AdminSession = {
+	        ...(await store.get({ key: sessionKey(sessionHash) }) as AdminSession),
+	        user: nextSessionUser,
+	      };
+
+	      await store.set({
+	        key: sessionKey(sessionHash),
+	        value: nextSession,
+	      });
+
+	      await recordAuditEvent('admin.staff.profile_image_updated', requestContext, {
+	        actorEmail: nextSessionUser.email,
+	        actorId: nextSessionUser.id,
+	        actorDisplayName: nextSessionUser.displayName,
+	        eventCategory: 'security',
+	        newState: {
+	          profileImage,
+	        },
+	        subjectDisplayName: nextSessionUser.displayName,
+	        subjectId: nextSessionUser.id,
+	        subjectType: 'admin_user',
+	      });
+
+	      if (previousProfileImage?.id && previousProfileImage.id !== uploadedFile.id) {
+	        await strapi.plugin('upload').service('upload').remove(previousProfileImage).catch((error) => {
+	          strapi.log.warn(
+	            `Could not remove previous admin profile image ${previousProfileImage.id}: ${
+	              error instanceof Error ? error.message : String(error)
+	            }`
+	          );
+	        });
+	      }
+
+	      return {
+	        profileImage,
+	        staffUser: nextSessionUser,
+	        updated: true,
+	      };
+	    } finally {
+	      await rm(processedImage.tmpDir, { force: true, recursive: true });
+	    }
+	  },
+
+	  async requestStaffPasswordReset(input: unknown, requestContext: RequestContext = {}) {
     const body = validateStaffPasswordReset(input);
     const store = getStore();
     const actorSession = await requireSuperAdminSession(store, body.sessionToken, requestContext);

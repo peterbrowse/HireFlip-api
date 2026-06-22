@@ -45,6 +45,24 @@ export default {
 	    },
 	    {
 	      method: 'POST',
+	      path: '/internal/employer-dashboard/profile/update',
+	      handler: 'employer-dashboard.updateProfile',
+	      config: {
+	        auth: false,
+	        policies: [employerDashboardServicePolicy],
+	      },
+	    },
+	    {
+	      method: 'POST',
+	      path: '/internal/employer-dashboard/profile-image/update',
+	      handler: 'employer-dashboard.updateProfileImage',
+	      config: {
+	        auth: false,
+	        policies: [employerDashboardServicePolicy],
+	      },
+	    },
+	    {
+	      method: 'POST',
 	      path: '/internal/employer-dashboard/team/invite',
 	      handler: 'employer-dashboard.inviteTeamContact',
 	      config: {

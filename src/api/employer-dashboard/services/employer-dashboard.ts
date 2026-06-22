@@ -1,5 +1,9 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { mkdtemp, rm, stat } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { errors, validateZodSchema, z } from '@strapi/utils';
+import sharp from 'sharp';
 import { getAuth0ManagementClient, type Auth0User } from '../../../utils/auth0-management';
 
 const { ValidationError } = errors;
@@ -89,6 +93,7 @@ type DocumentRecord = Record<string, unknown> & {
   roleTitle?: string;
   slug?: string;
   phone?: string;
+  profileImage?: DocumentRecord;
   scheduledEndTime?: string;
   scheduledStartTime?: string;
   slotState?: string;
@@ -109,6 +114,8 @@ type DocumentCollection = {
 
 type StrapiDocumentService = {
   documents(uid: string): unknown;
+  log?: { warn(message: string): void };
+  plugin(uid: string): { service(uid: string): any };
   service(uid: string): unknown;
 };
 
@@ -118,6 +125,14 @@ type AuditEventService = {
 
 type InterviewRequestService = {
   markSlotOptionsSubmitted(input: unknown, context: RequestContext): Promise<unknown>;
+};
+
+type UploadedFile = {
+  filepath?: string;
+  mimetype?: string;
+  originalFilename?: string;
+  path?: string;
+  size?: number;
 };
 
 type EmployerInviteAcceptanceIdentity = {
@@ -227,6 +242,15 @@ const updateSettingsSchema = identitySchema
   })
   .strict();
 
+const updateProfileSchema = identitySchema
+  .extend({
+    firstName: z.string().trim().min(1).max(120),
+    lastName: z.string().trim().min(1).max(120),
+    phone: z.string().trim().max(40).optional().transform((value) => value || null),
+    roleTitle: z.string().trim().max(160).optional().transform((value) => value || null),
+  })
+  .strict();
+
 const inviteTeamContactSchema = identitySchema
   .extend({
     coverageRegionDocumentIds: z
@@ -261,6 +285,7 @@ const validateCreateInterviewSlotOffer = validateZodSchema(createInterviewSlotOf
 const validateInviteTeamContact = validateZodSchema(inviteTeamContactSchema);
 const validateInviteToken = validateZodSchema(inviteTokenSchema);
 const validateAcceptInvite = validateZodSchema(acceptInviteSchema);
+const validateUpdateProfile = validateZodSchema(updateProfileSchema);
 const validateUpdateSettings = validateZodSchema(updateSettingsSchema);
 
 const documents = (strapi: StrapiDocumentService, uid: string) =>
@@ -304,6 +329,148 @@ const getIntegerEnv = (key: string, fallback: number) => {
   const value = Number.parseInt(process.env[key] || '', 10);
 
   return Number.isFinite(value) && value > 0 ? value : fallback;
+};
+
+const profileImageFormats = ['webp', 'avif'] as const;
+
+const getEmployerProfileImageFormat = () => {
+  const configuredFormat = (process.env.EMPLOYER_PROFILE_IMAGE_FORMAT || 'webp').toLowerCase();
+
+  return profileImageFormats.includes(configuredFormat as (typeof profileImageFormats)[number])
+    ? (configuredFormat as (typeof profileImageFormats)[number])
+    : 'webp';
+};
+
+const getEmployerProfileImageMime = (format: (typeof profileImageFormats)[number]) =>
+  format === 'avif' ? 'image/avif' : 'image/webp';
+
+const getUploadedFilePath = (file?: UploadedFile) => file?.filepath || file?.path;
+
+const processEmployerProfileImage = async (file?: UploadedFile) => {
+  const inputPath = getUploadedFilePath(file);
+
+  if (!inputPath) {
+    throw new ValidationError('A profile image file is required.');
+  }
+
+  const maxBytes = getIntegerEnv('EMPLOYER_PROFILE_IMAGE_MAX_BYTES', 6 * 1024 * 1024);
+
+  if (file?.size && file.size > maxBytes) {
+    throw new ValidationError('Profile image is too large.');
+  }
+
+  const format = getEmployerProfileImageFormat();
+  const mime = getEmployerProfileImageMime(format);
+  const size = getIntegerEnv('EMPLOYER_PROFILE_IMAGE_SIZE', 512);
+  const quality = Math.min(
+    100,
+    Math.max(1, getIntegerEnv('EMPLOYER_PROFILE_IMAGE_QUALITY', format === 'avif' ? 58 : 82))
+  );
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), 'hireflip-employer-profile-image-'));
+  const outputPath = path.join(tmpDir, `profile-image.${format}`);
+
+  try {
+    const transformer = sharp(inputPath, { failOn: 'error' })
+      .rotate()
+      .resize(size, size, {
+        fit: 'cover',
+        position: 'attention',
+      });
+
+    if (format === 'avif') {
+      await transformer.avif({ quality }).toFile(outputPath);
+    } else {
+      await transformer.webp({ quality }).toFile(outputPath);
+    }
+
+    const outputStats = await stat(outputPath);
+
+    return {
+      format,
+      mime,
+      outputPath,
+      sizeInBytes: outputStats.size,
+      tmpDir,
+    };
+  } catch (error) {
+    await rm(tmpDir, { force: true, recursive: true });
+
+    throw new ValidationError(
+      error instanceof Error ? `Profile image could not be processed: ${error.message}` : 'Profile image could not be processed.'
+    );
+  }
+};
+
+const recoverUploadPath = (file) => {
+  if (!file?.url || file.path || !file.hash) {
+    return file;
+  }
+
+  try {
+    const objectKey = decodeURIComponent(new URL(file.url).pathname.replace(/^\/+/, ''));
+    const expectedFileName = `${file.hash}${file.ext || ''}`;
+
+    if (!expectedFileName || !objectKey.endsWith(expectedFileName)) {
+      return file;
+    }
+
+    const prefix = objectKey.slice(0, -expectedFileName.length).replace(/\/+$/, '');
+
+    return prefix
+      ? {
+          ...file,
+          path: prefix,
+        }
+      : file;
+  } catch {
+    return file;
+  }
+};
+
+const withRecoveredUploadPath = (file) => {
+  const recoveredFile = recoverUploadPath(file);
+
+  if (!recoveredFile?.formats) {
+    return recoveredFile;
+  }
+
+  return {
+    ...recoveredFile,
+    formats: Object.fromEntries(
+      Object.entries(recoveredFile.formats).map(([key, format]) => [
+        key,
+        recoverUploadPath(format),
+      ])
+    ),
+  };
+};
+
+const sanitizeEmployerProfileImage = async (strapi: StrapiDocumentService, profileImage?: DocumentRecord | null) => {
+  if (!profileImage) {
+    return null;
+  }
+
+  const signedProfileImage = await strapi
+    .plugin('upload')
+    .service('file')
+    .signFileUrls(withRecoveredUploadPath(profileImage));
+
+  if (!signedProfileImage) {
+    return null;
+  }
+
+  return {
+    id: signedProfileImage.id,
+    documentId: signedProfileImage.documentId,
+    name: signedProfileImage.name,
+    alternativeText: signedProfileImage.alternativeText,
+    ext: signedProfileImage.ext,
+    mime: signedProfileImage.mime,
+    size: signedProfileImage.size,
+    width: signedProfileImage.width,
+    height: signedProfileImage.height,
+    url: signedProfileImage.url,
+  };
 };
 
 const addCalendarDays = (days: number) => {
@@ -485,10 +652,11 @@ const findEmployerContact = async (
     limit: 1,
     populate: {
       coverageRegions: true,
+      profileImage: true,
       employer: {
         populate: {
           contacts: {
-            populate: ['coverageRegions'],
+            populate: ['coverageRegions', 'profileImage'],
           },
           operatingRegions: true,
           regionCommitments: {
@@ -693,7 +861,7 @@ const publicRegionCommitment = (commitment: DocumentRecord) => {
   };
 };
 
-const publicContactPayload = (contact: DocumentRecord) => ({
+const publicContactPayload = async (strapi: StrapiDocumentService, contact: DocumentRecord) => ({
   contactState: contact.contactState || 'listed',
   contactStateLabel: humanize(String(contact.contactState || 'listed')),
   contactRole: contact.contactRole || 'team_contact',
@@ -708,6 +876,7 @@ const publicContactPayload = (contact: DocumentRecord) => ({
   lastName: contact.lastName || null,
   name: contactDisplayName(contact),
   phone: contact.phone || null,
+  profileImage: await sanitizeEmployerProfileImage(strapi, contact.profileImage),
   roleTitle: contact.roleTitle || null,
 });
 
@@ -750,7 +919,8 @@ const onboardingCurrentStep = (contact: DocumentRecord) => {
   return 'terms';
 };
 
-const onboardingPayload = (
+const onboardingPayload = async (
+  strapi: StrapiDocumentService,
   contact: DocumentRecord,
   {
     availableRegions = [],
@@ -763,6 +933,12 @@ const onboardingPayload = (
   const employer = contact.employer;
   const regions = employerRegions(employer);
   const contacts = Array.isArray(employer?.contacts) ? employer.contacts : [];
+  const teamContacts = await Promise.all(
+    contacts
+      .filter((teamContact) => getDocumentId(teamContact) !== getDocumentId(contact))
+      .filter((teamContact) => !['archived', 'disabled'].includes(String(teamContact.contactState || '')))
+      .map((teamContact) => publicContactPayload(strapi, teamContact))
+  );
 
   return {
     availableRegions: publicRegionOptions(availableRegions),
@@ -788,12 +964,9 @@ const onboardingPayload = (
     completedAt: employer?.dashboardOnboardingCompletedAt || null,
     currentStep: onboardingCurrentStep(contact),
     isComplete: isDashboardOnboardingComplete(employer),
-    leadContact: publicContactPayload(contact),
+    leadContact: await publicContactPayload(strapi, contact),
     state: dashboardOnboardingState(employer),
-    teamContacts: contacts
-      .filter((teamContact) => getDocumentId(teamContact) !== getDocumentId(contact))
-      .filter((teamContact) => !['archived', 'disabled'].includes(String(teamContact.contactState || '')))
-      .map(publicContactPayload),
+    teamContacts,
     terms: {
       acceptedAt: employer?.employerTermsAcceptedAt || null,
       acceptedByEmail: employer?.employerTermsAcceptedByEmail || null,
@@ -804,11 +977,16 @@ const onboardingPayload = (
   };
 };
 
-const accountPayload = (contact: DocumentRecord) => {
+const accountPayload = async (strapi: StrapiDocumentService, contact: DocumentRecord) => {
   const employer = contact.employer;
   const regions = employerRegions(employer);
   const regionsLabel = regionLabel(regions);
   const contacts = Array.isArray(employer?.contacts) ? employer.contacts : [];
+  const publicContacts = await Promise.all(
+    contacts
+      .filter((teamContact) => !['archived', 'disabled'].includes(String(teamContact.contactState || '')))
+      .map((teamContact) => publicContactPayload(strapi, teamContact))
+  );
 
   return {
     assignmentModeLabel: humanize(String(employer?.assignmentMode || 'automatic')),
@@ -829,12 +1007,10 @@ const accountPayload = (contact: DocumentRecord) => {
     contactEmail: contact.email || 'Not recorded',
     contactName: contactDisplayName(contact),
     contactRole: contact.contactRole || 'team_contact',
-    contacts: contacts
-      .filter((teamContact) => !['archived', 'disabled'].includes(String(teamContact.contactState || '')))
-      .map(publicContactPayload),
+    contacts: publicContacts,
     coverage: coverageStatus(employer),
-    leadContact: publicContactPayload(contact),
-    onboarding: onboardingPayload(contact),
+    leadContact: await publicContactPayload(strapi, contact),
+    onboarding: await onboardingPayload(strapi, contact),
     region: regionsLabel,
     regionNames: regionNames(regions),
     regions,
@@ -1388,7 +1564,7 @@ const acceptInviteRecord = async (
 
 	  return {
 	    accepted: true,
-	    account: accountPayload(updatedContact),
+	    account: await accountPayload(strapi, updatedContact),
 	    invite: publicInvitePayload(acceptedInvite),
 	  };
 	};
@@ -2033,9 +2209,9 @@ export default ({ strapi }) => ({
 	    ]);
 
 	    return {
-	      account: accountPayload(contact),
+	      account: await accountPayload(strapi, contact),
 	      generatedAt: new Date().toISOString(),
-	      onboarding: onboardingPayload(contact, {
+	      onboarding: await onboardingPayload(strapi, contact, {
 	        availableRegions,
 	        termsPolicy,
 	      }),
@@ -2195,9 +2371,9 @@ export default ({ strapi }) => ({
 	    const refreshedContact = await findEmployerContact(strapi, body);
 
 	    return {
-	      account: accountPayload(refreshedContact),
+	      account: await accountPayload(strapi, refreshedContact),
 	      completed: true,
-	      onboarding: onboardingPayload(refreshedContact, {
+	      onboarding: await onboardingPayload(strapi, refreshedContact, {
 	        availableRegions: await getOperationalClassAreas(strapi),
 	        termsPolicy,
 	      }),
@@ -2349,12 +2525,157 @@ export default ({ strapi }) => ({
 	    const refreshedContact = await findEmployerContact(strapi, body);
 
 	    return {
-	      account: accountPayload(refreshedContact),
+	      account: await accountPayload(strapi, refreshedContact),
 	      settings: {
 	        reviewNeeded,
 	        updated: true,
 	      },
 	    };
+	  },
+
+	  async updateProfile(input: unknown, requestContext: RequestContext = {}) {
+	    const body = validateUpdateProfile(input);
+	    const contact = await findEmployerContact(strapi, body);
+	    const contactDocumentId = getDocumentId(contact);
+
+	    if (!contactDocumentId) {
+	      throw new ValidationError('Employer contact record could not be found.');
+	    }
+
+	    await documents(strapi, 'api::employer-contact.employer-contact').update({
+	      documentId: contactDocumentId,
+	      data: {
+	        firstName: body.firstName,
+	        lastName: body.lastName,
+	        phone: body.phone,
+	        roleTitle: body.roleTitle,
+	      },
+	    });
+
+	    await auditEvents(strapi).record({
+	      actorDisplayName: contactDisplayName(contact),
+	      actorEmail: body.email || contact.email || undefined,
+	      actorId: contactDocumentId,
+	      actorType: 'employer_contact',
+	      eventCategory: 'employer',
+	      eventType: 'employer.contact_profile_updated',
+	      ipAddress: requestContext.ipAddress,
+	      metadata: {
+	        changedFields: ['firstName', 'lastName', 'phone', 'roleTitle'],
+	      },
+	      requestId: requestContext.requestId,
+	      serviceName: requestContext.serviceName,
+	      severity: 'info',
+	      source: 'employer_dashboard',
+	      subjectDisplayName: `${body.firstName} ${body.lastName}`.trim(),
+	      subjectId: contactDocumentId,
+	      subjectType: 'employer_contact',
+	      userAgent: requestContext.userAgent,
+	    });
+
+	    const refreshedContact = await findEmployerContact(strapi, body);
+
+	    return {
+	      account: await accountPayload(strapi, refreshedContact),
+	      onboarding: await onboardingPayload(strapi, refreshedContact, {
+	        availableRegions: await getOperationalClassAreas(strapi),
+	        termsPolicy: await findActivePolicyDocument(strapi, 'employer_terms'),
+	      }),
+	      profile: await publicContactPayload(strapi, refreshedContact),
+	      updated: true,
+	    };
+	  },
+
+	  async updateProfileImage(input: unknown, file: UploadedFile | undefined, requestContext: RequestContext = {}) {
+	    const identity = validateIdentity(input);
+	    const contact = await findEmployerContact(strapi, identity);
+	    const contactDocumentId = getDocumentId(contact);
+
+	    if (!contactDocumentId || !contact.id) {
+	      throw new ValidationError('Employer contact record could not be found.');
+	    }
+
+	    const previousProfileImage = contact.profileImage;
+	    const processedImage = await processEmployerProfileImage(file);
+
+	    try {
+	      const uploadedFiles = await strapi.plugin('upload').service('upload').upload({
+	        data: {
+	          fileInfo: {
+	            alternativeText: `${contactDisplayName(contact)} profile image`,
+	            name: `employer-contact-profile-${contactDocumentId}.${processedImage.format}`,
+	          },
+	          field: 'profileImage',
+	          ref: 'api::employer-contact.employer-contact',
+	          refId: contact.id,
+	        },
+	        files: {
+	          filepath: processedImage.outputPath,
+	          mimetype: processedImage.mime,
+	          originalFilename: `employer-contact-profile-${contactDocumentId}.${processedImage.format}`,
+	          size: processedImage.sizeInBytes,
+	        },
+	      });
+
+	      const uploadedFile = uploadedFiles[0];
+
+	      if (!uploadedFile?.id) {
+	        throw new ValidationError('Profile image upload did not return a stored file.');
+	      }
+
+	      await documents(strapi, 'api::employer-contact.employer-contact').update({
+	        documentId: contactDocumentId,
+	        data: {
+	          profileImage: uploadedFile.id,
+	        },
+	      });
+
+	      const refreshedContact = await findEmployerContact(strapi, identity);
+	      const sanitizedProfileImage = await sanitizeEmployerProfileImage(
+	        strapi,
+	        refreshedContact.profileImage
+	      );
+
+	      await auditEvents(strapi).record({
+	        actorDisplayName: contactDisplayName(refreshedContact),
+	        actorEmail: identity.email || refreshedContact.email || undefined,
+	        actorId: contactDocumentId,
+	        actorType: 'employer_contact',
+	        eventCategory: 'employer',
+	        eventType: 'employer.contact_profile_image_updated',
+	        ipAddress: requestContext.ipAddress,
+	        newState: {
+	          profileImage: sanitizedProfileImage,
+	        },
+	        requestId: requestContext.requestId,
+	        serviceName: requestContext.serviceName,
+	        severity: 'info',
+	        source: 'employer_dashboard',
+	        subjectDisplayName: contactDisplayName(refreshedContact),
+	        subjectId: contactDocumentId,
+	        subjectType: 'employer_contact',
+	        userAgent: requestContext.userAgent,
+	      });
+
+	      if (previousProfileImage?.id && previousProfileImage.id !== uploadedFile.id) {
+	        await strapi.plugin('upload').service('upload').remove(previousProfileImage).catch((error) => {
+	          strapi.log?.warn(
+	            `Could not remove previous employer contact profile image ${previousProfileImage.id}: ${
+	              error instanceof Error ? error.message : String(error)
+	            }`
+	          );
+	        });
+	      }
+
+	      return {
+	        account: await accountPayload(strapi, refreshedContact),
+	        profile: await publicContactPayload(strapi, refreshedContact),
+	        profileImage: sanitizedProfileImage,
+	        updated: true,
+	      };
+	    } finally {
+	      await rm(processedImage.tmpDir, { force: true, recursive: true });
+	    }
 	  },
 
 	  async inviteTeamContact(input: unknown, requestContext: RequestContext = {}) {
@@ -2422,7 +2743,7 @@ export default ({ strapi }) => ({
 	      });
 
 	      return {
-	        contact: publicContactPayload(teamContact),
+	        contact: await publicContactPayload(strapi, teamContact),
 	        invited: false,
 	        message: 'Existing active team contact coverage was updated.',
 	      };
@@ -2557,7 +2878,7 @@ export default ({ strapi }) => ({
 	    });
 
 	    return {
-	      contact: publicContactPayload(teamContact),
+	      contact: await publicContactPayload(strapi, teamContact),
 	      invite: publicInvitePayload(deliveredInvite),
 	      inviteSent: deliveredInvite.deliveryState === 'queued',
 	      invited: true,
@@ -2697,7 +3018,7 @@ export default ({ strapi }) => ({
     );
 
     return {
-      account: accountPayload(contact),
+      account: await accountPayload(strapi, contact),
       availabilityRequests: capacityClaims.map(availabilityRequestPayload),
       feedbackRequests: feedbackDue.map(feedbackPayload),
       generatedAt: new Date().toISOString(),

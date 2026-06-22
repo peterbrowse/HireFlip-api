@@ -1,0 +1,28 @@
+{
+  "kind": "collectionType",
+  "collectionName": "staff_profiles",
+  "info": {
+    "singularName": "staff-profile",
+    "pluralName": "staff-profiles",
+    "displayName": "Staff Profile",
+    "description": "Dashboard profile media for HireFlip staff users."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "adminUserId": {
+      "type": "string",
+      "maxLength": 80,
+      "required": true,
+      "unique": true
+    },
+    "profileImage": {
+      "type": "media",
+      "multiple": false,
+      "allowedTypes": [
+        "images"
+      ]
+    }
+  }
+}
