@@ -272,6 +272,7 @@ const main = async () => {
     adminEmployer: null,
     adminEmployerContact: null,
     adminEmployerInvite: null,
+    adminReinvitedEmployerInvite: null,
     candidate: null,
     employer: null,
     employerContact: null,
@@ -475,6 +476,51 @@ const main = async () => {
       ),
       'Expected revoked employer invite to remain in employer invite history.'
     );
+
+    const archivedEmployer = await adminEmployerService.archiveEmployer({
+      employerDocumentId: created.adminEmployer.documentId,
+      sessionToken: 's'.repeat(32),
+    });
+
+    assert(archivedEmployer.archived === true, 'Expected employer archive to succeed.');
+    assert(archivedEmployer.employer.employerState === 'archived', 'Expected employer to be archived.');
+
+    const employerDetailAfterArchive = await adminEmployerService.getEmployerDetail({
+      employerDocumentId: created.adminEmployer.documentId,
+      sessionToken: 's'.repeat(32),
+    });
+
+    assert(
+      employerDetailAfterArchive.contacts.every((contact) => contact.contactState === 'archived'),
+      'Expected archive to move employer contacts out of active access.'
+    );
+
+    const reinvitedEmployer = await adminEmployerService.createInvite({
+      companyName: `Admin Reinvited Employer Smoke ${runId}`,
+      contactEmail: adminInviteEmail,
+      expiresInDays: 14,
+      firstName: 'Admin',
+      interviewCommitmentCadence: 'quarterly',
+      interviewCommitmentVolume: 2,
+      lastName: 'Invite',
+      region: adminClassArea.name,
+      roleTitle: 'People lead',
+      sessionToken: 's'.repeat(32),
+    });
+
+    assert(reinvitedEmployer.created === true, 'Expected archived employer to be inviteable again.');
+    assert(
+      reinvitedEmployer.invite.inviteUrl?.includes('/invite/'),
+      'Expected archived employer reinvite URL.'
+    );
+    created.adminReinvitedEmployerInvite = (
+      await documents(strapi, 'api::employer-invite.employer-invite').findMany({
+        filters: {
+          documentId: reinvitedEmployer.invite.documentId,
+        },
+        limit: 1,
+      })
+    )[0];
 
     const inviteToken = randomBytes(32).toString('base64url');
     const invitedEmployer = await documents(strapi, 'api::employer.employer').create({
@@ -817,6 +863,7 @@ const main = async () => {
     await deleteDocument(strapi, 'api::employer-contact.employer-contact', created.invitedEmployerContact?.documentId);
     await deleteDocument(strapi, 'api::employer.employer', created.invitedEmployer?.documentId);
     await deleteNotificationEventsForEmail(strapi, created.adminEmployerContact?.email);
+    await deleteDocument(strapi, 'api::employer-invite.employer-invite', created.adminReinvitedEmployerInvite?.documentId);
     await deleteDocument(strapi, 'api::employer-invite.employer-invite', created.adminEmployerInvite?.documentId);
     await deleteDocument(strapi, 'api::employer-contact.employer-contact', created.adminEmployerContact?.documentId);
     await deleteDocument(strapi, 'api::employer.employer', created.adminEmployer?.documentId);

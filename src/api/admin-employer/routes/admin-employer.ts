@@ -27,6 +27,15 @@ export default {
     },
     {
       method: 'POST',
+      path: '/internal/admin/employers/archive',
+      handler: 'admin-employer.archiveEmployer',
+      config: {
+        auth: false,
+        policies: [adminDashboardServicePolicy],
+      },
+    },
+    {
+      method: 'POST',
       path: '/internal/admin/employers/invites/options',
       handler: 'admin-employer.inviteOptions',
       config: {

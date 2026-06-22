@@ -149,10 +149,17 @@ const employerDetailSchema = sessionTokenSchema
   })
   .strict();
 
+const employerActionSchema = sessionTokenSchema
+  .extend({
+    employerDocumentId: z.string().trim().min(1).max(80),
+  })
+  .strict();
+
 const validateSessionToken = validateZodSchema(sessionTokenSchema);
 const validateListEmployers = validateZodSchema(listEmployersSchema);
 const validateCreateInvite = validateZodSchema(createInviteSchema);
 const validateEmployerDetail = validateZodSchema(employerDetailSchema);
+const validateEmployerAction = validateZodSchema(employerActionSchema);
 const validateInviteAction = validateZodSchema(inviteActionSchema);
 
 const documents = (strapi: StrapiDocumentService, uid: string) =>
@@ -179,6 +186,20 @@ const assertEmployerManageSession = async (
 
   if (!hasAnyRole(session, ['admin', 'sales', 'super_admin'])) {
     throw new ForbiddenError('Sales, Admin, or Super Admin access is required.');
+  }
+
+  return session;
+};
+
+const assertSuperAdminSession = async (
+  strapi: StrapiDocumentService,
+  sessionToken: string,
+  context: RequestContext
+) => {
+  const session = await adminAuthService(strapi).getSession({ sessionToken }, context);
+
+  if (!hasAnyRole(session, ['super_admin'])) {
+    throw new ForbiddenError('Super Admin access is required.');
   }
 
   return session;
@@ -731,6 +752,49 @@ const revokePendingInvitesForContact = async (
   );
 };
 
+const revokePendingInvitesForEmployer = async (
+  strapi: StrapiDocumentService,
+  employerDocumentId: string,
+  session: AdminSession,
+  requestContext: RequestContext
+) => {
+  const invites = await documents(strapi, 'api::employer-invite.employer-invite').findMany({
+    filters: {
+      employer: {
+        documentId: employerDocumentId,
+      },
+      inviteState: 'pending',
+    },
+    limit: 200,
+  });
+
+  await Promise.all(
+    invites.map((invite) => {
+      const inviteDocumentId = getDocumentId(invite);
+
+      if (!inviteDocumentId) {
+        return Promise.resolve(invite);
+      }
+
+      return documents(strapi, 'api::employer-invite.employer-invite').update({
+        documentId: inviteDocumentId,
+        data: {
+          inviteState: 'revoked',
+          metadata: {
+            ...(invite.metadata && typeof invite.metadata === 'object' ? invite.metadata : {}),
+            revokedByArchive: true,
+            revokedByStaffDisplayName: session.user.displayName,
+            revokedByStaffEmail: session.user.email,
+            revokedByStaffUserId: session.user.id,
+            revokedRequestId: requestContext.requestId,
+          },
+          revokedAt: new Date().toISOString(),
+        },
+      });
+    })
+  );
+};
+
 export default ({ strapi }) => ({
   async listEmployers(input: unknown, requestContext: RequestContext = {}) {
     const body = validateListEmployers(input);
@@ -1204,6 +1268,83 @@ export default ({ strapi }) => ({
     return {
       invite: publicInvite(updatedInvite),
       revoked: true,
+      user: session.user,
+    };
+  },
+
+  async archiveEmployer(input: unknown, requestContext: RequestContext = {}) {
+    const body = validateEmployerAction(input);
+    const session = await assertSuperAdminSession(strapi, body.sessionToken, requestContext);
+    const employers = await documents(strapi, 'api::employer.employer').findMany({
+      filters: {
+        documentId: body.employerDocumentId,
+      },
+      limit: 1,
+      populate: ['contacts'],
+    });
+    const employer = employers[0];
+
+    if (!employer) {
+      throw new ValidationError('Employer could not be found.');
+    }
+
+    const employerDocumentId = getDocumentId(employer);
+
+    if (!employerDocumentId) {
+      throw new ValidationError('Employer could not be updated.');
+    }
+
+    if (employer.employerState === 'archived') {
+      return {
+        archived: true,
+        employer: publicEmployer(employer),
+        user: session.user,
+      };
+    }
+
+    const contacts = Array.isArray(employer.contacts) ? employer.contacts : [];
+    const authIdentityIds = Array.from(
+      new Set(
+        contacts
+          .map((contact) => (typeof contact.authIdentityId === 'string' ? contact.authIdentityId : ''))
+          .filter(Boolean)
+      )
+    );
+
+    await Promise.all(
+      authIdentityIds.map((authIdentityId) => getAuth0ManagementClient().blockUser(authIdentityId))
+    );
+
+    await Promise.all(
+      contacts.map((contact) => {
+        const employerContactDocumentId = getDocumentId(contact);
+
+        if (!employerContactDocumentId) {
+          return Promise.resolve(contact);
+        }
+
+        return documents(strapi, 'api::employer-contact.employer-contact').update({
+          documentId: employerContactDocumentId,
+          data: {
+            contactState: 'archived',
+          },
+        });
+      })
+    );
+
+    await revokePendingInvitesForEmployer(strapi, employerDocumentId, session, requestContext);
+
+    const archivedEmployer = await documents(strapi, 'api::employer.employer').update({
+      documentId: employerDocumentId,
+      data: {
+        employerState: 'archived',
+      },
+      populate: ['contacts'],
+    });
+
+    return {
+      archived: true,
+      employer: publicEmployer(archivedEmployer),
       user: session.user,
     };
   },
