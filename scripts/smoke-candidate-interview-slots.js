@@ -455,6 +455,61 @@ const main = async () => {
       'Expected employer interview setup notification.'
     );
 
+    const employerDashboardService = strapi.service('api::employer-dashboard.employer-dashboard');
+    const employerIdentity = {
+      authIdentityId: created.contact.authIdentityId,
+      email: created.contact.email,
+    };
+    const interviewDocumentId = acceptance.interview?.documentId;
+
+    assert(interviewDocumentId, 'Expected accepted interview document id.');
+
+    const detailBeforeSetup = await employerDashboardService.getInterviewDetail({
+      ...employerIdentity,
+      interviewDocumentId,
+    });
+
+    assert(
+      detailBeforeSetup.interview?.state === 'awaiting_employer_details',
+      'Expected employer interview detail page to show setup needed.'
+    );
+
+    const confirmedDetail = await employerDashboardService.updateInterviewSetup(
+      {
+        ...employerIdentity,
+        arrivalInstructions: 'Ask for the interview team at reception.',
+        candidateInstructions: 'Bring photo ID and arrive five minutes early.',
+        employerContactDocumentId: created.contact.documentId,
+        interviewDocumentId,
+        interviewerName: 'Employer Smoke',
+        locationDetails: 'HireFlip Smoke Office, 1 Test Street, London',
+        locationType: 'in_person',
+      },
+      {
+        requestId: `candidate-interview-smoke-${runId}`,
+      }
+    );
+
+    assert(confirmedDetail.interview?.state === 'confirmed', 'Expected employer setup to confirm the interview.');
+    assert(
+      smokeFetch.notifications.some((notification) => notification.type === 'candidate_interview_details_updated'),
+      'Expected candidate interview detail notification.'
+    );
+
+    const confirmedCandidateState = await candidateService.getCurrentCandidateInterviewSlotOffers(auth, {
+      requestId: `candidate-interview-smoke-${runId}`,
+    });
+
+    assert(
+      confirmedCandidateState.activeOffer?.selectedInterview?.detailsPending === false,
+      'Expected candidate dashboard to reveal confirmed details.'
+    );
+    assert(
+      confirmedCandidateState.activeOffer?.selectedInterview?.locationDetails ===
+        'HireFlip Smoke Office, 1 Test Street, London',
+      'Expected candidate dashboard to include confirmed location details.'
+    );
+
     console.log('Candidate interview slot smoke passed.');
   } finally {
     global.fetch = globalThis.__hireflipOriginalFetch;

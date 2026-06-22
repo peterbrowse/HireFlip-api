@@ -62,6 +62,37 @@
     "confirmedAt": {
       "type": "datetime"
     },
+    "detailsProvidedAt": {
+      "type": "datetime"
+    },
+    "detailsUpdatedAt": {
+      "type": "datetime"
+    },
+    "locationType": {
+      "type": "enumeration",
+      "enum": [
+        "online",
+        "phone",
+        "in_person",
+        "to_be_confirmed"
+      ],
+      "default": "to_be_confirmed"
+    },
+    "locationDetails": {
+      "type": "text"
+    },
+    "meetingUrl": {
+      "type": "string"
+    },
+    "arrivalInstructions": {
+      "type": "text"
+    },
+    "candidateInstructions": {
+      "type": "text"
+    },
+    "interviewerName": {
+      "type": "string"
+    },
     "completedAt": {
       "type": "datetime"
     },

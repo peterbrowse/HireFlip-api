@@ -2475,7 +2475,9 @@ const candidateInterviewSlotOfferPopulate = {
   interviewRequest: {
     populate: ['class', 'region'],
   },
-  selectedInterview: true,
+  selectedInterview: {
+    populate: ['employerContact'],
+  },
   selectedSlot: {
     populate: ['employerContact'],
   },
@@ -2524,6 +2526,11 @@ const publicLocationTypeLabel = (value?: unknown) => {
   return 'To be confirmed';
 };
 
+const employerContactDisplayName = (contact?: DocumentRecord | null) =>
+  [contact?.firstName, contact?.lastName].filter(Boolean).join(' ') ||
+  contact?.email ||
+  null;
+
 const sanitizeCandidateInterviewSlot = (slot?: DocumentRecord | null, revealDetails = false) => {
   if (!slot) {
     return null;
@@ -2547,11 +2554,21 @@ const sanitizeCandidateInterviewRecord = (interview?: DocumentRecord | null) => 
   }
 
   const detailsVisible = String(interview.interviewState || '') === 'confirmed';
+  const employerContact = documentRecordValue(interview.employerContact);
 
   return {
+    arrivalInstructions: detailsVisible ? interview.arrivalInstructions || null : null,
+    candidateInstructions: detailsVisible ? interview.candidateInstructions || null : null,
     countsTowardGuarantee: Boolean(interview.countsTowardGuarantee),
     detailsPending: !detailsVisible,
     documentId: interview.documentId,
+    interviewerName: detailsVisible
+      ? interview.interviewerName || employerContactDisplayName(employerContact)
+      : null,
+    locationDetails: detailsVisible ? interview.locationDetails || null : null,
+    locationLabel: detailsVisible ? publicLocationTypeLabel(interview.locationType) : null,
+    locationType: detailsVisible ? interview.locationType || 'to_be_confirmed' : null,
+    meetingUrl: detailsVisible ? interview.meetingUrl || null : null,
     scheduledEndTime: interview.scheduledEndTime,
     scheduledStartTime: interview.scheduledStartTime,
     state: interview.interviewState || 'awaiting_employer_details',
@@ -6144,7 +6161,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       sanitizedOffers.find(
         (offer) =>
           offer.offerState === 'candidate_selected' &&
-          offer.selectedInterview?.detailsPending === true
+          Boolean(offer.selectedInterview)
       ) ||
       null;
 

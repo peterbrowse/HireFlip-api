@@ -133,5 +133,23 @@ export default {
         policies: [employerDashboardServicePolicy],
       },
     },
+    {
+      method: 'POST',
+      path: '/internal/employer-dashboard/interviews/detail',
+      handler: 'employer-dashboard.interviewDetail',
+      config: {
+        auth: false,
+        policies: [employerDashboardServicePolicy],
+      },
+    },
+    {
+      method: 'POST',
+      path: '/internal/employer-dashboard/interviews/setup',
+      handler: 'employer-dashboard.updateInterviewSetup',
+      config: {
+        auth: false,
+        policies: [employerDashboardServicePolicy],
+      },
+    },
   ],
 };

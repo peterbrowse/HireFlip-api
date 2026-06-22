@@ -26,6 +26,7 @@ type DocumentRecord = Record<string, unknown> & {
   candidate?: DocumentRecord;
   candidateNotifiedAt?: string;
   candidateResponseDeadline?: string;
+  arrivalInstructions?: string;
   capacityClaim?: DocumentRecord;
   capacityChangeRequestStatus?: string;
   class?: DocumentRecord;
@@ -68,12 +69,15 @@ type DocumentRecord = Record<string, unknown> & {
   id?: number | string;
   internalNote?: string;
   introCopy?: string;
+  detailsProvidedAt?: string;
+  detailsUpdatedAt?: string;
   initialInterviewCommitmentCadence?: string;
   initialInterviewCommitmentVolume?: number;
   interview?: DocumentRecord;
   interviewRequest?: DocumentRecord;
   interviewCommitmentCadence?: string;
   interviewCommitmentVolume?: number;
+  interviewerName?: string;
   interviewCoverageOverrideAt?: string;
   interviewCoverageOverrideByEmail?: string;
   interviewCoverageOverrideByName?: string;
@@ -84,6 +88,7 @@ type DocumentRecord = Record<string, unknown> & {
   locationDetails?: string;
   locationType?: string;
   meetingUrl?: string;
+  candidateInstructions?: string;
   offerState?: string;
   requestState?: string;
   inviteEmail?: string;
@@ -217,6 +222,25 @@ const createInterviewSlotOfferSchema = identitySchema
   })
   .strict();
 
+const interviewDetailSchema = identitySchema
+  .extend({
+    interviewDocumentId: z.string().trim().min(1).max(120),
+  })
+  .strict();
+
+const interviewSetupSchema = identitySchema
+  .extend({
+    arrivalInstructions: z.string().trim().max(2000).optional().transform((value) => value || undefined),
+    candidateInstructions: z.string().trim().max(2000).optional().transform((value) => value || undefined),
+    employerContactDocumentId: z.string().trim().min(1).max(120).optional(),
+    interviewDocumentId: z.string().trim().min(1).max(120),
+    interviewerName: z.string().trim().max(160).optional().transform((value) => value || undefined),
+    locationDetails: z.string().trim().max(2000).optional().transform((value) => value || undefined),
+    locationType: locationTypeSchema,
+    meetingUrl: z.string().trim().url().max(500).optional().or(z.literal('')).transform((value) => value || undefined),
+  })
+  .strict();
+
 const capacityClaimDetailSchema = identitySchema
   .extend({
     capacityClaimDocumentId: z.string().trim().min(1).max(120),
@@ -315,6 +339,8 @@ const validateIdentity = validateZodSchema(identitySchema);
 const validateCompleteOnboarding = validateZodSchema(completeOnboardingSchema);
 const validateCapacityClaimDetail = validateZodSchema(capacityClaimDetailSchema);
 const validateCreateInterviewSlotOffer = validateZodSchema(createInterviewSlotOfferSchema);
+const validateInterviewDetail = validateZodSchema(interviewDetailSchema);
+const validateInterviewSetup = validateZodSchema(interviewSetupSchema);
 const validateDeclineCapacityClaim = validateZodSchema(declineCapacityClaimSchema);
 const validateInviteTeamContact = validateZodSchema(inviteTeamContactSchema);
 const validateInviteToken = validateZodSchema(inviteTokenSchema);
@@ -340,6 +366,12 @@ const trimTrailingSlash = (value: string) => value.replace(/\/+$/, '');
 const employerDashboardBaseUrl = () =>
   trimTrailingSlash(process.env.EMPLOYER_DASHBOARD_BASE_URL || 'http://localhost:3004');
 
+const candidateDashboardBaseUrl = () =>
+  trimTrailingSlash(process.env.CANDIDATE_DASHBOARD_BASE_URL || 'http://localhost:3001');
+
+const candidateDashboardInterviewsUrl = () =>
+  `${candidateDashboardBaseUrl()}/interviews`;
+
 const employerInviteUrl = (token: string) =>
   `${employerDashboardBaseUrl()}/invite/${encodeURIComponent(token)}`;
 
@@ -361,6 +393,16 @@ const documentRecordValue = (value: unknown) =>
   value && typeof value === 'object' && !Array.isArray(value)
     ? (value as DocumentRecord)
     : undefined;
+
+const relationConnect = (record?: unknown) => {
+  const documentRecord = documentRecordValue(record);
+
+  return documentRecord?.documentId
+    ? {
+        connect: [{ documentId: documentRecord.documentId }],
+      }
+    : undefined;
+};
 
 const generateInviteToken = () => randomBytes(32).toString('base64url');
 
@@ -2220,10 +2262,14 @@ const availabilityRequestPayload = (claim: DocumentRecord) => {
 const interviewPayload = (interview: DocumentRecord) => ({
   candidateName: candidateDisplayName(interview.candidate),
   documentId: getDocumentId(interview) || String(interview.id || ''),
+  detailsPending: String(interview.interviewState || '') === 'awaiting_employer_details',
   locationLabel: interview.interviewSlot
     ? locationLabel(interview.interviewSlot)
     : 'Location not recorded',
+  scheduledEndTime: interview.scheduledEndTime || null,
+  scheduledStartTime: interview.scheduledStartTime || null,
   scheduledLabel: formatDateTime(interview.scheduledStartTime),
+  state: interview.interviewState || 'awaiting_employer_details',
   statusLabel: humanize(String(interview.interviewState || 'offered')),
 });
 
@@ -2603,6 +2649,267 @@ const assertSlotContact = ({
     assignedContact,
     assignedContactDocumentId,
   };
+};
+
+const interviewContactPayloads = async (strapi: StrapiDocumentService, employer?: DocumentRecord | null) =>
+  Promise.all(activeEmployerContacts(employer).map((contact) => publicContactPayload(strapi, contact)));
+
+const interviewDetailPayload = async (
+  strapi: StrapiDocumentService,
+  interview: DocumentRecord,
+  contact: DocumentRecord
+) => {
+  const slot = documentRecordValue(interview.interviewSlot);
+  const assignedContact = documentRecordValue(interview.employerContact);
+  const locationType = interview.locationType || slot?.locationType || 'to_be_confirmed';
+  const locationRecord = {
+    locationDetails: interview.locationDetails || slot?.locationDetails,
+    locationType,
+    meetingUrl: interview.meetingUrl || slot?.meetingUrl,
+  } as DocumentRecord;
+  const closedStates = ['completed', 'candidate_no_show', 'candidate_declined', 'employer_cancelled', 'cancelled'];
+
+  return {
+    account: await accountPayload(strapi, contact),
+    interview: {
+      assignedContactDocumentId: getDocumentId(assignedContact) || null,
+      assignedContactName: assignedContact ? contactDisplayName(assignedContact) : null,
+      arrivalInstructions: interview.arrivalInstructions || null,
+      canEdit: !closedStates.includes(String(interview.interviewState || '')),
+      candidateEmail: interview.candidate?.email || null,
+      candidateInstructions: interview.candidateInstructions || null,
+      candidateName: candidateDisplayName(interview.candidate),
+      contacts: await interviewContactPayloads(strapi, contact.employer),
+      detailsProvidedAt: interview.detailsProvidedAt || null,
+      detailsUpdatedAt: interview.detailsUpdatedAt || null,
+      documentId: getDocumentId(interview) || String(interview.id || ''),
+      interviewerName: interview.interviewerName || (assignedContact ? contactDisplayName(assignedContact) : null),
+      locationDetails: interview.locationDetails || slot?.locationDetails || null,
+      locationLabel: locationLabel(locationRecord),
+      locationType,
+      meetingUrl: interview.meetingUrl || slot?.meetingUrl || null,
+      scheduledEndTime: interview.scheduledEndTime || slot?.endTime || null,
+      scheduledEndTimeLabel: formatDateTime(interview.scheduledEndTime || slot?.endTime),
+      scheduledStartTime: interview.scheduledStartTime || slot?.startTime || null,
+      scheduledStartTimeLabel: formatDateTime(interview.scheduledStartTime || slot?.startTime),
+      state: interview.interviewState || 'awaiting_employer_details',
+      statusLabel: humanize(String(interview.interviewState || 'awaiting_employer_details')),
+    },
+    generatedAt: new Date().toISOString(),
+  };
+};
+
+const findScopedInterview = async (
+  strapi: StrapiDocumentService,
+  contact: DocumentRecord,
+  interviewDocumentId: string
+) => {
+  const employerDocumentId = getDocumentId(contact.employer);
+  const contactDocumentId = getDocumentId(contact);
+
+  if (!employerDocumentId || !contactDocumentId) {
+    throw new ValidationError('Employer contact is not linked to an active employer.');
+  }
+
+  const interviews = await documents(strapi, 'api::interview.interview').findMany({
+    filters: {
+      documentId: interviewDocumentId,
+      employer: {
+        documentId: employerDocumentId,
+      },
+      ...(isLeadContact(contact)
+        ? {}
+        : {
+            employerContact: {
+              documentId: contactDocumentId,
+            },
+          }),
+    },
+    limit: 1,
+    populate: {
+      candidate: true,
+      employer: {
+        populate: {
+          contacts: {
+            populate: ['coverageRegions', 'profileImage'],
+          },
+          operatingRegions: true,
+        },
+      },
+      employerContact: {
+        populate: ['coverageRegions', 'profileImage'],
+      },
+      enrollment: {
+        populate: ['class'],
+      },
+      interviewSlot: {
+        populate: ['employerContact'],
+      },
+    },
+  });
+  const interview = interviews[0];
+
+  if (!interview) {
+    throw new ValidationError('Interview could not be found.');
+  }
+
+  return interview;
+};
+
+const assertInterviewSetupDetails = (body: ReturnType<typeof validateInterviewSetup>) => {
+  if (body.locationType === 'to_be_confirmed') {
+    throw new ValidationError('Select an interview type before confirming details.');
+  }
+
+  if (body.locationType === 'online' && !body.meetingUrl) {
+    throw new ValidationError('Online interviews need a meeting link.');
+  }
+
+  if (body.locationType === 'in_person' && !body.locationDetails) {
+    throw new ValidationError('In-person interviews need location details.');
+  }
+
+  if (
+    body.locationType === 'phone' &&
+    !body.locationDetails &&
+    !body.candidateInstructions
+  ) {
+    throw new ValidationError('Phone interviews need call details or candidate instructions.');
+  }
+};
+
+const resolveInterviewAssignedContact = ({
+  actorContact,
+  interview,
+  requestedContactDocumentId,
+}: {
+  actorContact: DocumentRecord;
+  interview: DocumentRecord;
+  requestedContactDocumentId?: string;
+}) => {
+  const actorContactDocumentId = getDocumentId(actorContact);
+  const currentContactDocumentId = getDocumentId(interview.employerContact);
+  const employerContactMap = contactMapForEmployer(actorContact.employer);
+  const assignedContactDocumentId =
+    requestedContactDocumentId || currentContactDocumentId || actorContactDocumentId;
+
+  if (!actorContactDocumentId || !assignedContactDocumentId) {
+    throw new ValidationError('Employer contact record could not be found.');
+  }
+
+  const assignedContact = employerContactMap.get(assignedContactDocumentId);
+
+  if (!assignedContact) {
+    throw new ValidationError('Assigned interview contact is not linked to this employer.');
+  }
+
+  if (!isLeadContact(actorContact) && assignedContactDocumentId !== actorContactDocumentId) {
+    throw new ValidationError('Team contacts can only confirm their own interviews.');
+  }
+
+  return {
+    assignedContact,
+    assignedContactDocumentId,
+  };
+};
+
+const queueCandidateInterviewDetailsNotification = async ({
+  contact,
+  interview,
+  requestContext,
+  strapi,
+}: {
+  contact: DocumentRecord;
+  interview: DocumentRecord;
+  requestContext: RequestContext;
+  strapi: StrapiDocumentService;
+}) => {
+  const candidate = documentRecordValue(interview.candidate);
+  const candidateEmail = typeof candidate?.email === 'string' ? candidate.email : null;
+  const subject = 'Your interview details are ready';
+  const dashboardUrl = candidateDashboardInterviewsUrl();
+  const candidateName = candidate?.firstName || 'there';
+  const bodyLines = [
+    `Hi ${candidateName},`,
+    `${contact.employer?.companyName || 'Your employer'} has confirmed the details for your interview.`,
+    'Review the final location, joining instructions, and interviewer details in your HireFlip dashboard.',
+  ];
+  let emailDeliveryState: 'queued' | 'failed' = 'failed';
+  let emailJobId: string | number | undefined;
+  let emailErrorMessage: string | undefined;
+
+  if (candidateEmail) {
+    try {
+      const emailQueueResult = await requestNotificationServiceEmail({
+        correlationId: getDocumentId(interview) || undefined,
+        template: {
+          key: 'generic_branded_message',
+          variables: {
+            bodyLines,
+            ctaLabel: 'View interview details',
+            ctaUrl: dashboardUrl,
+            heading: subject,
+            subject,
+          },
+        },
+        to: candidateEmail,
+        type: 'candidate_interview_details_updated',
+      });
+
+      emailDeliveryState = emailQueueResult.data?.queued === true ? 'queued' : 'failed';
+      emailJobId = emailQueueResult.data?.jobId;
+    } catch (error) {
+      emailErrorMessage =
+        error instanceof Error ? error.message : 'Candidate interview detail notification could not be queued.';
+    }
+  }
+
+  await Promise.all(
+    [
+      {
+        channel: 'in_app',
+        deliveryState: 'queued' as const,
+        errorMessage: undefined,
+        jobId: undefined,
+      },
+      ...(candidateEmail
+        ? [
+            {
+              channel: 'email',
+              deliveryState: emailDeliveryState,
+              errorMessage: emailErrorMessage,
+              jobId: emailJobId,
+            },
+          ]
+        : []),
+    ].map(({ channel, deliveryState, errorMessage, jobId }) =>
+      documents(strapi, 'api::notification-event.notification-event').create({
+        data: {
+          candidate: relationConnect(candidate),
+          channel,
+          deliveryState,
+          ...(deliveryState === 'failed' ? { failedAt: new Date().toISOString() } : {}),
+          errorMessage: errorMessage || null,
+          employer: relationConnect(interview.employer),
+          eventType: 'candidate.interview_details_updated',
+          interview: relationConnect(interview),
+          metadata: {
+            dashboardUrl,
+            notificationServiceJobId: typeof jobId === 'undefined' ? null : String(jobId),
+            requestId: requestContext.requestId,
+            updatedByEmployerContactDocumentId: getDocumentId(contact),
+          },
+          priority: 'urgent',
+          recipientEmail: candidateEmail,
+          recipientId: getDocumentId(candidate) || undefined,
+          recipientType: 'candidate',
+          relatedId: getDocumentId(interview) || undefined,
+          relatedType: 'interview',
+          templateKey: channel === 'email' ? 'generic_branded_message' : undefined,
+        },
+      })
+    )
+  );
 };
 
 export default ({ strapi }) => ({
@@ -3496,7 +3803,7 @@ export default ({ strapi }) => ({
     return result;
   },
 	
-	  async getOverview(input: unknown) {
+  async getOverview(input: unknown) {
 	    const identity = validateIdentity(input);
     const contact = await findEmployerContact(strapi, identity);
     const employerDocumentId = getDocumentId(contact.employer);
@@ -3569,7 +3876,7 @@ export default ({ strapi }) => ({
           },
           ...scopedEmployerContactFilter,
           interviewState: {
-            $in: ['candidate_selected', 'confirmed'],
+            $in: ['awaiting_employer_details', 'candidate_selected', 'confirmed'],
           },
         },
         limit: 100,
@@ -3642,6 +3949,112 @@ export default ({ strapi }) => ({
         progressionRequests: progressionRequests.length,
       },
     };
+  },
+
+  async getInterviewDetail(input: unknown) {
+    const body = validateInterviewDetail(input);
+    const contact = await findEmployerContact(strapi, body);
+    const interview = await findScopedInterview(strapi, contact, body.interviewDocumentId);
+
+    return interviewDetailPayload(strapi, interview, contact);
+  },
+
+  async updateInterviewSetup(input: unknown, requestContext: RequestContext = {}) {
+    const body = validateInterviewSetup(input);
+    const contact = await findEmployerContact(strapi, body);
+    const interview = await findScopedInterview(strapi, contact, body.interviewDocumentId);
+    const interviewDocumentId = getDocumentId(interview);
+
+    if (!interviewDocumentId) {
+      throw new ValidationError('Interview could not be updated.');
+    }
+
+    if (
+      ['completed', 'candidate_no_show', 'candidate_declined', 'employer_cancelled', 'cancelled'].includes(
+        String(interview.interviewState || '')
+      )
+    ) {
+      throw new ValidationError('Interview details cannot be edited after this interview is closed.');
+    }
+
+    assertInterviewSetupDetails(body);
+
+    const now = new Date().toISOString();
+    const { assignedContact, assignedContactDocumentId } = resolveInterviewAssignedContact({
+      actorContact: contact,
+      interview,
+      requestedContactDocumentId: body.employerContactDocumentId,
+    });
+    const updatedInterview = await documents(strapi, 'api::interview.interview').update({
+      documentId: interviewDocumentId,
+      data: {
+        arrivalInstructions: body.arrivalInstructions || null,
+        candidateInstructions: body.candidateInstructions || null,
+        confirmedAt: interview.confirmedAt || now,
+        detailsProvidedAt: interview.detailsProvidedAt || now,
+        detailsUpdatedAt: now,
+        employerContact: {
+          connect: [{ documentId: assignedContactDocumentId }],
+        },
+        interviewerName: body.interviewerName || contactDisplayName(assignedContact),
+        interviewState: 'confirmed',
+        locationDetails: body.locationDetails || null,
+        locationType: body.locationType,
+        meetingUrl: body.meetingUrl || null,
+        metadata: {
+          ...objectValue(interview.metadata),
+          detailsLastUpdatedAt: now,
+          detailsLastUpdatedByEmployerContactDocumentId: getDocumentId(contact),
+          detailsLastUpdatedRequestId: requestContext.requestId,
+          source: 'employer_dashboard',
+        },
+      },
+      populate: {
+        candidate: true,
+        employer: true,
+        employerContact: {
+          populate: ['coverageRegions', 'profileImage'],
+        },
+        enrollment: {
+          populate: ['class'],
+        },
+        interviewSlot: {
+          populate: ['employerContact'],
+        },
+      },
+    });
+
+    await auditEvents(strapi).record({
+      actorDisplayName: contactDisplayName(contact),
+      actorId: getDocumentId(contact) || undefined,
+      actorType: 'employer_contact',
+      eventCategory: 'interview',
+      eventType: 'employer.interview_details_confirmed',
+      ipAddress: requestContext.ipAddress,
+      metadata: {
+        assignedContactDocumentId,
+        interviewDocumentId,
+        locationType: body.locationType,
+        requestId: requestContext.requestId,
+      },
+      requestId: requestContext.requestId,
+      serviceName: requestContext.serviceName,
+      severity: 'info',
+      source: 'employer_dashboard',
+      subjectDisplayName: candidateDisplayName(updatedInterview.candidate),
+      subjectId: interviewDocumentId,
+      subjectType: 'interview',
+      userAgent: requestContext.userAgent,
+    });
+
+    await queueCandidateInterviewDetailsNotification({
+      contact,
+      interview: updatedInterview,
+      requestContext,
+      strapi,
+    });
+
+    return interviewDetailPayload(strapi, updatedInterview, contact);
   },
 
   async createInterviewSlotOffer(input: unknown, requestContext: RequestContext = {}) {

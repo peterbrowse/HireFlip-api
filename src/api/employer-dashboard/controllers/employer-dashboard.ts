@@ -13,9 +13,11 @@ type EmployerDashboardService = {
   createInterviewSlotOffer(input: unknown, context: RequestContext): Promise<unknown>;
   declineCapacityClaim(input: unknown, context: RequestContext): Promise<unknown>;
   getCapacityClaim(input: unknown, context: RequestContext): Promise<unknown>;
+  getInterviewDetail(input: unknown, context: RequestContext): Promise<unknown>;
   getOnboarding(input: unknown, context: RequestContext): Promise<unknown>;
   getOverview(input: unknown, context: RequestContext): Promise<unknown>;
   inviteTeamContact(input: unknown, context: RequestContext): Promise<unknown>;
+  updateInterviewSetup(input: unknown, context: RequestContext): Promise<unknown>;
   updateProfile(input: unknown, context: RequestContext): Promise<unknown>;
   updateProfileImage(input: unknown, file: unknown, context: RequestContext): Promise<unknown>;
   updateSettings(input: unknown, context: RequestContext): Promise<unknown>;
@@ -57,6 +59,24 @@ export default ({ strapi }) => ({
 	  async createInterviewSlotOffer(ctx) {
     ctx.body = {
       data: await employerDashboardService(strapi).createInterviewSlotOffer(
+        ctx.request.body,
+        getRequestContext(ctx)
+      ),
+    };
+	  },
+
+	  async interviewDetail(ctx) {
+    ctx.body = {
+      data: await employerDashboardService(strapi).getInterviewDetail(
+        ctx.request.body,
+        getRequestContext(ctx)
+      ),
+    };
+	  },
+
+	  async updateInterviewSetup(ctx) {
+    ctx.body = {
+      data: await employerDashboardService(strapi).updateInterviewSetup(
         ctx.request.body,
         getRequestContext(ctx)
       ),
