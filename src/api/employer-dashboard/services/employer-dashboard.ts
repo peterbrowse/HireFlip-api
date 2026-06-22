@@ -488,6 +488,61 @@ const cadencePeriodsPerYear: Record<string, number> = {
 const annualizedCommitment = (volume?: number | null, cadence?: string | null) =>
   typeof volume === 'number' && volume > 0 ? volume * (cadencePeriodsPerYear[String(cadence)] || 0) : 0;
 
+const activeRegionCommitments = (employer?: DocumentRecord | null) =>
+  (Array.isArray(employer?.regionCommitments) ? employer.regionCommitments : []).filter(
+    (commitment) => commitment.commitmentState !== 'archived'
+  );
+
+const employerAnnualizedCommitment = (employer?: DocumentRecord | null) => {
+  const activeCommitments = activeRegionCommitments(employer);
+
+  if (employer?.commitmentMode === 'per_region' && activeCommitments.length > 0) {
+    return activeCommitments.reduce(
+      (total, commitment) =>
+        total +
+        annualizedCommitment(
+          commitment.interviewCommitmentVolume,
+          commitment.interviewCommitmentCadence
+        ),
+      0
+    );
+  }
+
+  return annualizedCommitment(
+    employer?.interviewCommitmentVolume,
+    employer?.interviewCommitmentCadence
+  );
+};
+
+const requestedSettingsAnnualizedCommitment = (
+  body: z.infer<typeof updateSettingsSchema>
+) => {
+  if (body.commitmentMode === 'per_region') {
+    const commitments = body.regionCommitments.length
+      ? body.regionCommitments
+      : body.operatingRegionDocumentIds.map((regionDocumentId) => ({
+          interviewCommitmentCadence: body.interviewCommitmentCadence,
+          interviewCommitmentVolume: body.interviewCommitmentVolume,
+          regionDocumentId,
+        }));
+
+    return commitments.reduce(
+      (total, commitment) =>
+        total +
+        annualizedCommitment(
+          commitment.interviewCommitmentVolume,
+          commitment.interviewCommitmentCadence
+        ),
+      0
+    );
+  }
+
+  return annualizedCommitment(
+    body.interviewCommitmentVolume,
+    body.interviewCommitmentCadence
+  );
+};
+
 const formatDateTime = (value?: string | null) => {
   if (!value) {
     return 'Not recorded';
@@ -1968,28 +2023,46 @@ const createSettingsCapacityReviewIfNeeded = async (
   strapi: StrapiDocumentService,
   {
     contact,
+    changeScope,
     currentCadence,
+    currentAnnualized,
+    currentCommitmentMode,
     currentVolume,
     employerDocumentId,
+    metadata,
     reason,
+    requestedAnnualized,
     requestedCadence,
+    requestedCommitmentMode,
     requestedVolume,
     requestContext,
   }: {
     contact: DocumentRecord;
+    changeScope?: 'global' | 'per_region' | 'operating_regions';
     currentCadence: string;
+    currentAnnualized?: number;
+    currentCommitmentMode?: string;
     currentVolume: number;
     employerDocumentId: string;
+    metadata?: Record<string, unknown>;
     reason?: string;
+    requestedAnnualized?: number;
     requestedCadence: string;
+    requestedCommitmentMode?: string;
     requestedVolume: number;
     requestContext: RequestContext;
   }
 ) => {
-  const currentAnnualized = annualizedCommitment(currentVolume, currentCadence);
-  const requestedAnnualized = annualizedCommitment(requestedVolume, requestedCadence);
+  const currentAnnualizedValue =
+    typeof currentAnnualized === 'number'
+      ? currentAnnualized
+      : annualizedCommitment(currentVolume, currentCadence);
+  const requestedAnnualizedValue =
+    typeof requestedAnnualized === 'number'
+      ? requestedAnnualized
+      : annualizedCommitment(requestedVolume, requestedCadence);
 
-  if (requestedAnnualized >= currentAnnualized) {
+  if (requestedAnnualizedValue >= currentAnnualizedValue) {
     return null;
   }
 
@@ -1998,27 +2071,28 @@ const createSettingsCapacityReviewIfNeeded = async (
     'api::employer-capacity-change-request.employer-capacity-change-request'
   ).create({
     data: {
-      changeScope: 'global',
+      changeScope: changeScope || 'global',
       currentInterviewCommitmentCadence: currentCadence,
       currentInterviewCommitmentVolume: currentVolume,
-      currentAnnualizedInterviewSlots: currentAnnualized,
-      currentCommitmentMode: String(contact.employer?.commitmentMode || 'global'),
+      currentAnnualizedInterviewSlots: currentAnnualizedValue,
+      currentCommitmentMode: currentCommitmentMode || String(contact.employer?.commitmentMode || 'global'),
       employer: {
         connect: [{ documentId: employerDocumentId }],
       },
       metadata: {
         appliedImmediately: true,
-        currentAnnualized,
-        requestedAnnualized,
+        currentAnnualized: currentAnnualizedValue,
+        requestedAnnualized: requestedAnnualizedValue,
         requestId: requestContext.requestId,
         source: 'employer_dashboard_settings',
+        ...(metadata || {}),
       },
       reason: reason || 'Employer reduced interview commitment from settings.',
       requestedByEmployerContact: {
         connect: [{ documentId: getDocumentId(contact) }],
       },
-      requestedAnnualizedInterviewSlots: requestedAnnualized,
-      requestedCommitmentMode: String(contact.employer?.commitmentMode || 'global'),
+      requestedAnnualizedInterviewSlots: requestedAnnualizedValue,
+      requestedCommitmentMode: requestedCommitmentMode || String(contact.employer?.commitmentMode || 'global'),
       requestedInterviewCommitmentCadence: requestedCadence,
       requestedInterviewCommitmentVolume: requestedVolume,
       requestState: 'pending',
@@ -2033,6 +2107,8 @@ const createSettingsCapacityReviewIfNeeded = async (
       currentVolume,
       requestedCadence,
       requestedVolume,
+      currentAnnualized: currentAnnualizedValue,
+      requestedAnnualized: requestedAnnualizedValue,
       reviewDocumentId: getDocumentId(review),
       reviewNote: reason || null,
     },
@@ -2423,13 +2499,35 @@ export default ({ strapi }) => ({
 	        ? employer.interviewCommitmentVolume
 	        : 0;
 	    const currentCadence = String(employer?.interviewCommitmentCadence || 'not_set');
+	    const currentCommitmentMode =
+	      employer?.commitmentMode === 'per_region' ? 'per_region' : 'global';
+	    const currentAnnualized = employerAnnualizedCommitment(employer);
+	    const requestedAnnualized = requestedSettingsAnnualizedCommitment(body);
+	    const capacityReductionNeeded = requestedAnnualized < currentAnnualized;
+	    const reviewNoteRequired = capacityReductionNeeded || removedRegionIds.length > 0;
+
+	    if (reviewNoteRequired && !body.reviewNote) {
+	      throw new ValidationError('A reason is required when reducing interview commitment or removing operating regions.');
+	    }
+
 	    const capacityReview = await createSettingsCapacityReviewIfNeeded(strapi, {
 	      contact,
+	      changeScope:
+	        currentCommitmentMode === 'per_region' || body.commitmentMode === 'per_region'
+	          ? 'per_region'
+	          : 'global',
 	      currentCadence,
+	      currentAnnualized,
+	      currentCommitmentMode,
 	      currentVolume,
 	      employerDocumentId,
+	      metadata: {
+	        requestedRegionCommitments: body.regionCommitments,
+	      },
 	      reason: body.reviewNote,
+	      requestedAnnualized,
 	      requestedCadence: body.interviewCommitmentCadence,
+	      requestedCommitmentMode: body.commitmentMode,
 	      requestedVolume: body.interviewCommitmentVolume,
 	      requestContext,
 	    });
