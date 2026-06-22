@@ -2287,6 +2287,10 @@ export interface ApiEmployerContactEmployerContact
     > &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'invited'>;
+    coverageRegions: Schema.Attribute.Relation<
+      'manyToMany',
+      'api::class-area.class-area'
+    >;
     createdAt: Schema.Attribute.DateTime;
     createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
@@ -2446,6 +2450,9 @@ export interface ApiEmployerEmployer extends Struct.CollectionTypeSchema {
     > &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'none'>;
+    commitmentMode: Schema.Attribute.Enumeration<['global', 'per_region']> &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'global'>;
     companyName: Schema.Attribute.String &
       Schema.Attribute.Required &
       Schema.Attribute.SetMinMaxLength<{
@@ -2497,6 +2504,10 @@ export interface ApiEmployerEmployer extends Struct.CollectionTypeSchema {
     > &
       Schema.Attribute.Private;
     notes: Schema.Attribute.Text;
+    operatingRegions: Schema.Attribute.Relation<
+      'manyToMany',
+      'api::class-area.class-area'
+    >;
     publishedAt: Schema.Attribute.DateTime;
     region: Schema.Attribute.String &
       Schema.Attribute.SetMinMaxLength<{

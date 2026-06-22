@@ -33,6 +33,11 @@
       "type": "string",
       "maxLength": 120
     },
+    "operatingRegions": {
+      "type": "relation",
+      "relation": "manyToMany",
+      "target": "api::class-area.class-area"
+    },
     "sectorInterests": {
       "type": "json"
     },
@@ -79,6 +84,15 @@
         "annually"
       ],
       "default": "not_set",
+      "required": true
+    },
+    "commitmentMode": {
+      "type": "enumeration",
+      "enum": [
+        "global",
+        "per_region"
+      ],
+      "default": "global",
       "required": true
     },
     "capacityChangeRequestStatus": {

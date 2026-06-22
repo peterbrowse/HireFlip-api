@@ -356,13 +356,17 @@ const main = async () => {
       interviewCommitmentCadence: 'quarterly',
       interviewCommitmentVolume: 4,
       lastName: 'Invite',
-      region: adminClassArea.name,
+      regions: [adminClassArea.name],
       roleTitle: 'People lead',
       sessionToken: 's'.repeat(32),
     });
 
     assert(createdAdminInvite.created === true, 'Expected admin employer invite to be created.');
     assert(createdAdminInvite.inviteSent === true, 'Expected employer invite email to queue.');
+    assert(
+      createdAdminInvite.invite.regionNames?.includes(adminClassArea.name),
+      'Expected admin employer invite to include selected operating region.'
+    );
     assert(
       createdAdminInvite.invite.inviteUrl?.includes('/invite/'),
       'Expected admin employer invite URL.'
@@ -378,7 +382,14 @@ const main = async () => {
         documentId: createdAdminInvite.invite.documentId,
       },
       limit: 1,
-      populate: ['employer', 'employerContact'],
+      populate: {
+        employer: {
+          populate: ['operatingRegions'],
+        },
+        employerContact: {
+          populate: ['coverageRegions'],
+        },
+      },
     });
 
     created.adminEmployerInvite = adminInviteRecords[0];
@@ -405,12 +416,30 @@ const main = async () => {
       'Expected employer list to include created employer.'
     );
 
+    const regionFilteredEmployers = await adminEmployerService.listEmployers({
+      region: adminClassArea.name,
+      sessionToken: 's'.repeat(32),
+    });
+
+    assert(
+      regionFilteredEmployers.employers.some((employer) => employer.documentId === created.adminEmployer?.documentId),
+      'Expected employer region filter to match any operating region.'
+    );
+
     const employerDetail = await adminEmployerService.getEmployerDetail({
       employerDocumentId: created.adminEmployer.documentId,
       sessionToken: 's'.repeat(32),
     });
 
     assert(employerDetail.employer.companyName === created.adminEmployer.companyName, 'Expected employer detail.');
+    assert(
+      employerDetail.employer.regionNames.includes(adminClassArea.name),
+      'Expected employer detail to include operating region.'
+    );
+    assert(
+      employerDetail.contacts[0]?.coverageRegionNames.includes(adminClassArea.name),
+      'Expected lead contact to cover selected operating region.'
+    );
     assert(employerDetail.totalInvites >= 1, 'Expected employer detail invite history.');
 
     const adminInviteToken = decodeURIComponent(
@@ -543,7 +572,7 @@ const main = async () => {
       interviewCommitmentCadence: 'quarterly',
       interviewCommitmentVolume: 2,
       lastName: 'Invite',
-      region: adminClassArea.name,
+      regions: [adminClassArea.name],
       roleTitle: 'People lead',
       sessionToken: 's'.repeat(32),
     });
@@ -559,7 +588,14 @@ const main = async () => {
           documentId: reinvitedEmployer.invite.documentId,
         },
         limit: 1,
-        populate: ['employer', 'employerContact'],
+        populate: {
+          employer: {
+            populate: ['operatingRegions'],
+          },
+          employerContact: {
+            populate: ['coverageRegions'],
+          },
+        },
       })
     )[0];
 

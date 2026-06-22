@@ -38,8 +38,10 @@ type DocumentRecord = Record<string, unknown> & {
   assignmentMode?: string;
   capacityChangeRequestStatus?: string;
   companyName?: string;
+  commitmentMode?: string;
   contacts?: DocumentRecord[];
   contactState?: string;
+  coverageRegions?: DocumentRecord[];
   createdAt?: string;
   createdByStaffDisplayName?: string;
   createdByStaffEmail?: string;
@@ -64,6 +66,7 @@ type DocumentRecord = Record<string, unknown> & {
   lastSentAt?: string;
   metadata?: unknown;
   notificationServiceJobId?: string;
+  operatingRegions?: DocumentRecord[];
   phone?: string;
   region?: string;
   roleTitle?: string;
@@ -133,6 +136,11 @@ const createInviteSchema = sessionTokenSchema
     interviewCommitmentVolume: z.number().int().min(0).max(1000).optional(),
     lastName: z.string().trim().max(120).optional().transform((value) => value || undefined),
     region: z.string().trim().max(120).optional().transform((value) => value || undefined),
+    regions: z
+      .array(z.string().trim().min(1).max(120))
+      .max(100)
+      .optional()
+      .transform((value) => Array.from(new Set(value || []))),
     roleTitle: z.string().trim().max(160).optional().transform((value) => value || undefined),
   })
   .strict();
@@ -253,10 +261,54 @@ const employerCommitmentLabel = (employer?: DocumentRecord | null) => {
   return `${volume} interview${volume === 1 ? '' : 's'} per ${humanize(String(cadence || 'cadence')).toLowerCase()}`;
 };
 
+const publicClassAreaOption = (classArea: DocumentRecord) => ({
+  documentId: getDocumentId(classArea) || String(classArea.id || ''),
+  label: classArea.name || 'Region',
+  name: classArea.name || null,
+  slug: classArea.slug || null,
+  state: classArea.state || 'active',
+});
+
+const publicRegionOptions = (regions?: DocumentRecord[] | null) =>
+  (Array.isArray(regions) ? regions : [])
+    .map(publicClassAreaOption)
+    .filter((region) => Boolean(region.name || region.label));
+
+const legacyRegionOption = (region?: unknown) => {
+  const label = String(region || '').trim();
+
+  if (!label) {
+    return null;
+  }
+
+  return {
+    documentId: '',
+    label,
+    name: label,
+    slug: null,
+    state: 'legacy',
+  };
+};
+
+const employerRegions = (employer?: DocumentRecord | null) => {
+  const regions = publicRegionOptions(employer?.operatingRegions);
+  const fallback = legacyRegionOption(employer?.region);
+
+  return regions.length ? regions : fallback ? [fallback] : [];
+};
+
+const regionNames = (regions: Array<{ label?: unknown; name?: unknown }>) =>
+  regions.map((region) => String(region.name || region.label || '').trim()).filter(Boolean);
+
+const regionLabel = (regions: Array<{ label?: unknown; name?: unknown }>) =>
+  regionNames(regions).join(', ') || null;
+
 const publicEmployerContact = (contact: DocumentRecord) => ({
   accountCreatedAt: contact.accountCreatedAt || null,
   contactState: contact.contactState || 'invited',
   contactStateLabel: humanize(String(contact.contactState || 'invited')),
+  coverageRegionNames: regionNames(publicRegionOptions(contact.coverageRegions)),
+  coverageRegions: publicRegionOptions(contact.coverageRegions),
   documentId: getDocumentId(contact) || String(contact.id || ''),
   email: contact.email || null,
   firstName: contact.firstName || null,
@@ -277,12 +329,16 @@ const publicEmployer = (employer: DocumentRecord, invites: DocumentRecord[] = []
   const contacts = Array.isArray(employer.contacts) ? employer.contacts : [];
   const leadContact = primaryContact(employer);
   const pendingInvites = invites.filter((invite) => invite.inviteState === 'pending').length;
+  const regions = employerRegions(employer);
+  const regionsLabel = regionLabel(regions);
 
   return {
     activeContactsCount: contacts.filter((contact) => contact.contactState === 'active').length,
     assignmentMode: employer.assignmentMode || 'automatic',
     assignmentModeLabel: humanize(String(employer.assignmentMode || 'automatic')),
     capacityChangeRequestStatus: employer.capacityChangeRequestStatus || 'none',
+    commitmentMode: employer.commitmentMode || 'global',
+    commitmentModeLabel: humanize(String(employer.commitmentMode || 'global')),
     commitmentLabel: employerCommitmentLabel(employer),
     companyName: employer.companyName || 'Employer',
     contactsCount: contacts.length,
@@ -293,7 +349,9 @@ const publicEmployer = (employer: DocumentRecord, invites: DocumentRecord[] = []
     inviteCount: invites.length,
     leadContact: leadContact ? publicEmployerContact(leadContact) : null,
     pendingInvitesCount: pendingInvites,
-    region: employer.region || null,
+    region: regionsLabel,
+    regionNames: regionNames(regions),
+    regions,
     updatedAt: employer.updatedAt || null,
   };
 };
@@ -317,7 +375,21 @@ const employerMatchesSearch = (employer: PublicEmployerSummary, search?: string)
     employer.leadContact?.phone,
     employer.leadContact?.roleTitle,
     employer.region,
+    ...(employer.regionNames || []),
   ].some((item) => String(item || '').toLowerCase().includes(value));
+};
+
+const employerMatchesRegion = (employer: PublicEmployerSummary, region?: string) => {
+  if (!region) {
+    return true;
+  }
+
+  const normalizedRegion = region.toLowerCase();
+
+  return (
+    employer.regionNames.some((name) => name.toLowerCase() === normalizedRegion) ||
+    String(employer.region || '').toLowerCase() === normalizedRegion
+  );
 };
 
 const employerMatchesCommitment = (
@@ -389,42 +461,90 @@ const compareEmployers = (
   return sortDirection === 'asc' ? result : -result;
 };
 
-const publicClassAreaOption = (classArea: DocumentRecord) => ({
-  documentId: getDocumentId(classArea) || String(classArea.id || ''),
-  label: classArea.name || 'Region',
-  name: classArea.name || null,
-  slug: classArea.slug || null,
-  state: classArea.state || 'active',
-});
-
 const getOperationalClassAreas = async (strapi: StrapiDocumentService) => {
   const classAreas = await documents(strapi, 'api::class-area.class-area').findMany({
     limit: 500,
     sort: ['sortOrder:asc', 'name:asc'],
   });
 
-  return classAreas.filter((classArea) => ['active', 'coming_soon'].includes(String(classArea.state)));
+  return classAreas.filter((classArea) => String(classArea.state) === 'active');
 };
 
-const assertOperationalRegion = async (strapi: StrapiDocumentService, region?: string) => {
-  if (!region) {
-    return undefined;
+const assertOperationalRegions = async (
+  strapi: StrapiDocumentService,
+  regions: string[] = [],
+  legacyRegion?: string
+) => {
+  const classAreas = await getOperationalClassAreas(strapi);
+  const requestedRegions = regions.length ? regions : compact([legacyRegion]);
+  const requestedValues =
+    requestedRegions.length > 0
+      ? requestedRegions
+      : classAreas.map((classArea) => String(classArea.name || '').trim()).filter(Boolean);
+
+  if (classAreas.length === 0) {
+    throw new ValidationError('At least one active HireFlip operating area is required before inviting employers.');
   }
 
-  const classAreas = await getOperationalClassAreas(strapi);
-  const matchedArea = classAreas.find(
-    (classArea) => String(classArea.name || '').toLowerCase() === region.toLowerCase()
-  );
+  if (requestedValues.length === 0) {
+    throw new ValidationError('At least one operating region is required.');
+  }
 
-  if (!matchedArea?.name) {
+  const matchedAreas = requestedValues.map((region) => {
+    const normalizedRegion = region.toLowerCase();
+    const matchedArea = classAreas.find((classArea) =>
+      [
+        getDocumentId(classArea),
+        classArea.name,
+        classArea.slug,
+      ].some((value) => String(value || '').toLowerCase() === normalizedRegion)
+    );
+
+    if (!matchedArea?.name) {
+      return null;
+    }
+
+    return matchedArea;
+  });
+
+  if (matchedAreas.some((area) => !area)) {
     throw new ValidationError('Region must match a current HireFlip operating area.');
   }
 
-  return matchedArea.name;
+  const uniqueAreas = new Map<string, DocumentRecord>();
+
+  for (const area of matchedAreas) {
+    if (!area) {
+      continue;
+    }
+
+    uniqueAreas.set(getDocumentId(area) || String(area.name), area);
+  }
+
+  return Array.from(uniqueAreas.values());
 };
 
 const displayNameForContact = (contact: DocumentRecord) =>
   compact([contact.firstName, contact.lastName]).join(' ') || contact.email || undefined;
+
+const regionConnectPayload = (regions: DocumentRecord[]) =>
+  regions
+    .map((region) => getDocumentId(region))
+    .filter((documentId): documentId is string => Boolean(documentId))
+    .map((documentId) => ({ documentId }));
+
+const regionSetRelationData = (regions: DocumentRecord[]) => ({
+  set: regionConnectPayload(regions),
+});
+
+const invitePopulate = {
+  employer: {
+    populate: ['operatingRegions'],
+  },
+  employerContact: {
+    populate: ['coverageRegions'],
+  },
+};
 
 const publicInvite = (invite: DocumentRecord, rawToken?: string) => ({
   acceptedAt: invite.acceptedAt || null,
@@ -445,7 +565,9 @@ const publicInvite = (invite: DocumentRecord, rawToken?: string) => ({
   inviteUrl: rawToken ? inviteUrl(rawToken) : null,
   lastSentAt: invite.lastSentAt || null,
   notificationServiceJobId: invite.notificationServiceJobId || null,
-  region: invite.employer?.region || null,
+  region: regionLabel(employerRegions(invite.employer)),
+  regionNames: regionNames(employerRegions(invite.employer)),
+  regions: employerRegions(invite.employer),
   roleTitle: invite.employerContact?.roleTitle || null,
   updatedAt: invite.updatedAt || null,
 });
@@ -641,7 +763,7 @@ const queueEmployerInviteEmail = async (
         lastSentAt: now,
         notificationServiceJobId: typeof jobId === 'undefined' ? null : String(jobId),
       },
-      populate: ['employer', 'employerContact'],
+      populate: invitePopulate,
     });
   } catch (error) {
     const errorMessage =
@@ -662,7 +784,7 @@ const queueEmployerInviteEmail = async (
         lastSentAt: null,
         notificationServiceJobId: null,
       },
-      populate: ['employer', 'employerContact'],
+      populate: invitePopulate,
     });
   }
 };
@@ -673,7 +795,12 @@ const findEmployerContactByEmail = async (strapi: StrapiDocumentService, email: 
       email,
     },
     limit: 1,
-    populate: ['employer'],
+    populate: {
+      coverageRegions: true,
+      employer: {
+        populate: ['operatingRegions'],
+      },
+    },
   });
 
   return contacts[0] || null;
@@ -685,7 +812,7 @@ const findInviteByDocumentId = async (strapi: StrapiDocumentService, documentId:
       documentId,
     },
     limit: 1,
-    populate: ['employer', 'employerContact'],
+    populate: invitePopulate,
   });
 
   return invites[0] || null;
@@ -712,7 +839,7 @@ const expireIfNeeded = async (strapi: StrapiDocumentService, invite?: DocumentRe
       data: {
         inviteState: 'expired',
       },
-      populate: ['employer', 'employerContact'],
+      populate: invitePopulate,
     });
   }
 
@@ -802,12 +929,12 @@ export default ({ strapi }) => ({
     const [employers, invites] = await Promise.all([
       documents(strapi, 'api::employer.employer').findMany({
         limit: 1000,
-        populate: ['contacts'],
+        populate: ['contacts', 'operatingRegions'],
         sort: ['companyName:asc'],
       }),
       documents(strapi, 'api::employer-invite.employer-invite').findMany({
         limit: 1000,
-        populate: ['employer', 'employerContact'],
+        populate: invitePopulate,
         sort: ['createdAt:desc'],
       }),
     ]);
@@ -834,7 +961,7 @@ export default ({ strapi }) => ({
         : employer.employerState === body.state
     );
     const filteredEmployers = stateFilteredEmployers
-      .filter((employer) => !body.region || employer.region === body.region)
+      .filter((employer) => employerMatchesRegion(employer, body.region))
       .filter((employer) => employerMatchesCommitment(employer, body.commitment))
       .filter((employer) => employerMatchesSearch(employer, body.search))
       .sort(compareEmployers(body.sortBy, body.sortDirection));
@@ -856,7 +983,12 @@ export default ({ strapi }) => ({
         documentId: body.employerDocumentId,
       },
       limit: 1,
-      populate: ['contacts'],
+      populate: {
+        contacts: {
+          populate: ['coverageRegions'],
+        },
+        operatingRegions: true,
+      },
     });
     const employer = employers[0];
 
@@ -871,7 +1003,7 @@ export default ({ strapi }) => ({
         },
       },
       limit: 200,
-      populate: ['employer', 'employerContact'],
+      populate: invitePopulate,
       sort: ['createdAt:desc'],
     });
 
@@ -903,7 +1035,7 @@ export default ({ strapi }) => ({
     const session = await assertEmployerManageSession(strapi, body.sessionToken, requestContext);
     const invites = await documents(strapi, 'api::employer-invite.employer-invite').findMany({
       limit: 100,
-      populate: ['employer', 'employerContact'],
+      populate: invitePopulate,
       sort: ['createdAt:desc'],
     });
     const normalizedInvites = await Promise.all(
@@ -924,7 +1056,9 @@ export default ({ strapi }) => ({
     const body = validateCreateInvite(input);
     const session = await assertEmployerManageSession(strapi, body.sessionToken, requestContext);
     const now = new Date().toISOString();
-    const region = await assertOperationalRegion(strapi, body.region);
+    const operatingRegions = await assertOperationalRegions(strapi, body.regions, body.region);
+    const operatingRegionConnections = regionConnectPayload(operatingRegions);
+    const primaryRegion = String(operatingRegions[0]?.name || '').trim() || null;
     let employerContact = await findEmployerContactByEmail(strapi, body.contactEmail);
     let employer = employerContact?.employer || null;
 
@@ -937,12 +1071,16 @@ export default ({ strapi }) => ({
         data: {
           assignmentMode: 'automatic',
           companyName: body.companyName,
+          commitmentMode: 'global',
           employerState: 'invited',
           initialInterviewCommitmentCadence: body.interviewCommitmentCadence,
           initialInterviewCommitmentVolume: body.interviewCommitmentVolume ?? null,
           interviewCommitmentCadence: body.interviewCommitmentCadence,
           interviewCommitmentVolume: body.interviewCommitmentVolume ?? null,
-          region: region || null,
+          operatingRegions: {
+            connect: operatingRegionConnections,
+          },
+          region: primaryRegion,
         },
       });
     } else {
@@ -956,12 +1094,14 @@ export default ({ strapi }) => ({
         documentId: employerDocumentId,
         data: {
           companyName: body.companyName,
+          commitmentMode: employer.commitmentMode || 'global',
           employerState: employer.employerState === 'active' ? 'active' : 'invited',
           initialInterviewCommitmentCadence: body.interviewCommitmentCadence,
           initialInterviewCommitmentVolume: body.interviewCommitmentVolume ?? null,
           interviewCommitmentCadence: body.interviewCommitmentCadence,
           interviewCommitmentVolume: body.interviewCommitmentVolume ?? null,
-          region: region || null,
+          operatingRegions: regionSetRelationData(operatingRegions),
+          region: primaryRegion,
         },
       });
     }
@@ -978,6 +1118,9 @@ export default ({ strapi }) => ({
           authProvider: 'auth0',
           contactState: 'invited',
           email: body.contactEmail,
+          coverageRegions: {
+            connect: operatingRegionConnections,
+          },
           employer: {
             connect: [{ documentId: employerDocumentId }],
           },
@@ -986,7 +1129,12 @@ export default ({ strapi }) => ({
           lastName: body.lastName || null,
           roleTitle: body.roleTitle || null,
         },
-        populate: ['employer'],
+        populate: {
+          coverageRegions: true,
+          employer: {
+            populate: ['operatingRegions'],
+          },
+        },
       });
     } else {
       const existingEmployerContactDocumentId = getDocumentId(employerContact);
@@ -999,6 +1147,7 @@ export default ({ strapi }) => ({
         documentId: existingEmployerContactDocumentId,
         data: {
           contactState: employerContact.contactState === 'active' ? 'active' : 'invited',
+          coverageRegions: regionSetRelationData(operatingRegions),
           employer: {
             connect: [{ documentId: employerDocumentId }],
           },
@@ -1007,7 +1156,12 @@ export default ({ strapi }) => ({
           lastName: body.lastName || employerContact.lastName || null,
           roleTitle: body.roleTitle || employerContact.roleTitle || null,
         },
-        populate: ['employer'],
+        populate: {
+          coverageRegions: true,
+          employer: {
+            populate: ['operatingRegions'],
+          },
+        },
       });
     }
 
@@ -1029,7 +1183,12 @@ export default ({ strapi }) => ({
         authIdentityId: authProvision.userId,
         authProvider: 'auth0',
       },
-      populate: ['employer'],
+      populate: {
+        employer: {
+          populate: ['operatingRegions'],
+        },
+        coverageRegions: true,
+      },
     });
 
     const invite = await documents(strapi, 'api::employer-invite.employer-invite').create({
@@ -1059,7 +1218,7 @@ export default ({ strapi }) => ({
         },
         tokenHash: tokenHash(rawToken),
       },
-      populate: ['employer', 'employerContact'],
+      populate: invitePopulate,
     });
     const deliveredInvite = await queueEmployerInviteEmail(strapi, {
       eventType: 'employer_invite_created',
@@ -1135,7 +1294,7 @@ export default ({ strapi }) => ({
         },
         tokenHash: tokenHash(rawToken),
       },
-      populate: ['employer', 'employerContact'],
+      populate: invitePopulate,
     });
     const deliveredInvite = await queueEmployerInviteEmail(strapi, {
       eventType: 'employer_invite_resent',
@@ -1208,7 +1367,7 @@ export default ({ strapi }) => ({
         },
         tokenHash: tokenHash(rawToken),
       },
-      populate: ['employer', 'employerContact'],
+      populate: invitePopulate,
     });
 
     return {
@@ -1266,7 +1425,7 @@ export default ({ strapi }) => ({
         },
         revokedAt: new Date().toISOString(),
       },
-      populate: ['employer', 'employerContact'],
+      populate: invitePopulate,
     });
 
     return {

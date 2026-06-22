@@ -47,6 +47,7 @@ type DocumentRecord = Record<string, unknown> & {
   offerState?: string;
   inviteEmail?: string;
   inviteState?: string;
+  operatingRegions?: DocumentRecord[];
   progressionState?: string;
   metadata?: unknown;
   region?: string;
@@ -270,7 +271,11 @@ const findEmployerContact = async (
   const contacts = await documents(strapi, 'api::employer-contact.employer-contact').findMany({
     filters: employerContactFilters(identity),
     limit: 1,
-    populate: ['employer'],
+    populate: {
+      employer: {
+        populate: ['operatingRegions'],
+      },
+    },
   });
 
   const contact = contacts[0];
@@ -311,8 +316,52 @@ const findDocumentById = async (
   return records[0] || null;
 };
 
+const publicClassAreaOption = (classArea: DocumentRecord) => ({
+  documentId: getDocumentId(classArea) || String(classArea.id || ''),
+  label: classArea.name || 'Region',
+  name: classArea.name || null,
+  slug: classArea.slug || null,
+  state: classArea.state || 'active',
+});
+
+const publicRegionOptions = (regions?: DocumentRecord[] | null) =>
+  (Array.isArray(regions) ? regions : [])
+    .map(publicClassAreaOption)
+    .filter((region) => Boolean(region.name || region.label));
+
+const legacyRegionOption = (region?: unknown) => {
+  const label = String(region || '').trim();
+
+  if (!label) {
+    return null;
+  }
+
+  return {
+    documentId: '',
+    label,
+    name: label,
+    slug: null,
+    state: 'legacy',
+  };
+};
+
+const employerRegions = (employer?: DocumentRecord | null) => {
+  const regions = publicRegionOptions(employer?.operatingRegions);
+  const fallback = legacyRegionOption(employer?.region);
+
+  return regions.length ? regions : fallback ? [fallback] : [];
+};
+
+const regionNames = (regions: Array<{ label?: unknown; name?: unknown }>) =>
+  regions.map((region) => String(region.name || region.label || '').trim()).filter(Boolean);
+
+const regionLabel = (regions: Array<{ label?: unknown; name?: unknown }>) =>
+  regionNames(regions).join(', ') || null;
+
 const accountPayload = (contact: DocumentRecord) => {
   const employer = contact.employer;
+  const regions = employerRegions(employer);
+  const regionsLabel = regionLabel(regions);
 
   return {
     assignmentModeLabel: humanize(String(employer?.assignmentMode || 'automatic')),
@@ -321,22 +370,38 @@ const accountPayload = (contact: DocumentRecord) => {
     companyName: employer?.companyName || 'Employer dashboard',
     contactEmail: contact.email || 'Not recorded',
     contactName: contactDisplayName(contact),
-    region: employer?.region || null,
+    region: regionsLabel,
+    regionNames: regionNames(regions),
+    regions,
     statusLabel: humanize(String(employer?.employerState || contact.contactState || 'not_connected')),
   };
 };
 
-const publicInvitePayload = (invite: DocumentRecord) => ({
-  companyName: invite.employer?.companyName || 'Employer',
-  contactEmail: invite.inviteEmail || invite.employerContact?.email || null,
-  contactName: contactDisplayName(invite.employerContact || {}),
-  createdByFirstName: firstNameFrom(invite.createdByStaffDisplayName) || 'HireFlip',
-  employerState: invite.employer?.employerState || null,
-  expiresAt: invite.expiresAt || null,
-  inviteState: invite.inviteState || 'pending',
-  region: invite.employer?.region || null,
-  roleTitle: invite.employerContact?.roleTitle || null,
-});
+const publicInvitePayload = (invite: DocumentRecord) => {
+  const regions = employerRegions(invite.employer);
+  const regionsLabel = regionLabel(regions);
+
+  return {
+    companyName: invite.employer?.companyName || 'Employer',
+    contactEmail: invite.inviteEmail || invite.employerContact?.email || null,
+    contactName: contactDisplayName(invite.employerContact || {}),
+    createdByFirstName: firstNameFrom(invite.createdByStaffDisplayName) || 'HireFlip',
+    employerState: invite.employer?.employerState || null,
+    expiresAt: invite.expiresAt || null,
+    inviteState: invite.inviteState || 'pending',
+    region: regionsLabel,
+    regionNames: regionNames(regions),
+    regions,
+    roleTitle: invite.employerContact?.roleTitle || null,
+  };
+};
+
+const invitePopulate = {
+  employer: {
+    populate: ['operatingRegions'],
+  },
+  employerContact: true,
+};
 
 const findInviteByToken = async (strapi: StrapiDocumentService, inviteToken: string) => {
   const invites = await documents(strapi, 'api::employer-invite.employer-invite').findMany({
@@ -344,7 +409,7 @@ const findInviteByToken = async (strapi: StrapiDocumentService, inviteToken: str
       tokenHash: hashInviteToken(inviteToken),
     },
     limit: 1,
-    populate: ['employer', 'employerContact'],
+    populate: invitePopulate,
   });
 
   return invites[0] || null;
@@ -508,7 +573,7 @@ const recoverInviteIdentityForVerifiedUser = async (
         recoveredUserAgent: requestContext.userAgent,
       },
     },
-    populate: ['employer', 'employerContact'],
+    populate: invitePopulate,
   });
 };
 
@@ -544,7 +609,7 @@ const findPendingInviteForIdentity = async (
       ...(filters.length > 0 ? { $or: filters } : {}),
     },
     limit: 10,
-    populate: ['employer', 'employerContact'],
+    populate: invitePopulate,
     sort: ['createdAt:desc'],
   });
   const recoveryCandidates: DocumentRecord[] = [];
@@ -627,7 +692,11 @@ const acceptInviteRecord = async (
       authProvider: 'auth0',
       contactState: 'active',
     },
-    populate: ['employer'],
+    populate: {
+      employer: {
+        populate: ['operatingRegions'],
+      },
+    },
   });
   await documents(strapi, 'api::employer.employer').update({
     documentId: employerDocumentId,
@@ -648,7 +717,7 @@ const acceptInviteRecord = async (
         acceptedUserAgent: requestContext.userAgent,
       },
     },
-    populate: ['employer', 'employerContact'],
+    populate: invitePopulate,
   });
 
   return {

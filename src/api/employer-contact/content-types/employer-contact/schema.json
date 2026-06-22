@@ -53,6 +53,11 @@
       "type": "string",
       "maxLength": 160
     },
+    "coverageRegions": {
+      "type": "relation",
+      "relation": "manyToMany",
+      "target": "api::class-area.class-area"
+    },
     "contactState": {
       "type": "enumeration",
       "enum": [
