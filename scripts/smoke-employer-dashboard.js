@@ -495,6 +495,29 @@ const main = async () => {
       'Expected archive to move employer contacts out of active access.'
     );
 
+    const defaultEmployersAfterArchive = await adminEmployerService.listEmployers({
+      sessionToken: 's'.repeat(32),
+    });
+
+    assert(
+      !defaultEmployersAfterArchive.employers.some(
+        (employer) => employer.documentId === created.adminEmployer.documentId
+      ),
+      'Expected default employer list to hide archived employers.'
+    );
+
+    const archivedEmployersList = await adminEmployerService.listEmployers({
+      sessionToken: 's'.repeat(32),
+      state: 'archived',
+    });
+
+    assert(
+      archivedEmployersList.employers.some(
+        (employer) => employer.documentId === created.adminEmployer.documentId
+      ),
+      'Expected archived employer list to include archived employers.'
+    );
+
     const reinvitedEmployer = await adminEmployerService.createInvite({
       companyName: `Admin Reinvited Employer Smoke ${runId}`,
       contactEmail: adminInviteEmail,

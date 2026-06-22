@@ -828,8 +828,12 @@ export default ({ strapi }) => ({
     const employerSummaries = employers.map((employer) =>
       publicEmployer(employer, invitesByEmployer.get(getDocumentId(employer) || '') || [])
     );
-    const filteredEmployers = employerSummaries
-      .filter((employer) => body.state === 'all' || employer.employerState === body.state)
+    const stateFilteredEmployers = employerSummaries.filter((employer) =>
+      body.state === 'all'
+        ? employer.employerState !== 'archived'
+        : employer.employerState === body.state
+    );
+    const filteredEmployers = stateFilteredEmployers
       .filter((employer) => !body.region || employer.region === body.region)
       .filter((employer) => employerMatchesCommitment(employer, body.commitment))
       .filter((employer) => employerMatchesSearch(employer, body.search))
@@ -839,7 +843,7 @@ export default ({ strapi }) => ({
       employers: filteredEmployers,
       filteredEmployers: filteredEmployers.length,
       generatedAt: new Date().toISOString(),
-      totalEmployers: employers.length,
+      totalEmployers: stateFilteredEmployers.length,
       user: session.user,
     };
   },
