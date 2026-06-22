@@ -1,0 +1,61 @@
+{
+  "kind": "collectionType",
+  "collectionName": "employer_region_commitments",
+  "info": {
+    "singularName": "employer-region-commitment",
+    "pluralName": "employer-region-commitments",
+    "displayName": "Employer Region Commitment",
+    "description": "Per-region interview-slot commitment for an employer operating region."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "employer": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::employer.employer",
+      "inversedBy": "regionCommitments"
+    },
+    "region": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::class-area.class-area"
+    },
+    "interviewCommitmentVolume": {
+      "type": "integer",
+      "min": 1,
+      "max": 1000,
+      "required": true
+    },
+    "interviewCommitmentCadence": {
+      "type": "enumeration",
+      "enum": [
+        "quarterly",
+        "biannually",
+        "annually"
+      ],
+      "default": "quarterly",
+      "required": true
+    },
+    "commitmentState": {
+      "type": "enumeration",
+      "enum": [
+        "active",
+        "archived"
+      ],
+      "default": "active",
+      "required": true
+    },
+    "effectiveFrom": {
+      "type": "datetime"
+    },
+    "updatedByEmployerContactEmail": {
+      "type": "email",
+      "maxLength": 254
+    },
+    "notes": {
+      "type": "text"
+    }
+  }
+}

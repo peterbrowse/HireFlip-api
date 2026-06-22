@@ -13,6 +13,8 @@ type EmployerDashboardService = {
   createInterviewSlotOffer(input: unknown, context: RequestContext): Promise<unknown>;
   getOnboarding(input: unknown, context: RequestContext): Promise<unknown>;
   getOverview(input: unknown, context: RequestContext): Promise<unknown>;
+  inviteTeamContact(input: unknown, context: RequestContext): Promise<unknown>;
+  updateSettings(input: unknown, context: RequestContext): Promise<unknown>;
   validateInvite(input: unknown, context: RequestContext): Promise<unknown>;
 };
 
@@ -63,6 +65,24 @@ export default ({ strapi }) => ({
 	  async completeOnboarding(ctx) {
 	    ctx.body = {
 	      data: await employerDashboardService(strapi).completeOnboarding(
+	        ctx.request.body,
+	        getRequestContext(ctx)
+	      ),
+	    };
+	  },
+
+	  async updateSettings(ctx) {
+	    ctx.body = {
+	      data: await employerDashboardService(strapi).updateSettings(
+	        ctx.request.body,
+	        getRequestContext(ctx)
+	      ),
+	    };
+	  },
+
+	  async inviteTeamContact(ctx) {
+	    ctx.body = {
+	      data: await employerDashboardService(strapi).inviteTeamContact(
 	        ctx.request.body,
 	        getRequestContext(ctx)
 	      ),

@@ -36,6 +36,24 @@ export default {
 	    },
 	    {
 	      method: 'POST',
+	      path: '/internal/employer-dashboard/settings/update',
+	      handler: 'employer-dashboard.updateSettings',
+	      config: {
+	        auth: false,
+	        policies: [employerDashboardServicePolicy],
+	      },
+	    },
+	    {
+	      method: 'POST',
+	      path: '/internal/employer-dashboard/team/invite',
+	      handler: 'employer-dashboard.inviteTeamContact',
+	      config: {
+	        auth: false,
+	        policies: [employerDashboardServicePolicy],
+	      },
+	    },
+	    {
+	      method: 'POST',
 	      path: '/internal/employer-dashboard/invites/validate',
       handler: 'employer-dashboard.validateInvite',
       config: {

@@ -53,10 +53,26 @@
       "type": "string",
       "maxLength": 160
     },
+    "contactRole": {
+      "type": "enumeration",
+      "enum": [
+        "lead_contact",
+        "team_contact"
+      ],
+      "default": "team_contact",
+      "required": true
+    },
     "coverageRegions": {
       "type": "relation",
       "relation": "manyToMany",
       "target": "api::class-area.class-area"
+    },
+    "coverageConfirmedAt": {
+      "type": "datetime"
+    },
+    "coverageConfirmedByEmail": {
+      "type": "email",
+      "maxLength": 254
     },
     "contactState": {
       "type": "enumeration",

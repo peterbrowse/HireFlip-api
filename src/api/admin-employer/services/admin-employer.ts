@@ -25,6 +25,10 @@ type AdminAuthService = {
   getSession(input: unknown, context: RequestContext): Promise<AdminSession>;
 };
 
+type AuditEventService = {
+  record(input: unknown): Promise<unknown>;
+};
+
 type DocumentRecord = Record<string, unknown> & {
   acceptedAt?: string;
   acceptedByEmail?: string;
@@ -41,7 +45,10 @@ type DocumentRecord = Record<string, unknown> & {
   commitmentMode?: string;
   contacts?: DocumentRecord[];
   contactState?: string;
+  contactRole?: string;
   coverageRegions?: DocumentRecord[];
+  coverageConfirmedAt?: string;
+  coverageConfirmedByEmail?: string;
   createdAt?: string;
   createdByStaffDisplayName?: string;
   createdByStaffEmail?: string;
@@ -66,6 +73,10 @@ type DocumentRecord = Record<string, unknown> & {
   initialInterviewCommitmentVolume?: number;
   interviewCommitmentCadence?: string;
   interviewCommitmentVolume?: number;
+  interviewCoverageOverrideAt?: string;
+  interviewCoverageOverrideByEmail?: string;
+  interviewCoverageOverrideByName?: string;
+  interviewCoverageOverrideReason?: string;
   inviteEmail?: string;
   inviteState?: string;
   lastName?: string;
@@ -75,6 +86,7 @@ type DocumentRecord = Record<string, unknown> & {
   operatingRegions?: DocumentRecord[];
   phone?: string;
   region?: string;
+  regionCommitments?: DocumentRecord[];
   roleTitle?: string;
   slug?: string;
   sortOrder?: number;
@@ -168,12 +180,19 @@ const employerActionSchema = sessionTokenSchema
     employerDocumentId: z.string().trim().min(1).max(80),
   })
   .strict();
+const employerCoverageOverrideSchema = employerActionSchema
+  .extend({
+    enabled: z.boolean(),
+    reason: z.string().trim().min(3).max(1000),
+  })
+  .strict();
 
 const validateSessionToken = validateZodSchema(sessionTokenSchema);
 const validateListEmployers = validateZodSchema(listEmployersSchema);
 const validateCreateInvite = validateZodSchema(createInviteSchema);
 const validateEmployerDetail = validateZodSchema(employerDetailSchema);
 const validateEmployerAction = validateZodSchema(employerActionSchema);
+const validateEmployerCoverageOverride = validateZodSchema(employerCoverageOverrideSchema);
 const validateInviteAction = validateZodSchema(inviteActionSchema);
 
 const documents = (strapi: StrapiDocumentService, uid: string) =>
@@ -181,6 +200,9 @@ const documents = (strapi: StrapiDocumentService, uid: string) =>
 
 const adminAuthService = (strapi: StrapiDocumentService): AdminAuthService =>
   strapi.service('api::admin-auth.admin-auth') as unknown as AdminAuthService;
+
+const auditEvents = (strapi: StrapiDocumentService) =>
+  strapi.service('api::audit-event.audit-event') as AuditEventService;
 
 const getDocumentId = (record?: DocumentRecord | null) =>
   typeof record?.documentId === 'string' ? record.documentId : null;
@@ -309,10 +331,67 @@ const regionNames = (regions: Array<{ label?: unknown; name?: unknown }>) =>
 const regionLabel = (regions: Array<{ label?: unknown; name?: unknown }>) =>
   regionNames(regions).join(', ') || null;
 
+const regionDocumentIds = (regions?: DocumentRecord[] | null) =>
+  (Array.isArray(regions) ? regions : [])
+    .map((region) => getDocumentId(region))
+    .filter((documentId): documentId is string => Boolean(documentId));
+
+const coverageStatus = (employer?: DocumentRecord | null) => {
+  const regions = employerRegions(employer);
+  const operatingRegionIds = regionDocumentIds(employer?.operatingRegions);
+  const operatingRegionsById = new Map(
+    regions
+      .map((region): [string, typeof region] | null =>
+        region.documentId ? [region.documentId, region] : null
+      )
+      .filter((entry): entry is [string, typeof regions[number]] => Boolean(entry))
+  );
+  const contacts = Array.isArray(employer?.contacts) ? employer.contacts : [];
+  const activeContacts = contacts.filter((contact) => contact.contactState === 'active');
+  const coveredRegionIds = new Set<string>();
+
+  for (const contact of activeContacts) {
+    for (const documentId of regionDocumentIds(contact.coverageRegions)) {
+      coveredRegionIds.add(documentId);
+    }
+  }
+
+  const uncoveredRegionIds = operatingRegionIds.filter((documentId) => !coveredRegionIds.has(documentId));
+  const uncoveredRegions = uncoveredRegionIds
+    .map((documentId) => operatingRegionsById.get(documentId))
+    .filter(Boolean) as Array<{ label?: unknown; name?: unknown; documentId?: string }>;
+  const overrideActive = Boolean(employer?.interviewCoverageOverrideAt);
+
+  return {
+    coveredRegionNames: regionNames(
+      operatingRegionIds
+        .filter((documentId) => coveredRegionIds.has(documentId))
+        .map((documentId) => operatingRegionsById.get(documentId))
+        .filter(Boolean) as Array<{ label?: unknown; name?: unknown }>
+    ),
+    gateOpen: uncoveredRegionIds.length === 0 || overrideActive,
+    isComplete: uncoveredRegionIds.length === 0,
+    override: {
+      active: overrideActive,
+      at: employer?.interviewCoverageOverrideAt || null,
+      byEmail: employer?.interviewCoverageOverrideByEmail || null,
+      byName: employer?.interviewCoverageOverrideByName || null,
+      reason: employer?.interviewCoverageOverrideReason || null,
+    },
+    uncoveredRegionDocumentIds: uncoveredRegionIds,
+    uncoveredRegionNames: regionNames(uncoveredRegions),
+    uncoveredRegions,
+  };
+};
+
 const publicEmployerContact = (contact: DocumentRecord) => ({
   accountCreatedAt: contact.accountCreatedAt || null,
   contactState: contact.contactState || 'invited',
   contactStateLabel: humanize(String(contact.contactState || 'invited')),
+  contactRole: contact.contactRole || 'team_contact',
+  contactRoleLabel: humanize(String(contact.contactRole || 'team_contact')),
+  coverageConfirmedAt: contact.coverageConfirmedAt || null,
+  coverageConfirmedByEmail: contact.coverageConfirmedByEmail || null,
   coverageRegionNames: regionNames(publicRegionOptions(contact.coverageRegions)),
   coverageRegions: publicRegionOptions(contact.coverageRegions),
   documentId: getDocumentId(contact) || String(contact.id || ''),
@@ -348,6 +427,7 @@ const publicEmployer = (employer: DocumentRecord, invites: DocumentRecord[] = []
     commitmentLabel: employerCommitmentLabel(employer),
     companyName: employer.companyName || 'Employer',
     contactsCount: contacts.length,
+    coverage: coverageStatus(employer),
     createdAt: employer.createdAt || null,
 	    documentId: getDocumentId(employer) || String(employer.id || ''),
 	    dashboardOnboardingCompletedAt: employer.dashboardOnboardingCompletedAt || null,
@@ -949,7 +1029,15 @@ export default ({ strapi }) => ({
     const [employers, invites] = await Promise.all([
       documents(strapi, 'api::employer.employer').findMany({
         limit: 1000,
-        populate: ['contacts', 'operatingRegions'],
+        populate: {
+          contacts: {
+            populate: ['coverageRegions'],
+          },
+          operatingRegions: true,
+          regionCommitments: {
+            populate: ['region'],
+          },
+        },
         sort: ['companyName:asc'],
       }),
       documents(strapi, 'api::employer-invite.employer-invite').findMany({
@@ -1008,6 +1096,9 @@ export default ({ strapi }) => ({
           populate: ['coverageRegions'],
         },
         operatingRegions: true,
+        regionCommitments: {
+          populate: ['region'],
+        },
       },
     });
     const employer = employers[0];
@@ -1034,6 +1125,94 @@ export default ({ strapi }) => ({
       invites: invites.map((invite) => publicInvite(invite)),
       totalContacts: Array.isArray(employer.contacts) ? employer.contacts.length : 0,
       totalInvites: invites.length,
+      user: session.user,
+    };
+  },
+
+  async setCoverageOverride(input: unknown, requestContext: RequestContext = {}) {
+    const body = validateEmployerCoverageOverride(input);
+    const session = await assertEmployerManageSession(strapi, body.sessionToken, requestContext);
+    const employers = await documents(strapi, 'api::employer.employer').findMany({
+      filters: {
+        documentId: body.employerDocumentId,
+      },
+      limit: 1,
+      populate: {
+        contacts: {
+          populate: ['coverageRegions'],
+        },
+        operatingRegions: true,
+        regionCommitments: {
+          populate: ['region'],
+        },
+      },
+    });
+    const employer = employers[0];
+
+    if (!employer) {
+      throw new ValidationError('Employer could not be found.');
+    }
+
+    const employerDocumentId = getDocumentId(employer);
+
+    if (!employerDocumentId) {
+      throw new ValidationError('Employer could not be updated.');
+    }
+
+    const now = new Date().toISOString();
+    const updatedEmployer = await documents(strapi, 'api::employer.employer').update({
+      documentId: employerDocumentId,
+      data: body.enabled
+        ? {
+            interviewCoverageOverrideAt: now,
+            interviewCoverageOverrideByEmail: session.user.email,
+            interviewCoverageOverrideByName: session.user.displayName,
+            interviewCoverageOverrideReason: body.reason,
+          }
+        : {
+            interviewCoverageOverrideAt: null,
+            interviewCoverageOverrideByEmail: null,
+            interviewCoverageOverrideByName: null,
+            interviewCoverageOverrideReason: body.reason,
+          },
+      populate: {
+        contacts: {
+          populate: ['coverageRegions'],
+        },
+        operatingRegions: true,
+        regionCommitments: {
+          populate: ['region'],
+        },
+      },
+    });
+
+    await auditEvents(strapi).record({
+      actorDisplayName: session.user.displayName,
+      actorEmail: session.user.email,
+      actorId: session.user.id,
+      actorType: 'admin',
+      eventCategory: 'employer',
+      eventType: body.enabled
+        ? 'employer.interview_coverage_override_enabled'
+        : 'employer.interview_coverage_override_disabled',
+      ipAddress: requestContext.ipAddress,
+      metadata: {
+        reason: body.reason,
+        uncoveredRegionNames: coverageStatus(employer).uncoveredRegionNames,
+      },
+      requestId: requestContext.requestId,
+      serviceName: requestContext.serviceName,
+      severity: 'warning',
+      source: 'admin_dashboard',
+      subjectDisplayName: employer.companyName || 'Employer',
+      subjectId: employerDocumentId,
+      subjectType: 'employer',
+      userAgent: requestContext.userAgent,
+    });
+
+    return {
+      employer: publicEmployer(updatedEmployer),
+      overridden: body.enabled,
       user: session.user,
     };
   },
@@ -1136,6 +1315,7 @@ export default ({ strapi }) => ({
       employerContact = await documents(strapi, 'api::employer-contact.employer-contact').create({
         data: {
           authProvider: 'auth0',
+          contactRole: 'lead_contact',
           contactState: 'invited',
           email: body.contactEmail,
           coverageRegions: {
@@ -1167,6 +1347,7 @@ export default ({ strapi }) => ({
         documentId: existingEmployerContactDocumentId,
         data: {
           contactState: employerContact.contactState === 'active' ? 'active' : 'invited',
+          contactRole: employerContact.contactRole || 'lead_contact',
           coverageRegions: regionSetRelationData(operatingRegions),
           employer: {
             connect: [{ documentId: employerDocumentId }],

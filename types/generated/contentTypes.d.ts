@@ -2200,9 +2200,27 @@ export interface ApiEmployerCapacityChangeRequestEmployerCapacityChangeRequest
     draftAndPublish: false;
   };
   attributes: {
+    changeScope: Schema.Attribute.Enumeration<
+      ['global', 'per_region', 'operating_regions']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'global'>;
     createdAt: Schema.Attribute.DateTime;
     createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
+    currentAnnualizedInterviewSlots: Schema.Attribute.Integer &
+      Schema.Attribute.SetMinMax<
+        {
+          max: 100000;
+          min: 0;
+        },
+        number
+      >;
+    currentCommitmentMode: Schema.Attribute.Enumeration<
+      ['global', 'per_region']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'global'>;
     currentInterviewCommitmentCadence: Schema.Attribute.Enumeration<
       ['not_set', 'quarterly', 'biannually', 'annually']
     > &
@@ -2226,10 +2244,23 @@ export interface ApiEmployerCapacityChangeRequestEmployerCapacityChangeRequest
     metadata: Schema.Attribute.JSON;
     publishedAt: Schema.Attribute.DateTime;
     reason: Schema.Attribute.Text;
+    requestedAnnualizedInterviewSlots: Schema.Attribute.Integer &
+      Schema.Attribute.SetMinMax<
+        {
+          max: 100000;
+          min: 0;
+        },
+        number
+      >;
     requestedByEmployerContact: Schema.Attribute.Relation<
       'manyToOne',
       'api::employer-contact.employer-contact'
     >;
+    requestedCommitmentMode: Schema.Attribute.Enumeration<
+      ['global', 'per_region']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'global'>;
     requestedInterviewCommitmentCadence: Schema.Attribute.Enumeration<
       ['not_set', 'quarterly', 'biannually', 'annually']
     > &
@@ -2282,11 +2313,21 @@ export interface ApiEmployerContactEmployerContact
     authProvider: Schema.Attribute.Enumeration<['auth0', 'manual', 'unknown']> &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'unknown'>;
+    contactRole: Schema.Attribute.Enumeration<
+      ['lead_contact', 'team_contact']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'team_contact'>;
     contactState: Schema.Attribute.Enumeration<
       ['invited', 'listed', 'active', 'disabled', 'archived']
     > &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'invited'>;
+    coverageConfirmedAt: Schema.Attribute.DateTime;
+    coverageConfirmedByEmail: Schema.Attribute.Email &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 254;
+      }>;
     coverageRegions: Schema.Attribute.Relation<
       'manyToMany',
       'api::class-area.class-area'
@@ -2364,6 +2405,14 @@ export interface ApiEmployerInviteEmployerInvite
     createdAt: Schema.Attribute.DateTime;
     createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
+    createdByEmployerContactEmail: Schema.Attribute.Email &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 254;
+      }>;
+    createdByEmployerContactName: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 240;
+      }>;
     createdByStaffDisplayName: Schema.Attribute.String &
       Schema.Attribute.SetMinMaxLength<{
         maxLength: 240;
@@ -2421,6 +2470,63 @@ export interface ApiEmployerInviteEmployerInvite
     updatedAt: Schema.Attribute.DateTime;
     updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
+  };
+}
+
+export interface ApiEmployerRegionCommitmentEmployerRegionCommitment
+  extends Struct.CollectionTypeSchema {
+  collectionName: 'employer_region_commitments';
+  info: {
+    description: 'Per-region interview-slot commitment for an employer operating region.';
+    displayName: 'Employer Region Commitment';
+    pluralName: 'employer-region-commitments';
+    singularName: 'employer-region-commitment';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    commitmentState: Schema.Attribute.Enumeration<['active', 'archived']> &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'active'>;
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    effectiveFrom: Schema.Attribute.DateTime;
+    employer: Schema.Attribute.Relation<'manyToOne', 'api::employer.employer'>;
+    interviewCommitmentCadence: Schema.Attribute.Enumeration<
+      ['quarterly', 'biannually', 'annually']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'quarterly'>;
+    interviewCommitmentVolume: Schema.Attribute.Integer &
+      Schema.Attribute.Required &
+      Schema.Attribute.SetMinMax<
+        {
+          max: 1000;
+          min: 1;
+        },
+        number
+      >;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::employer-region-commitment.employer-region-commitment'
+    > &
+      Schema.Attribute.Private;
+    notes: Schema.Attribute.Text;
+    publishedAt: Schema.Attribute.DateTime;
+    region: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::class-area.class-area'
+    >;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    updatedByEmployerContactEmail: Schema.Attribute.Email &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 254;
+      }>;
   };
 }
 
@@ -2517,6 +2623,16 @@ export interface ApiEmployerEmployer extends Struct.CollectionTypeSchema {
         },
         number
       >;
+    interviewCoverageOverrideAt: Schema.Attribute.DateTime;
+    interviewCoverageOverrideByEmail: Schema.Attribute.Email &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 254;
+      }>;
+    interviewCoverageOverrideByName: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 180;
+      }>;
+    interviewCoverageOverrideReason: Schema.Attribute.Text;
     locale: Schema.Attribute.String & Schema.Attribute.Private;
     localizations: Schema.Attribute.Relation<
       'oneToMany',
@@ -2533,6 +2649,10 @@ export interface ApiEmployerEmployer extends Struct.CollectionTypeSchema {
       Schema.Attribute.SetMinMaxLength<{
         maxLength: 120;
       }>;
+    regionCommitments: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::employer-region-commitment.employer-region-commitment'
+    >;
     roleInterests: Schema.Attribute.JSON;
     sectorInterests: Schema.Attribute.JSON;
     updatedAt: Schema.Attribute.DateTime;
@@ -4801,6 +4921,7 @@ declare module '@strapi/strapi' {
       'api::employer-capacity-change-request.employer-capacity-change-request': ApiEmployerCapacityChangeRequestEmployerCapacityChangeRequest;
       'api::employer-contact.employer-contact': ApiEmployerContactEmployerContact;
       'api::employer-invite.employer-invite': ApiEmployerInviteEmployerInvite;
+      'api::employer-region-commitment.employer-region-commitment': ApiEmployerRegionCommitmentEmployerRegionCommitment;
       'api::employer.employer': ApiEmployerEmployer;
       'api::enrollment.enrollment': ApiEnrollmentEnrollment;
       'api::interview-feedback.interview-feedback': ApiInterviewFeedbackInterviewFeedback;

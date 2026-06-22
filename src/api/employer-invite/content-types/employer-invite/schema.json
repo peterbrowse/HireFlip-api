@@ -110,6 +110,14 @@
       "type": "string",
       "maxLength": 240
     },
+    "createdByEmployerContactEmail": {
+      "type": "email",
+      "maxLength": 254
+    },
+    "createdByEmployerContactName": {
+      "type": "string",
+      "maxLength": 240
+    },
     "metadata": {
       "type": "json"
     }

@@ -15,6 +15,7 @@ type AdminEmployerService = {
   listInvites(input: unknown, context: RequestContext): Promise<unknown>;
   resendInvite(input: unknown, context: RequestContext): Promise<unknown>;
   revokeInvite(input: unknown, context: RequestContext): Promise<unknown>;
+  setCoverageOverride(input: unknown, context: RequestContext): Promise<unknown>;
 };
 
 const adminEmployerService = (strapi: { service(uid: string): unknown }): AdminEmployerService =>
@@ -109,6 +110,15 @@ export default ({ strapi }) => ({
   async archiveEmployer(ctx) {
     ctx.body = {
       data: await adminEmployerService(strapi).archiveEmployer(
+        ctx.request.body,
+        getRequestContext(ctx)
+      ),
+    };
+  },
+
+  async coverageOverride(ctx) {
+    ctx.body = {
+      data: await adminEmployerService(strapi).setCoverageOverride(
         ctx.request.body,
         getRequestContext(ctx)
       ),

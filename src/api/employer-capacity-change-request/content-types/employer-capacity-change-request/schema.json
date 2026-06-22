@@ -53,6 +53,44 @@
       "default": "not_set",
       "required": true
     },
+    "changeScope": {
+      "type": "enumeration",
+      "enum": [
+        "global",
+        "per_region",
+        "operating_regions"
+      ],
+      "default": "global",
+      "required": true
+    },
+    "currentCommitmentMode": {
+      "type": "enumeration",
+      "enum": [
+        "global",
+        "per_region"
+      ],
+      "default": "global",
+      "required": true
+    },
+    "requestedCommitmentMode": {
+      "type": "enumeration",
+      "enum": [
+        "global",
+        "per_region"
+      ],
+      "default": "global",
+      "required": true
+    },
+    "currentAnnualizedInterviewSlots": {
+      "type": "integer",
+      "min": 0,
+      "max": 100000
+    },
+    "requestedAnnualizedInterviewSlots": {
+      "type": "integer",
+      "min": 0,
+      "max": 100000
+    },
     "reason": {
       "type": "text"
     },

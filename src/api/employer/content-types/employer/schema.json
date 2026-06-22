@@ -137,6 +137,20 @@
       "default": "none",
       "required": true
     },
+    "interviewCoverageOverrideAt": {
+      "type": "datetime"
+    },
+    "interviewCoverageOverrideByEmail": {
+      "type": "email",
+      "maxLength": 254
+    },
+    "interviewCoverageOverrideByName": {
+      "type": "string",
+      "maxLength": 180
+    },
+    "interviewCoverageOverrideReason": {
+      "type": "text"
+    },
     "notes": {
       "type": "text"
     },
@@ -150,6 +164,12 @@
       "type": "relation",
       "relation": "oneToMany",
       "target": "api::employer-capacity-change-request.employer-capacity-change-request",
+      "mappedBy": "employer"
+    },
+    "regionCommitments": {
+      "type": "relation",
+      "relation": "oneToMany",
+      "target": "api::employer-region-commitment.employer-region-commitment",
       "mappedBy": "employer"
     }
   }

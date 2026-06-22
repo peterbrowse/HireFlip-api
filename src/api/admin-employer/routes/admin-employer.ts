@@ -36,6 +36,15 @@ export default {
     },
     {
       method: 'POST',
+      path: '/internal/admin/employers/coverage-override',
+      handler: 'admin-employer.coverageOverride',
+      config: {
+        auth: false,
+        policies: [adminDashboardServicePolicy],
+      },
+    },
+    {
+      method: 'POST',
       path: '/internal/admin/employers/invites/options',
       handler: 'admin-employer.inviteOptions',
       config: {
