@@ -25,6 +25,17 @@ const roleDefinitions = [
   },
 ];
 
+const retiredDefaultRoles = [
+  {
+    code: 'strapi-editor',
+    name: 'Editor',
+  },
+  {
+    code: 'strapi-author',
+    name: 'Author',
+  },
+];
+
 const findExistingRole = async (roleService, definition) => {
   const byCode = await roleService.findOne({ code: definition.code });
 
@@ -73,6 +84,41 @@ const upsertRole = async (roleService, definition) => {
   };
 };
 
+const removeRetiredDefaultRole = async (roleService, definition) => {
+  const existingRole =
+    (await roleService.findOne({ code: definition.code })) ||
+    (await roleService.findOne({ name: definition.name }));
+
+  if (!existingRole) {
+    return {
+      code: definition.code,
+      name: definition.name,
+      status: 'absent',
+    };
+  }
+
+  const usersCount = await roleService.getUsersCount(existingRole.id);
+
+  if (usersCount > 0) {
+    return {
+      code: existingRole.code,
+      id: existingRole.id,
+      name: existingRole.name,
+      status: 'skipped_assigned_users',
+      usersCount,
+    };
+  }
+
+  await roleService.deleteByIds([existingRole.id]);
+
+  return {
+    code: existingRole.code,
+    id: existingRole.id,
+    name: existingRole.name,
+    status: 'deleted',
+  };
+};
+
 const main = async () => {
   const appContext = await compileStrapi();
   const strapi = await createStrapi(appContext).load();
@@ -81,14 +127,20 @@ const main = async () => {
     const roleService = strapi.service('admin::role');
     const superAdminRole = await roleService.getSuperAdmin();
     const summary = [];
+    const retiredSummary = [];
 
     for (const definition of roleDefinitions) {
       summary.push(await upsertRole(roleService, definition));
     }
 
+    for (const definition of retiredDefaultRoles) {
+      retiredSummary.push(await removeRetiredDefaultRole(roleService, definition));
+    }
+
     strapi.log.info(
       `Seeded HireFlip admin roles: ${JSON.stringify({
         customRoles: summary,
+        retiredDefaultRoles: retiredSummary,
         superAdminRole: superAdminRole ? 'present' : 'missing',
       })}`
     );
