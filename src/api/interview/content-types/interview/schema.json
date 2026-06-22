@@ -41,6 +41,7 @@
       "enum": [
         "offered",
         "candidate_selected",
+        "awaiting_employer_details",
         "confirmed",
         "completed",
         "candidate_no_show",

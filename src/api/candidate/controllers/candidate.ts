@@ -17,6 +17,12 @@ type CreatedResponse = {
 };
 
 type CandidateService = {
+  acceptCurrentCandidateInterviewSlotOffer(
+    auth: unknown,
+    offerDocumentId: string,
+    input: unknown,
+    context: RequestContext
+  ): Promise<unknown>;
   acceptCurrentCandidateClassReservationTerms(
     auth: unknown,
     reservationDocumentId: string,
@@ -36,6 +42,12 @@ type CandidateService = {
     input: unknown,
     context: RequestContext
   ): Promise<unknown>;
+  declineCurrentCandidateInterviewSlotOffer(
+    auth: unknown,
+    offerDocumentId: string,
+    input: unknown,
+    context: RequestContext
+  ): Promise<unknown>;
   declineCurrentCandidateWaitingListOffer(
     auth: unknown,
     offerDocumentId: string,
@@ -49,6 +61,7 @@ type CandidateService = {
   getCandidatePreferenceOptions(auth: unknown): Promise<unknown>;
   getCurrentCandidateClassInterest(auth: unknown): Promise<unknown>;
   getCurrentCandidateCourse(auth: unknown): Promise<unknown>;
+  getCurrentCandidateInterviewSlotOffers(auth: unknown, context: RequestContext): Promise<unknown>;
   getCurrentCandidateClassReservation(
     auth: unknown,
     reservationDocumentId: string,
@@ -316,6 +329,55 @@ export default factories.createCoreController('api::candidate.candidate', ({ str
   async preferenceOptions(ctx) {
     const result = await candidateService(strapi).getCandidatePreferenceOptions(
       ctx.state?.hireflipAuth
+    );
+
+    ctx.body = {
+      data: result,
+    };
+  },
+
+  async interviewSlotOffers(ctx) {
+    const result = await candidateService(strapi).getCurrentCandidateInterviewSlotOffers(
+      ctx.state?.hireflipAuth,
+      {
+        ipAddress: getForwardedClientIp(ctx),
+        requestId: ctx.state?.requestId,
+        userAgent: ctx.request.get('x-hireflip-client-user-agent') || ctx.request.get('user-agent'),
+      }
+    );
+
+    ctx.body = {
+      data: result,
+    };
+  },
+
+  async acceptInterviewSlotOffer(ctx) {
+    const result = await candidateService(strapi).acceptCurrentCandidateInterviewSlotOffer(
+      ctx.state?.hireflipAuth,
+      ctx.params?.offerDocumentId,
+      ctx.request.body,
+      {
+        ipAddress: getForwardedClientIp(ctx),
+        requestId: ctx.state?.requestId,
+        userAgent: ctx.request.get('x-hireflip-client-user-agent') || ctx.request.get('user-agent'),
+      }
+    );
+
+    ctx.body = {
+      data: result,
+    };
+  },
+
+  async declineInterviewSlotOffer(ctx) {
+    const result = await candidateService(strapi).declineCurrentCandidateInterviewSlotOffer(
+      ctx.state?.hireflipAuth,
+      ctx.params?.offerDocumentId,
+      ctx.request.body,
+      {
+        ipAddress: getForwardedClientIp(ctx),
+        requestId: ctx.state?.requestId,
+        userAgent: ctx.request.get('x-hireflip-client-user-agent') || ctx.request.get('user-agent'),
+      }
     );
 
     ctx.body = {

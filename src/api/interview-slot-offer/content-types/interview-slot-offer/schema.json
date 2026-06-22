@@ -83,6 +83,36 @@
     "candidateRespondedAt": {
       "type": "datetime"
     },
+    "candidateWarningState": {
+      "type": "enumeration",
+      "enum": [
+        "none",
+        "warning_sent",
+        "strike_applied"
+      ],
+      "default": "none",
+      "required": true
+    },
+    "candidateWarningSentAt": {
+      "type": "datetime"
+    },
+    "candidateResponseReminderCount": {
+      "type": "integer",
+      "min": 0,
+      "default": 0,
+      "required": true
+    },
+    "lastCandidateResponseReminderSentAt": {
+      "type": "datetime"
+    },
+    "candidateInterviewFormatPreference": {
+      "type": "enumeration",
+      "enum": [
+        "in_person",
+        "remote",
+        "no_preference"
+      ]
+    },
     "declineReason": {
       "type": "enumeration",
       "enum": [

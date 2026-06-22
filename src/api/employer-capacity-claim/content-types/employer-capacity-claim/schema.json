@@ -99,6 +99,7 @@
         "role_paused",
         "contact_unavailable",
         "capacity_changed",
+        "candidate_declined_slots",
         "expired",
         "admin_released",
         "slot_options_submitted",

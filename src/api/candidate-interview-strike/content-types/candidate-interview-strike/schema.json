@@ -31,6 +31,8 @@
       "enum": [
         "candidate_no_show",
         "candidate_declined_confirmed_interview",
+        "candidate_declined_all_slots",
+        "candidate_missed_slot_response_deadline",
         "admin_applied",
         "other"
       ],

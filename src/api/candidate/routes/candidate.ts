@@ -145,6 +145,45 @@ export default {
     },
     {
       method: 'GET',
+      path: '/candidates/me/interview-slot-offers',
+      handler: 'candidate.interviewSlotOffers',
+      config: {
+        auth: false,
+        middlewares: [
+          {
+            name: 'global::auth0-jwt',
+          },
+        ],
+      },
+    },
+    {
+      method: 'POST',
+      path: '/candidates/me/interview-slot-offers/:offerDocumentId/accept',
+      handler: 'candidate.acceptInterviewSlotOffer',
+      config: {
+        auth: false,
+        middlewares: [
+          {
+            name: 'global::auth0-jwt',
+          },
+        ],
+      },
+    },
+    {
+      method: 'POST',
+      path: '/candidates/me/interview-slot-offers/:offerDocumentId/decline',
+      handler: 'candidate.declineInterviewSlotOffer',
+      config: {
+        auth: false,
+        middlewares: [
+          {
+            name: 'global::auth0-jwt',
+          },
+        ],
+      },
+    },
+    {
+      method: 'GET',
       path: '/candidates/me/support-cases',
       handler: 'candidate.supportCases',
       config: {

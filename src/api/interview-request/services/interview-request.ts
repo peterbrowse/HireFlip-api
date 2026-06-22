@@ -79,6 +79,19 @@ type AuditEventService = {
   record(input: Record<string, unknown>): Promise<unknown>;
 };
 
+type NotificationServiceQueueResponse = {
+  data?: {
+    jobId?: unknown;
+    queued?: unknown;
+    type?: unknown;
+  };
+};
+
+type NotificationTemplatePayload = {
+  key: string;
+  variables?: Record<string, unknown>;
+};
+
 const ensureForEnrollmentSchema = z
   .object({
     enrollmentDocumentId: z.string().trim().min(1).max(120),
@@ -112,6 +125,7 @@ const releaseCapacityClaimSchema = z
         'role_paused',
         'contact_unavailable',
         'capacity_changed',
+        'candidate_declined_slots',
         'expired',
         'admin_released',
         'request_cancelled',
@@ -163,6 +177,21 @@ const objectValue = (value: unknown) =>
     ? (value as Record<string, unknown>)
     : {};
 
+const documentRecordValue = (value: unknown): DocumentRecord | undefined =>
+  value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as DocumentRecord)
+    : undefined;
+
+const getIntegerEnv = (name: string, fallback: number) => {
+  const value = Number.parseInt(process.env[name] || '', 10);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+};
+
+const trimTrailingSlash = (value: string) => value.replace(/\/+$/, '');
+
+const candidateDashboardInterviewUrl = () =>
+  `${trimTrailingSlash(process.env.CANDIDATE_DASHBOARD_BASE_URL || 'http://localhost:3001')}/interviews`;
+
 const integerValue = (value: unknown, fallback = 0) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : fallback;
@@ -171,6 +200,120 @@ const integerValue = (value: unknown, fallback = 0) => {
 const displayName = (record?: DocumentRecord | null) =>
   [record?.firstName, record?.lastName].filter(Boolean).join(' ').trim() ||
   String(record?.name || record?.email || record?.documentId || '').trim();
+
+const requestNotificationServiceEmail = async ({
+  correlationId,
+  subject,
+  template,
+  to,
+  type,
+}: {
+  correlationId?: string;
+  subject?: string;
+  template?: NotificationTemplatePayload;
+  to: string;
+  type: string;
+}): Promise<NotificationServiceQueueResponse | undefined> => {
+  const baseUrl = process.env.NOTIFICATION_SERVICE_URL;
+  const serviceToken = process.env.NOTIFICATION_SERVICE_TOKEN;
+
+  if (!baseUrl || !serviceToken) {
+    return undefined;
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    getIntegerEnv('NOTIFICATION_SERVICE_TIMEOUT_MS', 5000)
+  );
+
+  try {
+    const response = await fetch(`${trimTrailingSlash(baseUrl)}/api/internal/notifications/email`, {
+      body: JSON.stringify({
+        correlationId,
+        priority: 'critical',
+        source: 'core-api',
+        ...(subject ? { subject } : {}),
+        ...(template ? { template } : {}),
+        to,
+        type,
+      }),
+      headers: {
+        'content-type': 'application/json',
+        'x-hireflip-service-name': 'core-api',
+        'x-hireflip-service-token': serviceToken,
+      },
+      method: 'POST',
+      signal: controller.signal,
+    });
+    const payload = (await response.json().catch(() => null)) as NotificationServiceQueueResponse | null;
+
+    if (!response.ok || !payload?.data) {
+      return undefined;
+    }
+
+    return payload;
+  } catch {
+    return undefined;
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
+const requestNotificationServiceSms = async ({
+  body,
+  correlationId,
+  to,
+  type,
+}: {
+  body: string;
+  correlationId?: string;
+  to: string;
+  type: string;
+}): Promise<NotificationServiceQueueResponse | undefined> => {
+  const baseUrl = process.env.NOTIFICATION_SERVICE_URL;
+  const serviceToken = process.env.NOTIFICATION_SERVICE_TOKEN;
+
+  if (!baseUrl || !serviceToken) {
+    return undefined;
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    getIntegerEnv('NOTIFICATION_SERVICE_TIMEOUT_MS', 5000)
+  );
+
+  try {
+    const response = await fetch(`${trimTrailingSlash(baseUrl)}/api/internal/notifications/sms`, {
+      body: JSON.stringify({
+        body,
+        correlationId,
+        priority: 'transactional',
+        to,
+        type,
+      }),
+      headers: {
+        'content-type': 'application/json',
+        'x-hireflip-service-name': 'core-api',
+        'x-hireflip-service-token': serviceToken,
+      },
+      method: 'POST',
+      signal: controller.signal,
+    });
+    const payload = (await response.json().catch(() => null)) as NotificationServiceQueueResponse | null;
+
+    if (!response.ok || !payload?.data) {
+      return undefined;
+    }
+
+    return payload;
+  } catch {
+    return undefined;
+  } finally {
+    clearTimeout(timeout);
+  }
+};
 
 const cadencePeriodStart = (cadence: string, now = new Date()) => {
   const start = new Date(Date.UTC(now.getUTCFullYear(), 0, 1, 0, 0, 0, 0));
@@ -333,6 +476,171 @@ const findAllClaimsForRequest = async (
     populate: ['employer', 'employerContact', 'region'],
     sort: ['createdAt:asc'],
   });
+
+const findSlotOfferForNotification = async (
+  strapi: StrapiDocumentService,
+  offerDocumentId: string
+) => {
+  const offers = await documents(strapi, 'api::interview-slot-offer.interview-slot-offer').findMany({
+    filters: {
+      documentId: offerDocumentId,
+    },
+    limit: 1,
+    populate: {
+      candidate: true,
+      employer: true,
+      employerContact: true,
+      enrollment: {
+        populate: ['class'],
+      },
+      interviewRequest: {
+        populate: ['class', 'region'],
+      },
+      slots: {
+        populate: ['employerContact'],
+      },
+    },
+  });
+
+  return offers[0] || null;
+};
+
+const queueCandidateSlotOfferNotification = async ({
+  offerDocumentId,
+  requestContext,
+  responseDeadline,
+  strapi,
+}: {
+  offerDocumentId: string;
+  requestContext: RequestContext;
+  responseDeadline: string;
+  strapi: StrapiDocumentService;
+}) => {
+  const offer = await findSlotOfferForNotification(strapi, offerDocumentId);
+  const candidate = offer?.candidate;
+  const candidateDocumentId = getDocumentId(candidate);
+  const dashboardUrl = candidateDashboardInterviewUrl();
+
+  if (!offer || !candidateDocumentId) {
+    return {
+      emailQueued: false,
+      smsQueued: false,
+    };
+  }
+
+  const candidateName = candidate?.firstName || 'there';
+  const notificationPreferences = objectValue(candidate?.notificationPreferences);
+  const channelPreferences = objectValue(notificationPreferences.channels);
+  const emailAllowed = Boolean(candidate?.email) && channelPreferences.email !== false;
+  const smsAllowed = Boolean(candidate?.phone) && channelPreferences.sms === true;
+  const subject = 'Your interview slots are ready to review';
+  const bodyLines = [
+    `Hi ${candidateName},`,
+    'Your interview slot options are ready to review in your HireFlip dashboard.',
+    'Please review all available options before deciding. You have 2 working days to respond.',
+  ];
+  const emailQueueResult =
+    emailAllowed && typeof candidate?.email === 'string'
+      ? await requestNotificationServiceEmail({
+          correlationId: offerDocumentId,
+          subject,
+          template: {
+            key: 'generic_branded_message',
+            variables: {
+              bodyLines,
+              ctaLabel: 'Review interview slots',
+              ctaUrl: dashboardUrl,
+              heading: subject,
+              subject,
+            },
+          },
+          to: candidate.email,
+          type: 'candidate_interview_slot_options_ready',
+        })
+      : undefined;
+  const smsQueueResult =
+    smsAllowed && typeof candidate?.phone === 'string'
+      ? await requestNotificationServiceSms({
+          body: `HireFlip: your interview slots are ready. Review them within 2 working days: ${dashboardUrl}`,
+          correlationId: offerDocumentId,
+          to: candidate.phone,
+          type: 'candidate_interview_slot_options_ready',
+        })
+      : undefined;
+  const channels = [
+    {
+      channel: 'in_app',
+      deliveryState: 'queued',
+      jobId: undefined,
+      recipientPhone: undefined,
+    },
+    ...(emailAllowed
+      ? [
+          {
+            channel: 'email',
+            deliveryState: emailQueueResult?.data?.queued === true ? 'queued' : 'failed',
+            jobId: emailQueueResult?.data?.jobId,
+            recipientPhone: undefined,
+          },
+        ]
+      : []),
+    ...(smsAllowed
+      ? [
+          {
+            channel: 'sms',
+            deliveryState: smsQueueResult?.data?.queued === true ? 'queued' : 'failed',
+            jobId: smsQueueResult?.data?.jobId,
+            recipientPhone: candidate.phone,
+          },
+        ]
+      : []),
+  ];
+  const enrollment = documentRecordValue(offer.enrollment);
+  const classRecord = documentRecordValue(enrollment?.class);
+
+  await Promise.all(
+    channels.map(({ channel, deliveryState, jobId, recipientPhone }) =>
+      documents(strapi, 'api::notification-event.notification-event').create({
+        data: {
+          candidate: {
+            connect: [{ documentId: candidateDocumentId }],
+          },
+          channel,
+          class: classRecord?.documentId
+            ? {
+                connect: [{ documentId: classRecord.documentId }],
+              }
+            : undefined,
+          deliveryState,
+          eventType: 'candidate.interview_slot_options_ready',
+          interview: undefined,
+          metadata: {
+            candidateResponseDeadline: responseDeadline,
+            dashboardUrl,
+            employerDocumentId: getDocumentId(offer.employer) || null,
+            interviewSlotOfferDocumentId: offerDocumentId,
+            notificationServiceJobId: typeof jobId === 'string' ? jobId : undefined,
+            requestId: requestContext.requestId,
+            slotCount: Array.isArray(offer.slots) ? offer.slots.length : undefined,
+          },
+          priority: 'urgent',
+          recipientEmail: candidate.email,
+          recipientId: candidateDocumentId,
+          recipientPhone,
+          recipientType: 'candidate',
+          relatedId: offerDocumentId,
+          relatedType: 'interview_slot_offer',
+          templateKey: channel === 'email' ? 'generic_branded_message' : undefined,
+        },
+      })
+    )
+  );
+
+  return {
+    emailQueued: emailQueueResult?.data?.queued === true,
+    smsQueued: smsQueueResult?.data?.queued === true,
+  };
+};
 
 const consumedClaimsForEmployer = async ({
   cadence,
@@ -749,7 +1057,9 @@ export default factories.createCoreService('api::interview-request.interview-req
     }
 
     const requestDocumentId = getDocumentId(claim.interviewRequest);
-    const now = new Date().toISOString();
+    const nowDate = new Date();
+    const now = nowDate.toISOString();
+    const responseDeadline = addWorkingDays(nowDate, 2).toISOString();
 
     await documents(strapi, 'api::employer-capacity-claim.employer-capacity-claim').update({
       documentId: body.capacityClaimDocumentId,
@@ -757,6 +1067,14 @@ export default factories.createCoreService('api::interview-request.interview-req
         claimState: 'fulfilled',
         fulfilledAt: now,
         releaseReason: 'slot_options_submitted',
+      },
+    });
+    await documents(strapi, 'api::interview-slot-offer.interview-slot-offer').update({
+      documentId: body.interviewSlotOfferDocumentId,
+      data: {
+        candidateNotifiedAt: now,
+        candidateResponseDeadline: responseDeadline,
+        offerState: 'sent',
       },
     });
 
@@ -789,6 +1107,12 @@ export default factories.createCoreService('api::interview-request.interview-req
       source: 'employer_dashboard',
       subjectId: requestDocumentId || body.capacityClaimDocumentId,
       subjectType: requestDocumentId ? 'interview_request' : 'employer_capacity_claim',
+    });
+    await queueCandidateSlotOfferNotification({
+      offerDocumentId: body.interviewSlotOfferDocumentId,
+      requestContext,
+      responseDeadline,
+      strapi,
     });
 
     return {
