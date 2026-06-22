@@ -7,18 +7,36 @@ const employerDashboardServicePolicy = {
 
 export default {
   routes: [
-    {
-      method: 'POST',
-      path: '/internal/employer-dashboard/overview',
-      handler: 'employer-dashboard.overview',
-      config: {
-        auth: false,
-        policies: [employerDashboardServicePolicy],
-      },
-    },
-    {
-      method: 'POST',
-      path: '/internal/employer-dashboard/invites/validate',
+	    {
+	      method: 'POST',
+	      path: '/internal/employer-dashboard/overview',
+	      handler: 'employer-dashboard.overview',
+	      config: {
+	        auth: false,
+	        policies: [employerDashboardServicePolicy],
+	      },
+	    },
+	    {
+	      method: 'POST',
+	      path: '/internal/employer-dashboard/onboarding',
+	      handler: 'employer-dashboard.onboarding',
+	      config: {
+	        auth: false,
+	        policies: [employerDashboardServicePolicy],
+	      },
+	    },
+	    {
+	      method: 'POST',
+	      path: '/internal/employer-dashboard/onboarding/complete',
+	      handler: 'employer-dashboard.completeOnboarding',
+	      config: {
+	        auth: false,
+	        policies: [employerDashboardServicePolicy],
+	      },
+	    },
+	    {
+	      method: 'POST',
+	      path: '/internal/employer-dashboard/invites/validate',
       handler: 'employer-dashboard.validateInvite',
       config: {
         auth: false,

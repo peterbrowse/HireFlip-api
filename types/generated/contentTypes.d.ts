@@ -2283,7 +2283,7 @@ export interface ApiEmployerContactEmployerContact
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'unknown'>;
     contactState: Schema.Attribute.Enumeration<
-      ['invited', 'active', 'disabled', 'archived']
+      ['invited', 'listed', 'active', 'disabled', 'archived']
     > &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'invited'>;
@@ -2466,11 +2466,31 @@ export interface ApiEmployerEmployer extends Struct.CollectionTypeSchema {
     createdAt: Schema.Attribute.DateTime;
     createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
+    dashboardOnboardingCompletedAt: Schema.Attribute.DateTime;
+    dashboardOnboardingMetadata: Schema.Attribute.JSON;
+    dashboardOnboardingState: Schema.Attribute.Enumeration<
+      ['not_started', 'in_progress', 'complete']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'not_started'>;
     employerState: Schema.Attribute.Enumeration<
       ['prospect', 'invited', 'active', 'paused', 'archived']
     > &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'prospect'>;
+    employerTermsAcceptedAt: Schema.Attribute.DateTime;
+    employerTermsAcceptedByEmail: Schema.Attribute.Email &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 254;
+      }>;
+    employerTermsPolicyDocumentId: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 120;
+      }>;
+    employerTermsPolicyVersion: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 120;
+      }>;
     initialInterviewCommitmentCadence: Schema.Attribute.Enumeration<
       ['not_set', 'quarterly', 'biannually', 'annually']
     > &

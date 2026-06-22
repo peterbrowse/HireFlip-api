@@ -38,6 +38,37 @@
       "relation": "manyToMany",
       "target": "api::class-area.class-area"
     },
+    "dashboardOnboardingState": {
+      "type": "enumeration",
+      "enum": [
+        "not_started",
+        "in_progress",
+        "complete"
+      ],
+      "default": "not_started",
+      "required": true
+    },
+    "dashboardOnboardingCompletedAt": {
+      "type": "datetime"
+    },
+    "employerTermsAcceptedAt": {
+      "type": "datetime"
+    },
+    "employerTermsAcceptedByEmail": {
+      "type": "email",
+      "maxLength": 254
+    },
+    "employerTermsPolicyDocumentId": {
+      "type": "string",
+      "maxLength": 120
+    },
+    "employerTermsPolicyVersion": {
+      "type": "string",
+      "maxLength": 120
+    },
+    "dashboardOnboardingMetadata": {
+      "type": "json"
+    },
     "sectorInterests": {
       "type": "json"
     },

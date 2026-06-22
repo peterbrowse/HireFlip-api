@@ -439,9 +439,9 @@ const main = async () => {
       sortOrder: 30,
     });
 
-    const checkoutTerms = await upsertPolicyDocument(strapi, {
-      acceptanceLabel:
-        'I have read and accept the HireFlip class checkout terms for this reservation.',
+	    const checkoutTerms = await upsertPolicyDocument(strapi, {
+	      acceptanceLabel:
+	        'I have read and accept the HireFlip class checkout terms for this reservation.',
       body: [
         'Your payment secures one place on the named HireFlip class for the candidate account shown in this checkout. The temporary reservation is only confirmed when HireFlip receives provider-verified payment confirmation.',
         'The checkout reservation is time-limited. If the reservation expires before payment is confirmed, the place may be released or offered to another candidate. If you cancel or a card payment fails while the reservation is still active, you can retry payment from the checkout page until the reservation expires.',
@@ -460,10 +460,32 @@ const main = async () => {
       policyState: 'active',
       policyType: 'class_checkout_terms',
       title: 'HireFlip Class Checkout Terms',
-      version: 'class-checkout-terms-launch-v1',
-    });
+	      version: 'class-checkout-terms-launch-v1',
+	    });
 
-    const sharedClassContent = {
+	    await upsertPolicyDocument(strapi, {
+	      acceptanceLabel:
+	        'I confirm I am authorised to set up this employer account and accept the HireFlip employer terms.',
+	      body: [
+	        'HireFlip employer dashboard access is provided to invited employer contacts so they can manage interview availability, interview assignment, candidate feedback, and related employer participation records.',
+	        'Employer contacts must keep dashboard access secure and only use candidate information for the interview process managed through HireFlip. Candidate details must not be copied, shared, or used outside the agreed hiring workflow.',
+	        'Interview capacity, operating regions, and employer contact coverage must be kept accurate. If availability, region coverage, or commitment levels change, the employer should update HireFlip promptly so candidate expectations remain accurate.',
+	        'HireFlip may review, pause, or revoke employer access if records become inaccurate, if interview processes are not followed, or if candidate privacy and safety requirements are not met.',
+	        'These launch employer terms are recorded for product testing and onboarding flow validation. Final legal wording remains subject to review before public launch.',
+	      ].join('\n\n'),
+	      effectiveFrom: '2026-06-22T00:00:00.000Z',
+	      internalNotes:
+	        'Launch placeholder employer terms for gated employer dashboard onboarding. Final wording requires legal review before production launch.',
+	      introCopy:
+	        'Review and accept the employer terms before opening the dashboard. This records who accepted the current employer account rules and when.',
+	      policyKey: 'employer_terms:employer-terms-launch-v1',
+	      policyState: 'active',
+	      policyType: 'employer_terms',
+	      title: 'HireFlip Employer Terms',
+	      version: 'employer-terms-launch-v1',
+	    });
+
+	    const sharedClassContent = {
       capacity: 30,
       currency: 'GBP',
       discountedPricePence: 32000,

@@ -17,17 +17,28 @@ type DocumentRecord = Record<string, unknown> & {
   authIdentityId?: string;
   authPasswordTicketExpiresAt?: string;
   authPasswordTicketUrl?: string;
+  acceptanceLabel?: string;
+  body?: string;
   candidate?: DocumentRecord;
   candidateNotifiedAt?: string;
   candidateResponseDeadline?: string;
+  capacityChangeRequestStatus?: string;
   companyName?: string;
   contactState?: string;
   completedAt?: string;
   createdAt?: string;
   createdByStaffDisplayName?: string;
   createdByStaffEmail?: string;
+  coverageRegions?: DocumentRecord[];
+  dashboardOnboardingCompletedAt?: string;
+  dashboardOnboardingMetadata?: unknown;
+  dashboardOnboardingState?: string;
   documentId?: string;
   email?: string;
+  employerTermsAcceptedAt?: string;
+  employerTermsAcceptedByEmail?: string;
+  employerTermsPolicyDocumentId?: string;
+  employerTermsPolicyVersion?: string;
   employer?: DocumentRecord;
   employerContact?: DocumentRecord;
   endTime?: string;
@@ -35,6 +46,9 @@ type DocumentRecord = Record<string, unknown> & {
   expiresAt?: string;
   firstName?: string;
   id?: number | string;
+  introCopy?: string;
+  initialInterviewCommitmentCadence?: string;
+  initialInterviewCommitmentVolume?: number;
   interview?: DocumentRecord;
   interviewCommitmentCadence?: string;
   interviewCommitmentVolume?: number;
@@ -48,18 +62,23 @@ type DocumentRecord = Record<string, unknown> & {
   inviteEmail?: string;
   inviteState?: string;
   operatingRegions?: DocumentRecord[];
+  policyState?: string;
+  policyType?: string;
   progressionState?: string;
   metadata?: unknown;
   region?: string;
   requestedDetailsAt?: string;
   roleTitle?: string;
+  phone?: string;
   scheduledEndTime?: string;
   scheduledStartTime?: string;
   slotState?: string;
   slots?: DocumentRecord[];
   startTime?: string;
   submittedAt?: string;
+  title?: string;
   updatedAt?: string;
+  version?: string;
 };
 
 type DocumentCollection = {
@@ -70,6 +89,11 @@ type DocumentCollection = {
 
 type StrapiDocumentService = {
   documents(uid: string): unknown;
+  service(uid: string): unknown;
+};
+
+type AuditEventService = {
+  record(input: unknown): Promise<unknown>;
 };
 
 type EmployerInviteAcceptanceIdentity = {
@@ -89,6 +113,22 @@ const identitySchema = z
   });
 
 const locationTypeSchema = z.enum(['online', 'phone', 'in_person', 'to_be_confirmed']);
+const cadenceSchema = z.enum(['quarterly', 'biannually', 'annually']);
+const commitmentModeSchema = z.enum(['global', 'per_region']);
+
+const teamContactSchema = z
+  .object({
+    coverageRegionDocumentIds: z
+      .array(z.string().trim().min(1).max(120))
+      .max(100)
+      .optional()
+      .transform((value) => Array.from(new Set(value || []))),
+    email: z.string().trim().email().max(254).transform((value) => value.toLowerCase()),
+    firstName: z.string().trim().max(120).optional().transform((value) => value || undefined),
+    lastName: z.string().trim().max(120).optional().transform((value) => value || undefined),
+    roleTitle: z.string().trim().max(160).optional().transform((value) => value || undefined),
+  })
+  .strict();
 
 const slotSchema = z
   .object({
@@ -109,6 +149,28 @@ const createInterviewSlotOfferSchema = identitySchema
   })
   .strict();
 
+const completeOnboardingSchema = identitySchema
+  .extend({
+    acceptedTerms: z.literal(true),
+    acceptedTermsPolicyDocumentId: z.string().trim().min(1).max(120),
+    acceptedTermsPolicyVersion: z.string().trim().min(1).max(120),
+    commitmentMode: commitmentModeSchema.default('global'),
+    companyName: z.string().trim().min(1).max(200),
+    contactFirstName: z.string().trim().min(1).max(120),
+    contactLastName: z.string().trim().min(1).max(120),
+    contactPhone: z.string().trim().max(40).optional().transform((value) => value || undefined),
+    contactRoleTitle: z.string().trim().max(160).optional().transform((value) => value || undefined),
+    interviewCommitmentCadence: cadenceSchema,
+    interviewCommitmentVolume: z.number().int().min(1).max(1000),
+    operatingRegionDocumentIds: z
+      .array(z.string().trim().min(1).max(120))
+      .min(1)
+      .max(100)
+      .transform((value) => Array.from(new Set(value))),
+    teamContacts: z.array(teamContactSchema).max(10).default([]),
+  })
+  .strict();
+
 const inviteTokenSchema = z
   .object({
     inviteToken: z.string().trim().min(24).max(256),
@@ -124,12 +186,16 @@ const acceptInviteSchema = inviteTokenSchema
   .strict();
 
 const validateIdentity = validateZodSchema(identitySchema);
+const validateCompleteOnboarding = validateZodSchema(completeOnboardingSchema);
 const validateCreateInterviewSlotOffer = validateZodSchema(createInterviewSlotOfferSchema);
 const validateInviteToken = validateZodSchema(inviteTokenSchema);
 const validateAcceptInvite = validateZodSchema(acceptInviteSchema);
 
 const documents = (strapi: StrapiDocumentService, uid: string) =>
   strapi.documents(uid) as DocumentCollection;
+
+const auditEvents = (strapi: StrapiDocumentService) =>
+  strapi.service('api::audit-event.audit-event') as AuditEventService;
 
 const getDocumentId = (record?: DocumentRecord | null) =>
   typeof record?.documentId === 'string' ? record.documentId : null;
@@ -203,6 +269,44 @@ const commitmentLabel = (employer?: DocumentRecord | null) => {
   return `${volume} interview${volume === 1 ? '' : 's'} per ${humanize(String(cadence || 'cadence')).toLowerCase()}`;
 };
 
+const splitPolicyBodyIntoParagraphs = (body?: string) =>
+  (body || '')
+    .split(/\n{2,}/)
+    .map((paragraph) => paragraph.replace(/\s*\n\s*/g, ' ').trim())
+    .filter(Boolean);
+
+const sanitizePolicyDocument = (policyDocument?: DocumentRecord | null) => {
+  if (!policyDocument) {
+    return null;
+  }
+
+  return {
+    acceptanceLabel: policyDocument.acceptanceLabel || null,
+    documentId: getDocumentId(policyDocument) || String(policyDocument.id || ''),
+    introCopy: policyDocument.introCopy || null,
+    paragraphs: splitPolicyBodyIntoParagraphs(policyDocument.body),
+    policyType: policyDocument.policyType || null,
+    title: policyDocument.title || 'Employer terms',
+    version: policyDocument.version || null,
+  };
+};
+
+const findActivePolicyDocument = async (
+  strapi: StrapiDocumentService,
+  policyType: string
+) => {
+  const policyDocuments = await documents(strapi, 'api::policy-document.policy-document').findMany({
+    filters: {
+      policyState: 'active',
+      policyType,
+    },
+    limit: 1,
+    sort: ['effectiveFrom:desc', 'createdAt:desc'],
+  });
+
+  return policyDocuments[0] || null;
+};
+
 const locationLabel = (record: DocumentRecord) => {
   if (record.locationType === 'online') {
     return record.meetingUrl ? 'Online meeting link recorded' : 'Online';
@@ -272,8 +376,14 @@ const findEmployerContact = async (
     filters: employerContactFilters(identity),
     limit: 1,
     populate: {
+      coverageRegions: true,
       employer: {
-        populate: ['operatingRegions'],
+        populate: {
+          contacts: {
+            populate: ['coverageRegions'],
+          },
+          operatingRegions: true,
+        },
       },
     },
   });
@@ -315,6 +425,46 @@ const findDocumentById = async (
 
   return records[0] || null;
 };
+
+const getOperationalClassAreas = async (strapi: StrapiDocumentService) => {
+  const classAreas = await documents(strapi, 'api::class-area.class-area').findMany({
+    limit: 500,
+    sort: ['sortOrder:asc', 'name:asc'],
+  });
+
+  return classAreas.filter((classArea) => String(classArea.state) === 'active');
+};
+
+const assertOperationalRegionsByDocumentId = async (
+  strapi: StrapiDocumentService,
+  documentIds: string[]
+) => {
+  const classAreas = await getOperationalClassAreas(strapi);
+  const classAreasByDocumentId = new Map(
+    classAreas.map((classArea) => [getDocumentId(classArea), classArea])
+  );
+  const regions = documentIds.map((documentId) => classAreasByDocumentId.get(documentId) || null);
+
+  if (classAreas.length === 0) {
+    throw new ValidationError('At least one active HireFlip operating area is required before onboarding employers.');
+  }
+
+  if (regions.some((region) => !region)) {
+    throw new ValidationError('Operating regions must match current HireFlip operating areas.');
+  }
+
+  return regions.filter((region): region is DocumentRecord => Boolean(region));
+};
+
+const regionConnectPayload = (regions: DocumentRecord[]) =>
+  regions
+    .map((region) => getDocumentId(region))
+    .filter((documentId): documentId is string => Boolean(documentId))
+    .map((documentId) => ({ documentId }));
+
+const regionSetRelationData = (regions: DocumentRecord[]) => ({
+  set: regionConnectPayload(regions),
+});
 
 const publicClassAreaOption = (classArea: DocumentRecord) => ({
   documentId: getDocumentId(classArea) || String(classArea.id || ''),
@@ -358,6 +508,107 @@ const regionNames = (regions: Array<{ label?: unknown; name?: unknown }>) =>
 const regionLabel = (regions: Array<{ label?: unknown; name?: unknown }>) =>
   regionNames(regions).join(', ') || null;
 
+const publicContactPayload = (contact: DocumentRecord) => ({
+  contactState: contact.contactState || 'listed',
+  contactStateLabel: humanize(String(contact.contactState || 'listed')),
+  coverageRegionNames: regionNames(publicRegionOptions(contact.coverageRegions)),
+  coverageRegions: publicRegionOptions(contact.coverageRegions),
+  documentId: getDocumentId(contact) || String(contact.id || ''),
+  email: contact.email || null,
+  firstName: contact.firstName || null,
+  lastName: contact.lastName || null,
+  name: contactDisplayName(contact),
+  phone: contact.phone || null,
+  roleTitle: contact.roleTitle || null,
+});
+
+const dashboardOnboardingState = (employer?: DocumentRecord | null) => {
+  if (employer?.dashboardOnboardingState) {
+    return String(employer.dashboardOnboardingState);
+  }
+
+  if (employer?.dashboardOnboardingCompletedAt && employer?.employerTermsAcceptedAt) {
+    return 'complete';
+  }
+
+  return 'not_started';
+};
+
+const isDashboardOnboardingComplete = (employer?: DocumentRecord | null) =>
+  dashboardOnboardingState(employer) === 'complete' &&
+  Boolean(employer?.dashboardOnboardingCompletedAt) &&
+  Boolean(employer?.employerTermsAcceptedAt);
+
+const onboardingCurrentStep = (contact: DocumentRecord) => {
+  const employer = contact.employer;
+
+  if (isDashboardOnboardingComplete(employer)) {
+    return 'complete';
+  }
+
+  if (!contact.firstName || !contact.lastName) {
+    return 'lead_contact';
+  }
+
+  if (!employer?.companyName || employerRegions(employer).length === 0) {
+    return 'company_profile';
+  }
+
+  if (!commitmentLabel(employer)) {
+    return 'commitment';
+  }
+
+  return 'terms';
+};
+
+const onboardingPayload = (
+  contact: DocumentRecord,
+  {
+    availableRegions = [],
+    termsPolicy = null,
+  }: {
+    availableRegions?: DocumentRecord[];
+    termsPolicy?: DocumentRecord | null;
+  } = {}
+) => {
+  const employer = contact.employer;
+  const regions = employerRegions(employer);
+  const contacts = Array.isArray(employer?.contacts) ? employer.contacts : [];
+
+  return {
+    availableRegions: publicRegionOptions(availableRegions),
+    commitment: {
+      cadence: employer?.interviewCommitmentCadence || employer?.initialInterviewCommitmentCadence || 'not_set',
+      label: commitmentLabel(employer),
+      mode: employer?.commitmentMode || 'global',
+      volume: employer?.interviewCommitmentVolume || employer?.initialInterviewCommitmentVolume || null,
+    },
+    company: {
+      documentId: getDocumentId(employer) || String(employer?.id || ''),
+      name: employer?.companyName || null,
+      operatingRegionDocumentIds: regions.map((region) => region.documentId).filter(Boolean),
+      regionNames: regionNames(regions),
+      regions,
+    },
+    completedAt: employer?.dashboardOnboardingCompletedAt || null,
+    currentStep: onboardingCurrentStep(contact),
+    isComplete: isDashboardOnboardingComplete(employer),
+    leadContact: publicContactPayload(contact),
+    state: dashboardOnboardingState(employer),
+    teamContacts: contacts
+      .filter((teamContact) => getDocumentId(teamContact) !== getDocumentId(contact))
+      .filter((teamContact) => !['archived', 'disabled'].includes(String(teamContact.contactState || '')))
+      .map(publicContactPayload),
+    terms: {
+      acceptedAt: employer?.employerTermsAcceptedAt || null,
+      acceptedByEmail: employer?.employerTermsAcceptedByEmail || null,
+      acceptedPolicyDocumentId: employer?.employerTermsPolicyDocumentId || null,
+      acceptedPolicyVersion: employer?.employerTermsPolicyVersion || null,
+      policy: sanitizePolicyDocument(termsPolicy),
+    },
+  };
+};
+
 const accountPayload = (contact: DocumentRecord) => {
   const employer = contact.employer;
   const regions = employerRegions(employer);
@@ -370,6 +621,7 @@ const accountPayload = (contact: DocumentRecord) => {
     companyName: employer?.companyName || 'Employer dashboard',
     contactEmail: contact.email || 'Not recorded',
     contactName: contactDisplayName(contact),
+    onboarding: onboardingPayload(contact),
     region: regionsLabel,
     regionNames: regionNames(regions),
     regions,
@@ -683,27 +935,36 @@ const acceptInviteRecord = async (
     throw new ValidationError('This employer contact is already linked to another Auth0 account.');
   }
 
-  const now = new Date().toISOString();
-  const updatedContact = await documents(strapi, 'api::employer-contact.employer-contact').update({
-    documentId: employerContactDocumentId,
-    data: {
-      accountCreatedAt: invite.employerContact.accountCreatedAt || now,
-      authIdentityId: identity.authIdentityId,
-      authProvider: 'auth0',
-      contactState: 'active',
-    },
-    populate: {
-      employer: {
-        populate: ['operatingRegions'],
-      },
-    },
-  });
-  await documents(strapi, 'api::employer.employer').update({
-    documentId: employerDocumentId,
-    data: {
-      employerState: 'active',
-    },
-  });
+	  const now = new Date().toISOString();
+	  const updatedContact = await documents(strapi, 'api::employer-contact.employer-contact').update({
+	    documentId: employerContactDocumentId,
+	    data: {
+	      accountCreatedAt: invite.employerContact.accountCreatedAt || now,
+	      authIdentityId: identity.authIdentityId,
+	      authProvider: 'auth0',
+	      contactState: 'active',
+	    },
+	    populate: {
+	      coverageRegions: true,
+	      employer: {
+	        populate: {
+	          contacts: {
+	            populate: ['coverageRegions'],
+	          },
+	          operatingRegions: true,
+	        },
+	      },
+	    },
+	  });
+	  await documents(strapi, 'api::employer.employer').update({
+	    documentId: employerDocumentId,
+	    data: {
+	      dashboardOnboardingState: isDashboardOnboardingComplete(invite.employer)
+	        ? 'complete'
+	        : 'in_progress',
+	      employerState: 'active',
+	    },
+	  });
   const acceptedInvite = await documents(strapi, 'api::employer-invite.employer-invite').update({
     documentId: inviteDocumentId,
     data: {
@@ -720,11 +981,176 @@ const acceptInviteRecord = async (
     populate: invitePopulate,
   });
 
-  return {
-    accepted: true,
-    account: accountPayload(updatedContact),
-    invite: publicInvitePayload(acceptedInvite),
-  };
+	  return {
+	    accepted: true,
+	    account: accountPayload(updatedContact),
+	    invite: publicInvitePayload(acceptedInvite),
+	  };
+	};
+
+const findEmployerContactByEmail = async (strapi: StrapiDocumentService, email: string) => {
+  const contacts = await documents(strapi, 'api::employer-contact.employer-contact').findMany({
+    filters: {
+      email,
+    },
+    limit: 5,
+    populate: {
+      coverageRegions: true,
+      employer: {
+        populate: ['operatingRegions'],
+      },
+    },
+  });
+
+  return contacts;
+};
+
+const upsertListedTeamContacts = async (
+  strapi: StrapiDocumentService,
+  {
+    employerDocumentId,
+    leadContactDocumentId,
+    operatingRegions,
+    teamContacts,
+  }: {
+    employerDocumentId: string;
+    leadContactDocumentId: string;
+    operatingRegions: DocumentRecord[];
+    teamContacts: z.infer<typeof teamContactSchema>[];
+  }
+) => {
+  const operatingRegionDocumentIds = new Set(
+    operatingRegions.map((region) => getDocumentId(region)).filter(Boolean)
+  );
+  const createdOrUpdated: DocumentRecord[] = [];
+
+	  for (const teamContact of teamContacts) {
+	    const coverageDocumentIds = teamContact.coverageRegionDocumentIds?.length
+	      ? teamContact.coverageRegionDocumentIds
+	      : Array.from(operatingRegionDocumentIds);
+
+	    if (coverageDocumentIds.some((documentId) => !operatingRegionDocumentIds.has(documentId))) {
+	      throw new ValidationError('Team contact coverage must use selected operating regions.');
+	    }
+
+	    const coverageRegions = operatingRegions.filter((region) =>
+	      coverageDocumentIds.includes(getDocumentId(region) || '')
+	    );
+    const existingContacts = await findEmployerContactByEmail(strapi, teamContact.email);
+    const conflictingContact = existingContacts.find((existingContact) => {
+      const existingEmployerDocumentId = getDocumentId(existingContact.employer);
+      const existingContactDocumentId = getDocumentId(existingContact);
+
+      return (
+        existingContactDocumentId !== leadContactDocumentId &&
+        existingEmployerDocumentId &&
+        existingEmployerDocumentId !== employerDocumentId
+      );
+    });
+
+    if (conflictingContact) {
+      throw new ValidationError('A team contact email is already linked to another employer.');
+    }
+
+    const existingContact = existingContacts.find(
+      (candidate) => getDocumentId(candidate.employer) === employerDocumentId
+    );
+
+    if (getDocumentId(existingContact) === leadContactDocumentId) {
+      continue;
+    }
+
+    const data = {
+      authProvider: existingContact?.authProvider || 'unknown',
+      contactState: existingContact?.contactState === 'active' ? 'active' : 'listed',
+      coverageRegions: regionSetRelationData(coverageRegions),
+      email: teamContact.email,
+      employer: {
+        connect: [{ documentId: employerDocumentId }],
+      },
+      firstName: teamContact.firstName || existingContact?.firstName || null,
+      lastName: teamContact.lastName || existingContact?.lastName || null,
+      roleTitle: teamContact.roleTitle || existingContact?.roleTitle || null,
+    };
+
+    if (existingContact) {
+      const existingContactDocumentId = getDocumentId(existingContact);
+
+      if (!existingContactDocumentId) {
+        continue;
+      }
+
+      createdOrUpdated.push(
+        await documents(strapi, 'api::employer-contact.employer-contact').update({
+          documentId: existingContactDocumentId,
+          data,
+          populate: ['coverageRegions'],
+        })
+      );
+    } else {
+      createdOrUpdated.push(
+        await documents(strapi, 'api::employer-contact.employer-contact').create({
+          data,
+          populate: ['coverageRegions'],
+        })
+      );
+    }
+  }
+
+  return createdOrUpdated;
+};
+
+const createCapacityChangeRequestIfNeeded = async (
+  strapi: StrapiDocumentService,
+  {
+    employer,
+    employerDocumentId,
+    contactDocumentId,
+    requestContext,
+    requestedCadence,
+    requestedVolume,
+  }: {
+    contactDocumentId: string;
+    employer: DocumentRecord;
+    employerDocumentId: string;
+    requestContext: RequestContext;
+    requestedCadence: string;
+    requestedVolume: number;
+  }
+) => {
+  const initialVolume = employer.initialInterviewCommitmentVolume;
+  const initialCadence = String(employer.initialInterviewCommitmentCadence || 'not_set');
+  const hadInitialCommitment =
+    typeof initialVolume === 'number' && initialVolume > 0 && initialCadence !== 'not_set';
+  const changed =
+    hadInitialCommitment &&
+    (initialVolume !== requestedVolume || initialCadence !== requestedCadence);
+
+  if (!changed) {
+    return null;
+  }
+
+  return documents(strapi, 'api::employer-capacity-change-request.employer-capacity-change-request').create({
+    data: {
+      currentInterviewCommitmentCadence: initialCadence,
+      currentInterviewCommitmentVolume: initialVolume,
+      employer: {
+        connect: [{ documentId: employerDocumentId }],
+      },
+      metadata: {
+        changedDuringOnboarding: true,
+        requestId: requestContext.requestId,
+        source: 'employer_dashboard_onboarding',
+      },
+      reason: 'Changed during employer onboarding.',
+      requestedByEmployerContact: {
+        connect: [{ documentId: contactDocumentId }],
+      },
+      requestedInterviewCommitmentCadence: requestedCadence,
+      requestedInterviewCommitmentVolume: requestedVolume,
+      requestState: 'pending',
+    },
+  });
 };
 
 const availabilityRequestPayload = (offer: DocumentRecord) => ({
@@ -853,8 +1279,8 @@ export default ({ strapi }) => ({
     );
   },
 
-  async acceptPendingInvite(input: unknown, requestContext: RequestContext = {}) {
-    const identity = validateIdentity(input);
+	  async acceptPendingInvite(input: unknown, requestContext: RequestContext = {}) {
+	    const identity = validateIdentity(input);
 
     if (!identity.authIdentityId || !identity.email) {
       throw new ValidationError('Employer sign-in did not include a verified identity and email.');
@@ -877,11 +1303,177 @@ export default ({ strapi }) => ({
         email: identity.email,
       },
       requestContext
-    );
-  },
+	    );
+	  },
 
-  async getOverview(input: unknown) {
-    const identity = validateIdentity(input);
+	  async getOnboarding(input: unknown) {
+	    const identity = validateIdentity(input);
+	    const contact = await findEmployerContact(strapi, identity);
+	    const [availableRegions, termsPolicy] = await Promise.all([
+	      getOperationalClassAreas(strapi),
+	      findActivePolicyDocument(strapi, 'employer_terms'),
+	    ]);
+
+	    return {
+	      account: accountPayload(contact),
+	      generatedAt: new Date().toISOString(),
+	      onboarding: onboardingPayload(contact, {
+	        availableRegions,
+	        termsPolicy,
+	      }),
+	    };
+	  },
+
+	  async completeOnboarding(input: unknown, requestContext: RequestContext = {}) {
+	    const body = validateCompleteOnboarding(input);
+	    const contact = await findEmployerContact(strapi, body);
+	    const employer = contact.employer;
+	    const employerDocumentId = getDocumentId(employer);
+	    const contactDocumentId = getDocumentId(contact);
+
+	    if (!employerDocumentId) {
+	      throw new ValidationError('Employer record could not be found.');
+	    }
+
+	    if (!contactDocumentId) {
+	      throw new ValidationError('Employer contact record could not be found.');
+	    }
+
+	    const termsPolicy = await findActivePolicyDocument(strapi, 'employer_terms');
+
+	    if (!termsPolicy?.documentId || !termsPolicy.version) {
+	      throw new ValidationError('Active employer terms are not configured.');
+	    }
+
+	    if (
+	      body.acceptedTermsPolicyDocumentId !== termsPolicy.documentId ||
+	      body.acceptedTermsPolicyVersion !== termsPolicy.version
+	    ) {
+	      throw new ValidationError('Employer terms have changed. Refresh and accept the latest terms.');
+	    }
+
+	    const operatingRegions = await assertOperationalRegionsByDocumentId(
+	      strapi,
+	      body.operatingRegionDocumentIds
+	    );
+	    const now = new Date().toISOString();
+	    const requestedCadence = body.interviewCommitmentCadence;
+	    const requestedVolume = body.interviewCommitmentVolume;
+	    const initialVolume = employer?.initialInterviewCommitmentVolume;
+	    const initialCadence = String(employer?.initialInterviewCommitmentCadence || 'not_set');
+	    const capacityReviewNeeded =
+	      typeof initialVolume === 'number' &&
+	      initialVolume > 0 &&
+	      initialCadence !== 'not_set' &&
+	      (initialVolume !== requestedVolume || initialCadence !== requestedCadence);
+	    const leadContactUpdate = await documents(strapi, 'api::employer-contact.employer-contact').update({
+	      documentId: contactDocumentId,
+	      data: {
+	        coverageRegions: regionSetRelationData(operatingRegions),
+	        firstName: body.contactFirstName,
+	        lastName: body.contactLastName,
+	        phone: body.contactPhone || null,
+	        roleTitle: body.contactRoleTitle || null,
+	      },
+	      populate: ['coverageRegions'],
+	    });
+
+	    await upsertListedTeamContacts(strapi, {
+	      employerDocumentId,
+	      leadContactDocumentId: contactDocumentId,
+	      operatingRegions,
+	      teamContacts: body.teamContacts.filter((teamContact) => teamContact.email !== contact.email),
+	    });
+
+	    const updatedEmployer = await documents(strapi, 'api::employer.employer').update({
+	      documentId: employerDocumentId,
+	      data: {
+	        capacityChangeRequestStatus: capacityReviewNeeded
+	          ? 'pending'
+	          : employer?.capacityChangeRequestStatus || 'none',
+	        commitmentMode: body.commitmentMode,
+	        companyName: body.companyName,
+	        dashboardOnboardingCompletedAt: now,
+	        dashboardOnboardingMetadata: {
+	          ...(employer?.dashboardOnboardingMetadata &&
+	          typeof employer.dashboardOnboardingMetadata === 'object'
+	            ? employer.dashboardOnboardingMetadata
+	            : {}),
+	          completedRequestId: requestContext.requestId,
+	          completedUserAgent: requestContext.userAgent,
+	          initialInterviewCommitmentCadence: initialCadence,
+	          initialInterviewCommitmentVolume: initialVolume ?? null,
+	          teamContactsSubmitted: body.teamContacts.length,
+	        },
+	        dashboardOnboardingState: 'complete',
+	        employerState: 'active',
+	        employerTermsAcceptedAt: now,
+	        employerTermsAcceptedByEmail: body.email || contact.email || null,
+	        employerTermsPolicyDocumentId: termsPolicy.documentId,
+	        employerTermsPolicyVersion: termsPolicy.version,
+	        interviewCommitmentCadence: requestedCadence,
+	        interviewCommitmentVolume: requestedVolume,
+	        operatingRegions: regionSetRelationData(operatingRegions),
+	        region: String(operatingRegions[0]?.name || '').trim() || null,
+	      },
+	      populate: {
+	        contacts: {
+	          populate: ['coverageRegions'],
+	        },
+	        operatingRegions: true,
+	      },
+	    });
+
+	    if (capacityReviewNeeded) {
+	      await createCapacityChangeRequestIfNeeded(strapi, {
+	        contactDocumentId,
+	        employer: employer || {},
+	        employerDocumentId,
+	        requestContext,
+	        requestedCadence,
+	        requestedVolume,
+	      });
+	    }
+
+	    await auditEvents(strapi).record({
+	      actorDisplayName: contactDisplayName(leadContactUpdate),
+	      actorEmail: body.email || contact.email || undefined,
+	      actorId: contactDocumentId,
+	      actorType: 'employer_contact',
+	      eventCategory: 'employer',
+	      eventType: 'employer.onboarding.completed',
+	      ipAddress: requestContext.ipAddress,
+	      metadata: {
+	        acceptedTermsPolicyDocumentId: termsPolicy.documentId,
+	        acceptedTermsPolicyVersion: termsPolicy.version,
+	        capacityReviewNeeded,
+	        operatingRegionDocumentIds: body.operatingRegionDocumentIds,
+	        teamContactsSubmitted: body.teamContacts.length,
+	      },
+	      requestId: requestContext.requestId,
+	      serviceName: requestContext.serviceName,
+	      severity: capacityReviewNeeded ? 'warning' : 'info',
+	      source: 'employer_dashboard',
+	      subjectDisplayName: updatedEmployer.companyName || body.companyName,
+	      subjectId: employerDocumentId,
+	      subjectType: 'employer',
+	      userAgent: requestContext.userAgent,
+	    });
+
+	    const refreshedContact = await findEmployerContact(strapi, body);
+
+	    return {
+	      account: accountPayload(refreshedContact),
+	      completed: true,
+	      onboarding: onboardingPayload(refreshedContact, {
+	        availableRegions: await getOperationalClassAreas(strapi),
+	        termsPolicy,
+	      }),
+	    };
+	  },
+	
+	  async getOverview(input: unknown) {
+	    const identity = validateIdentity(input);
     const contact = await findEmployerContact(strapi, identity);
     const employerDocumentId = getDocumentId(contact.employer);
 

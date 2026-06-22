@@ -86,6 +86,25 @@ const deleteNotificationEventsForEmail = async (strapi, email) => {
 
   for (const event of events) {
     await deleteDocument(strapi, 'api::notification-event.notification-event', event.documentId);
+	  }
+	};
+
+const deleteAuditEventsForSubject = async (strapi, subjectId) => {
+  if (!subjectId) {
+    return;
+  }
+
+  const events = await documents(strapi, 'api::audit-event.audit-event')
+    .findMany({
+      filters: {
+        subjectId,
+      },
+      limit: 50,
+    })
+    .catch(() => []);
+
+  for (const event of events) {
+    await deleteDocument(strapi, 'api::audit-event.audit-event', event.documentId);
   }
 };
 
@@ -284,25 +303,28 @@ const main = async () => {
 
   const appContext = await compileStrapi();
   const strapi = await createStrapi(appContext).load();
-  const created = {
-    adminClassArea: null,
-    adminEmployer: null,
-    adminEmployerContact: null,
-    adminEmployerInvite: null,
-    adminReinvitedEmployerInvite: null,
-    candidate: null,
-    employer: null,
-    employerContact: null,
-    employerInvite: null,
-    enrollment: null,
-    feedback: null,
-    invitedEmployer: null,
-    invitedEmployerContact: null,
-    interview: null,
-    progressionRequest: null,
-    slotOffer: null,
-    slots: [],
-  };
+	  const created = {
+	    adminClassArea: null,
+	    adminEmployer: null,
+	    adminEmployerContact: null,
+	    adminEmployerInvite: null,
+	    adminReinvitedEmployerInvite: null,
+	    candidate: null,
+	    capacityChangeRequest: null,
+	    employer: null,
+	    employerContact: null,
+	    employerInvite: null,
+	    enrollment: null,
+	    feedback: null,
+	    invitedEmployer: null,
+	    invitedEmployerContact: null,
+	    interview: null,
+	    onboardingPolicyDocument: null,
+	    progressionRequest: null,
+	    slotOffer: null,
+	    slots: [],
+	    teamContact: null,
+	  };
 
   try {
     const originalService = strapi.service.bind(strapi);
@@ -337,7 +359,24 @@ const main = async () => {
       },
     });
 
-    created.adminClassArea = adminClassArea;
+	    created.adminClassArea = adminClassArea;
+
+	    created.onboardingPolicyDocument = await documents(strapi, 'api::policy-document.policy-document').create({
+	      data: {
+	        acceptanceLabel: 'I accept the smoke employer terms.',
+	        body: [
+	          'Smoke employer terms paragraph one.',
+	          'Smoke employer terms paragraph two.',
+	        ].join('\n\n'),
+	        effectiveFrom: new Date().toISOString(),
+	        introCopy: 'Smoke employer terms intro.',
+	        policyKey: `employer_terms:smoke-${runId}`,
+	        policyState: 'active',
+	        policyType: 'employer_terms',
+	        title: 'Smoke Employer Terms',
+	        version: `smoke-employer-terms-${runId}`,
+	      },
+	    });
 
     const inviteOptions = await adminEmployerService.getInviteOptions({
       sessionToken: 's'.repeat(32),
@@ -647,11 +686,13 @@ const main = async () => {
     const inviteToken = randomBytes(32).toString('base64url');
     const invitedEmployer = await documents(strapi, 'api::employer.employer').create({
       data: {
-        assignmentMode: 'automatic',
-        companyName: `Invited Employer Smoke ${runId}`,
-        employerState: 'invited',
-        interviewCommitmentCadence: 'quarterly',
-        interviewCommitmentVolume: 3,
+	        assignmentMode: 'automatic',
+	        companyName: `Invited Employer Smoke ${runId}`,
+	        employerState: 'invited',
+	        initialInterviewCommitmentCadence: 'quarterly',
+	        initialInterviewCommitmentVolume: 3,
+	        interviewCommitmentCadence: 'quarterly',
+	        interviewCommitmentVolume: 3,
         region: 'Manchester',
       },
     });
@@ -744,18 +785,133 @@ const main = async () => {
       email: invitedEmployerContact.email,
     });
 
-    assert(acceptedInvite.accepted === true, 'Expected employer invite to be accepted.');
-    assert(acceptedInvite.account.companyName === invitedEmployer.companyName, 'Expected accepted account.');
+	    assert(acceptedInvite.accepted === true, 'Expected employer invite to be accepted.');
+	    assert(acceptedInvite.account.companyName === invitedEmployer.companyName, 'Expected accepted account.');
+	    assert(
+	      acceptedInvite.account.onboarding?.isComplete === false,
+	      'Expected accepted invite to require dashboard onboarding.'
+	    );
 
-    const acceptedOverview = await employerDashboardService.getOverview({
-      authIdentityId: invitedAuthIdentityId,
-      email: invitedEmployerContact.email,
-    });
+	    const onboardingBeforeCompletion = await employerDashboardService.getOnboarding({
+	      authIdentityId: invitedAuthIdentityId,
+	      email: invitedEmployerContact.email,
+	    });
 
-    assert(
-      acceptedOverview.account.companyName === invitedEmployer.companyName,
-      'Expected accepted invited employer to access overview.'
-    );
+	    assert(
+	      onboardingBeforeCompletion.onboarding.isComplete === false,
+	      'Expected onboarding to be incomplete before completion.'
+	    );
+	    assert(
+	      onboardingBeforeCompletion.onboarding.availableRegions.some(
+	        (region) => region.documentId === adminClassArea.documentId
+	      ),
+	      'Expected onboarding to expose active operating regions.'
+	    );
+	    assert(
+	      onboardingBeforeCompletion.onboarding.terms.policy?.documentId ===
+	        created.onboardingPolicyDocument.documentId,
+	      'Expected onboarding to expose active employer terms.'
+	    );
+
+	    const teamContactEmail = `team-contact-employer-smoke-${runId}@example.test`;
+	    const completedOnboarding = await employerDashboardService.completeOnboarding({
+	      acceptedTerms: true,
+	      acceptedTermsPolicyDocumentId: created.onboardingPolicyDocument.documentId,
+	      acceptedTermsPolicyVersion: created.onboardingPolicyDocument.version,
+	      authIdentityId: invitedAuthIdentityId,
+	      commitmentMode: 'global',
+	      companyName: `${invitedEmployer.companyName} Updated`,
+	      contactFirstName: 'Invited',
+	      contactLastName: 'Employer',
+	      contactPhone: '+447700900123',
+	      contactRoleTitle: 'Talent lead',
+	      email: invitedEmployerContact.email,
+	      interviewCommitmentCadence: 'quarterly',
+	      interviewCommitmentVolume: 4,
+	      operatingRegionDocumentIds: [adminClassArea.documentId],
+	      teamContacts: [
+	        {
+	          coverageRegionDocumentIds: [adminClassArea.documentId],
+	          email: teamContactEmail,
+	          firstName: 'Team',
+	          lastName: 'Contact',
+	          roleTitle: 'Hiring manager',
+	        },
+	      ],
+	    });
+
+	    assert(completedOnboarding.completed === true, 'Expected employer onboarding to complete.');
+	    assert(
+	      completedOnboarding.onboarding.isComplete === true,
+	      'Expected completed onboarding state.'
+	    );
+	    assert(
+	      completedOnboarding.onboarding.terms.acceptedPolicyVersion ===
+	        created.onboardingPolicyDocument.version,
+	      'Expected completed onboarding to record terms version.'
+	    );
+
+	    created.teamContact = (
+	      await documents(strapi, 'api::employer-contact.employer-contact').findMany({
+	        filters: {
+	          email: teamContactEmail,
+	        },
+	        limit: 1,
+	        populate: ['coverageRegions'],
+	      })
+	    )[0];
+
+	    assert(created.teamContact?.contactState === 'listed', 'Expected optional team contact to be listed.');
+	    assert(
+	      created.teamContact.coverageRegions?.some((region) => region.documentId === adminClassArea.documentId),
+	      'Expected optional team contact to cover selected operating region.'
+	    );
+
+	    created.capacityChangeRequest = (
+	      await documents(strapi, 'api::employer-capacity-change-request.employer-capacity-change-request').findMany({
+	        filters: {
+	          employer: {
+	            documentId: invitedEmployer.documentId,
+	          },
+	          requestState: 'pending',
+	        },
+	        limit: 1,
+	      })
+	    )[0];
+
+	    assert(
+	      created.capacityChangeRequest?.requestedInterviewCommitmentVolume === 4,
+	      'Expected changed onboarding commitment to create a capacity review request.'
+	    );
+
+	    const acceptedOverview = await employerDashboardService.getOverview({
+	      authIdentityId: invitedAuthIdentityId,
+	      email: invitedEmployerContact.email,
+	    });
+
+	    assert(
+	      acceptedOverview.account.companyName === `${invitedEmployer.companyName} Updated`,
+	      'Expected accepted invited employer to access overview.'
+	    );
+	    assert(
+	      acceptedOverview.account.onboarding?.isComplete === true,
+	      'Expected overview account to report completed onboarding.'
+	    );
+
+	    const invitedEmployerDetail = await adminEmployerService.getEmployerDetail({
+	      employerDocumentId: invitedEmployer.documentId,
+	      sessionToken: 's'.repeat(32),
+	    });
+
+	    assert(
+	      invitedEmployerDetail.employer.onboardingComplete === true,
+	      'Expected admin employer detail to expose completed onboarding.'
+	    );
+	    assert(
+	      invitedEmployerDetail.employer.employerTermsPolicyVersion ===
+	        created.onboardingPolicyDocument.version,
+	      'Expected admin employer detail to expose accepted terms version.'
+	    );
 
     let rejectedReusedInvite = false;
 
@@ -981,15 +1137,27 @@ const main = async () => {
     await deleteDocument(strapi, 'api::employer-contact.employer-contact', created.employerContact?.documentId);
     await deleteDocument(strapi, 'api::employer.employer', created.employer?.documentId);
     await deleteDocument(strapi, 'api::candidate.candidate', created.candidate?.documentId);
-    await deleteDocument(strapi, 'api::employer-invite.employer-invite', created.employerInvite?.documentId);
-    await deleteDocument(strapi, 'api::employer-contact.employer-contact', created.invitedEmployerContact?.documentId);
-    await deleteDocument(strapi, 'api::employer.employer', created.invitedEmployer?.documentId);
-    await deleteNotificationEventsForEmail(strapi, created.adminEmployerContact?.email);
+	    await deleteDocument(strapi, 'api::employer-invite.employer-invite', created.employerInvite?.documentId);
+	    await deleteDocument(
+	      strapi,
+	      'api::employer-capacity-change-request.employer-capacity-change-request',
+	      created.capacityChangeRequest?.documentId
+	    );
+	    await deleteAuditEventsForSubject(strapi, created.invitedEmployer?.documentId);
+	    await deleteDocument(strapi, 'api::employer-contact.employer-contact', created.teamContact?.documentId);
+	    await deleteDocument(strapi, 'api::employer-contact.employer-contact', created.invitedEmployerContact?.documentId);
+	    await deleteDocument(strapi, 'api::employer.employer', created.invitedEmployer?.documentId);
+	    await deleteNotificationEventsForEmail(strapi, created.adminEmployerContact?.email);
     await deleteDocument(strapi, 'api::employer-invite.employer-invite', created.adminReinvitedEmployerInvite?.documentId);
     await deleteDocument(strapi, 'api::employer-invite.employer-invite', created.adminEmployerInvite?.documentId);
-    await deleteDocument(strapi, 'api::employer-contact.employer-contact', created.adminEmployerContact?.documentId);
-    await deleteDocument(strapi, 'api::employer.employer', created.adminEmployer?.documentId);
-    await deleteDocument(strapi, 'api::class-area.class-area', created.adminClassArea?.documentId);
+	    await deleteDocument(strapi, 'api::employer-contact.employer-contact', created.adminEmployerContact?.documentId);
+	    await deleteDocument(strapi, 'api::employer.employer', created.adminEmployer?.documentId);
+	    await deleteDocument(
+	      strapi,
+	      'api::policy-document.policy-document',
+	      created.onboardingPolicyDocument?.documentId
+	    );
+	    await deleteDocument(strapi, 'api::class-area.class-area', created.adminClassArea?.documentId);
     await strapi.destroy();
     global.fetch = globalThis.__hireflipOriginalFetch;
   }

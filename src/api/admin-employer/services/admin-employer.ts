@@ -45,6 +45,8 @@ type DocumentRecord = Record<string, unknown> & {
   createdAt?: string;
   createdByStaffDisplayName?: string;
   createdByStaffEmail?: string;
+  dashboardOnboardingCompletedAt?: string;
+  dashboardOnboardingState?: string;
   deliveryFailureMessage?: string;
   deliveryState?: string;
   documentId?: string;
@@ -52,6 +54,10 @@ type DocumentRecord = Record<string, unknown> & {
   employer?: DocumentRecord;
   employerContact?: DocumentRecord;
   employerState?: string;
+  employerTermsAcceptedAt?: string;
+  employerTermsAcceptedByEmail?: string;
+  employerTermsPolicyDocumentId?: string;
+  employerTermsPolicyVersion?: string;
   expiresAt?: string;
   firstName?: string;
   id?: number | string;
@@ -332,8 +338,8 @@ const publicEmployer = (employer: DocumentRecord, invites: DocumentRecord[] = []
   const regions = employerRegions(employer);
   const regionsLabel = regionLabel(regions);
 
-  return {
-    activeContactsCount: contacts.filter((contact) => contact.contactState === 'active').length,
+	  return {
+	    activeContactsCount: contacts.filter((contact) => contact.contactState === 'active').length,
     assignmentMode: employer.assignmentMode || 'automatic',
     assignmentModeLabel: humanize(String(employer.assignmentMode || 'automatic')),
     capacityChangeRequestStatus: employer.capacityChangeRequestStatus || 'none',
@@ -343,12 +349,23 @@ const publicEmployer = (employer: DocumentRecord, invites: DocumentRecord[] = []
     companyName: employer.companyName || 'Employer',
     contactsCount: contacts.length,
     createdAt: employer.createdAt || null,
-    documentId: getDocumentId(employer) || String(employer.id || ''),
-    employerState: employer.employerState || 'prospect',
-    employerStateLabel: humanize(String(employer.employerState || 'prospect')),
-    inviteCount: invites.length,
-    leadContact: leadContact ? publicEmployerContact(leadContact) : null,
-    pendingInvitesCount: pendingInvites,
+	    documentId: getDocumentId(employer) || String(employer.id || ''),
+	    dashboardOnboardingCompletedAt: employer.dashboardOnboardingCompletedAt || null,
+	    dashboardOnboardingState: employer.dashboardOnboardingState || 'not_started',
+	    dashboardOnboardingStateLabel: humanize(String(employer.dashboardOnboardingState || 'not_started')),
+	    employerState: employer.employerState || 'prospect',
+	    employerStateLabel: humanize(String(employer.employerState || 'prospect')),
+	    employerTermsAcceptedAt: employer.employerTermsAcceptedAt || null,
+	    employerTermsAcceptedByEmail: employer.employerTermsAcceptedByEmail || null,
+	    employerTermsPolicyDocumentId: employer.employerTermsPolicyDocumentId || null,
+	    employerTermsPolicyVersion: employer.employerTermsPolicyVersion || null,
+	    inviteCount: invites.length,
+	    leadContact: leadContact ? publicEmployerContact(leadContact) : null,
+	    onboardingComplete:
+	      employer.dashboardOnboardingState === 'complete' &&
+	      Boolean(employer.dashboardOnboardingCompletedAt) &&
+	      Boolean(employer.employerTermsAcceptedAt),
+	    pendingInvitesCount: pendingInvites,
     region: regionsLabel,
     regionNames: regionNames(regions),
     regions,
@@ -367,9 +384,12 @@ const employerMatchesSearch = (employer: PublicEmployerSummary, search?: string)
 
   return [
     employer.assignmentModeLabel,
-    employer.commitmentLabel,
-    employer.companyName,
-    employer.employerStateLabel,
+	    employer.commitmentLabel,
+	    employer.companyName,
+	    employer.dashboardOnboardingStateLabel,
+	    employer.employerStateLabel,
+	    employer.employerTermsAcceptedByEmail,
+	    employer.employerTermsPolicyVersion,
     employer.leadContact?.email,
     employer.leadContact?.name,
     employer.leadContact?.phone,
