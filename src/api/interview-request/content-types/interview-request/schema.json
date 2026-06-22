@@ -1,0 +1,124 @@
+{
+  "kind": "collectionType",
+  "collectionName": "interview_requests",
+  "info": {
+    "singularName": "interview-request",
+    "pluralName": "interview-requests",
+    "displayName": "Interview Request",
+    "description": "Candidate interview fulfilment request created once a candidate is ready for the guaranteed interview phase."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "candidate": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::candidate.candidate"
+    },
+    "enrollment": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::enrollment.enrollment"
+    },
+    "class": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::class.class"
+    },
+    "region": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::class-area.class-area"
+    },
+    "claims": {
+      "type": "relation",
+      "relation": "oneToMany",
+      "target": "api::employer-capacity-claim.employer-capacity-claim",
+      "mappedBy": "interviewRequest"
+    },
+    "slotOffers": {
+      "type": "relation",
+      "relation": "oneToMany",
+      "target": "api::interview-slot-offer.interview-slot-offer",
+      "mappedBy": "interviewRequest"
+    },
+    "requestState": {
+      "type": "enumeration",
+      "enum": [
+        "pending_profile",
+        "pending_availability",
+        "pending_capacity",
+        "capacity_claimed",
+        "employer_notified",
+        "slot_options_submitted",
+        "candidate_reviewing",
+        "candidate_selected",
+        "fulfilled",
+        "expired",
+        "cancelled",
+        "manual_review"
+      ],
+      "default": "pending_profile",
+      "required": true
+    },
+    "candidateVisibleState": {
+      "type": "enumeration",
+      "enum": [
+        "waiting_for_candidate",
+        "arranging_interviews",
+        "reviewing_options",
+        "confirmed",
+        "blocked"
+      ],
+      "default": "waiting_for_candidate",
+      "required": true
+    },
+    "requestedInterviewCount": {
+      "type": "integer",
+      "min": 1,
+      "max": 50,
+      "default": 1,
+      "required": true
+    },
+    "claimedInterviewCount": {
+      "type": "integer",
+      "min": 0,
+      "max": 50,
+      "default": 0,
+      "required": true
+    },
+    "fulfilledInterviewCount": {
+      "type": "integer",
+      "min": 0,
+      "max": 50,
+      "default": 0,
+      "required": true
+    },
+    "responseSlaWorkingDays": {
+      "type": "integer",
+      "min": 1,
+      "max": 20,
+      "default": 2,
+      "required": true
+    },
+    "employerResponseDeadline": {
+      "type": "datetime"
+    },
+    "lastRoutedAt": {
+      "type": "datetime"
+    },
+    "lastCapacityCheckAt": {
+      "type": "datetime"
+    },
+    "insufficientCapacityDetectedAt": {
+      "type": "datetime"
+    },
+    "insufficientCapacityReason": {
+      "type": "text"
+    },
+    "metadata": {
+      "type": "json"
+    }
+  }
+}

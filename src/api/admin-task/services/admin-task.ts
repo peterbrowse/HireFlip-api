@@ -250,11 +250,11 @@ const assertOperationsSession = async (
 ) => {
   const session = await adminAuthService(strapi).getSession({ sessionToken }, context);
   const canViewOperationalTasks = session.user.roleKeys.some((roleKey) =>
-    ['admin', 'super_admin'].includes(roleKey)
+    ['admin', 'sales', 'super_admin'].includes(roleKey)
   );
 
   if (!canViewOperationalTasks) {
-    throw new ForbiddenError('Admin or Super Admin access is required.');
+    throw new ForbiddenError('Admin, Sales, or Super Admin access is required.');
   }
 
   return session;

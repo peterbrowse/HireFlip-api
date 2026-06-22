@@ -1,0 +1,110 @@
+{
+  "kind": "collectionType",
+  "collectionName": "employer_capacity_claims",
+  "info": {
+    "singularName": "employer-capacity-claim",
+    "pluralName": "employer-capacity-claims",
+    "displayName": "Employer Capacity Claim",
+    "description": "A temporary or fulfilled claim against an employer interview commitment for a candidate interview request."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "interviewRequest": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::interview-request.interview-request",
+      "inversedBy": "claims"
+    },
+    "employer": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::employer.employer"
+    },
+    "employerContact": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::employer-contact.employer-contact"
+    },
+    "region": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::class-area.class-area"
+    },
+    "slotOffers": {
+      "type": "relation",
+      "relation": "oneToMany",
+      "target": "api::interview-slot-offer.interview-slot-offer",
+      "mappedBy": "capacityClaim"
+    },
+    "claimState": {
+      "type": "enumeration",
+      "enum": [
+        "held",
+        "notified",
+        "accepted",
+        "declined",
+        "released",
+        "expired",
+        "fulfilled",
+        "cancelled"
+      ],
+      "default": "held",
+      "required": true
+    },
+    "claimCount": {
+      "type": "integer",
+      "min": 1,
+      "max": 50,
+      "default": 1,
+      "required": true
+    },
+    "expiresAt": {
+      "type": "datetime"
+    },
+    "notifiedAt": {
+      "type": "datetime"
+    },
+    "acceptedAt": {
+      "type": "datetime"
+    },
+    "declinedAt": {
+      "type": "datetime"
+    },
+    "releasedAt": {
+      "type": "datetime"
+    },
+    "fulfilledAt": {
+      "type": "datetime"
+    },
+    "releaseReason": {
+      "type": "enumeration",
+      "enum": [
+        "employer_declined",
+        "expired",
+        "admin_released",
+        "slot_options_submitted",
+        "request_cancelled",
+        "capacity_rebalanced",
+        "other"
+      ]
+    },
+    "assignmentSource": {
+      "type": "enumeration",
+      "enum": [
+        "automatic",
+        "admin_override",
+        "sales_override"
+      ],
+      "default": "automatic",
+      "required": true
+    },
+    "assignmentNote": {
+      "type": "text"
+    },
+    "metadata": {
+      "type": "json"
+    }
+  }
+}

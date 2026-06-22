@@ -22,7 +22,11 @@ type DocumentRecord = Record<string, unknown> & {
   candidate?: DocumentRecord;
   candidateNotifiedAt?: string;
   candidateResponseDeadline?: string;
+  capacityClaim?: DocumentRecord;
   capacityChangeRequestStatus?: string;
+  class?: DocumentRecord;
+  claimCount?: number;
+  claimState?: string;
   companyName?: string;
   contactState?: string;
   completedAt?: string;
@@ -38,6 +42,7 @@ type DocumentRecord = Record<string, unknown> & {
   dashboardOnboardingCompletedAt?: string;
   dashboardOnboardingMetadata?: unknown;
   dashboardOnboardingState?: string;
+  displayTitle?: string;
   documentId?: string;
   email?: string;
   employerTermsAcceptedAt?: string;
@@ -56,6 +61,7 @@ type DocumentRecord = Record<string, unknown> & {
   initialInterviewCommitmentCadence?: string;
   initialInterviewCommitmentVolume?: number;
   interview?: DocumentRecord;
+  interviewRequest?: DocumentRecord;
   interviewCommitmentCadence?: string;
   interviewCommitmentVolume?: number;
   interviewCoverageOverrideAt?: string;
@@ -69,6 +75,7 @@ type DocumentRecord = Record<string, unknown> & {
   locationType?: string;
   meetingUrl?: string;
   offerState?: string;
+  requestState?: string;
   inviteEmail?: string;
   inviteState?: string;
   operatingRegions?: DocumentRecord[];
@@ -107,6 +114,10 @@ type StrapiDocumentService = {
 
 type AuditEventService = {
   record(input: unknown): Promise<unknown>;
+};
+
+type InterviewRequestService = {
+  markSlotOptionsSubmitted(input: unknown, context: RequestContext): Promise<unknown>;
 };
 
 type EmployerInviteAcceptanceIdentity = {
@@ -163,9 +174,11 @@ const slotSchema = z
 
 const createInterviewSlotOfferSchema = identitySchema
   .extend({
+    capacityClaimDocumentId: z.string().trim().min(1).max(120).optional(),
     candidateDocumentId: z.string().trim().min(1).max(80),
     enrollmentDocumentId: z.string().trim().min(1).max(80),
     internalNote: z.string().trim().max(1000).optional().transform((value) => value || undefined),
+    interviewRequestDocumentId: z.string().trim().min(1).max(120).optional(),
     slots: z.array(slotSchema).length(3, 'Exactly 3 slot options are required.'),
   })
   .strict();
@@ -255,6 +268,8 @@ const documents = (strapi: StrapiDocumentService, uid: string) =>
 
 const auditEvents = (strapi: StrapiDocumentService) =>
   strapi.service('api::audit-event.audit-event') as AuditEventService;
+const interviewRequestService = (strapi: StrapiDocumentService) =>
+  strapi.service('api::interview-request.interview-request') as InterviewRequestService;
 
 const getDocumentId = (record?: DocumentRecord | null) =>
   typeof record?.documentId === 'string' ? record.documentId : null;
@@ -1852,18 +1867,22 @@ const createSettingsCapacityReviewIfNeeded = async (
   return review;
 };
 
-const availabilityRequestPayload = (offer: DocumentRecord) => ({
-  candidateName: candidateDisplayName(offer.candidate),
-  courseLabel: 'Interview phase',
-  documentId: getDocumentId(offer) || String(offer.id || ''),
-  earliestSlotLabel: offer.slots?.[0]?.startTime
-    ? formatDateTime(String(offer.slots[0].startTime))
-    : '4 working days notice required',
-  responseLabel: offer.candidateResponseDeadline
-    ? formatDateTime(offer.candidateResponseDeadline)
-    : 'Response deadline starts once sent',
-  statusLabel: humanize(String(offer.offerState || 'submitted')),
-});
+const availabilityRequestPayload = (claim: DocumentRecord) => {
+  const request = claim.interviewRequest;
+  const classRecord = request?.class;
+
+  return {
+    candidateDocumentId: getDocumentId(request?.candidate) || null,
+    candidateName: candidateDisplayName(request?.candidate),
+    courseLabel: classRecord?.displayTitle || classRecord?.name || 'Interview phase',
+    documentId: getDocumentId(claim) || String(claim.id || ''),
+    earliestSlotLabel: '4 working days notice required',
+    enrollmentDocumentId: getDocumentId(request?.enrollment) || null,
+    interviewRequestDocumentId: getDocumentId(request) || null,
+    responseLabel: claim.expiresAt ? formatDateTime(claim.expiresAt) : '2 working days',
+    statusLabel: humanize(String(claim.claimState || request?.requestState || 'notified')),
+  };
+};
 
 const interviewPayload = (interview: DocumentRecord) => ({
   candidateName: candidateDisplayName(interview.candidate),
@@ -2568,25 +2587,36 @@ export default ({ strapi }) => ({
         };
 
     const [
-      slotOffers,
+      capacityClaims,
       availableSlots,
       scheduledInterviews,
       completedInterviews,
       progressionRequests,
     ] = await Promise.all([
-      documents(strapi, 'api::interview-slot-offer.interview-slot-offer').findMany({
+      documents(strapi, 'api::employer-capacity-claim.employer-capacity-claim').findMany({
         filters: {
           employer: {
             documentId: employerDocumentId,
           },
           ...scopedEmployerContactFilter,
-          offerState: {
-            $in: ['draft', 'submitted', 'sent'],
+          claimState: {
+            $in: ['held', 'notified', 'accepted'],
           },
         },
         limit: 50,
-        populate: ['candidate', 'slots'],
-        sort: ['createdAt:desc'],
+        populate: {
+          employerContact: true,
+          interviewRequest: {
+            populate: {
+              candidate: true,
+              class: true,
+              enrollment: true,
+              region: true,
+            },
+          },
+          region: true,
+        },
+        sort: ['expiresAt:asc', 'createdAt:asc'],
       }),
       documents(strapi, 'api::interview-slot.interview-slot').findMany({
         filters: {
@@ -2668,7 +2698,7 @@ export default ({ strapi }) => ({
 
     return {
       account: accountPayload(contact),
-      availabilityRequests: slotOffers.map(availabilityRequestPayload),
+      availabilityRequests: capacityClaims.map(availabilityRequestPayload),
       feedbackRequests: feedbackDue.map(feedbackPayload),
       generatedAt: new Date().toISOString(),
       interviews: scheduledInterviews.map(interviewPayload),
@@ -2715,6 +2745,55 @@ export default ({ strapi }) => ({
       throw new ValidationError('Enrollment does not belong to the selected candidate.');
     }
 
+    let interviewRequestDocumentId = body.interviewRequestDocumentId;
+    let capacityClaim: DocumentRecord | null = null;
+
+    if (body.capacityClaimDocumentId) {
+      const capacityClaims = await documents(
+        strapi,
+        'api::employer-capacity-claim.employer-capacity-claim'
+      ).findMany({
+        filters: {
+          documentId: body.capacityClaimDocumentId,
+        },
+        limit: 1,
+        populate: ['employer', 'employerContact', 'interviewRequest'],
+      });
+
+      capacityClaim = capacityClaims[0] || null;
+
+      if (!capacityClaim) {
+        throw new ValidationError('Interview capacity claim could not be found.');
+      }
+
+      if (getDocumentId(capacityClaim.employer) !== employerDocumentId) {
+        throw new ValidationError('Interview capacity claim does not belong to this employer.');
+      }
+
+      if (
+        !isLeadContact(contact) &&
+        getDocumentId(capacityClaim.employerContact) !== contactDocumentId
+      ) {
+        throw new ValidationError('Interview capacity claim is assigned to another employer contact.');
+      }
+
+      if (!['held', 'notified', 'accepted'].includes(String(capacityClaim.claimState || ''))) {
+        throw new ValidationError('Interview capacity claim is not open for slot options.');
+      }
+
+      const claimInterviewRequestDocumentId = getDocumentId(capacityClaim.interviewRequest);
+
+      if (
+        interviewRequestDocumentId &&
+        claimInterviewRequestDocumentId &&
+        interviewRequestDocumentId !== claimInterviewRequestDocumentId
+      ) {
+        throw new ValidationError('Interview request does not match the capacity claim.');
+      }
+
+      interviewRequestDocumentId = claimInterviewRequestDocumentId || interviewRequestDocumentId;
+    }
+
     const now = new Date();
     const earliestAllowed = addWorkingDays(now, 4);
     const normalizedSlots = body.slots.map((slot) => {
@@ -2741,29 +2820,46 @@ export default ({ strapi }) => ({
       throw new ValidationError('Slot options must use different start times.');
     }
 
-    const offer = await documents(strapi, 'api::interview-slot-offer.interview-slot-offer').create({
-      data: {
-        candidate: {
-          connect: [{ documentId: body.candidateDocumentId }],
-        },
-        employer: {
-          connect: [{ documentId: employerDocumentId }],
-        },
-        employerContact: {
-          connect: [{ documentId: contactDocumentId }],
-        },
-        enrollment: {
-          connect: [{ documentId: body.enrollmentDocumentId }],
-        },
-        internalNote: body.internalNote || null,
-        metadata: {
-          earliestAllowedStartTime: earliestAllowed.toISOString(),
-          requestId: requestContext.requestId,
-          source: 'employer_dashboard',
-          submittedByEmployerContactDocumentId: contactDocumentId,
-        },
-        offerState: 'submitted',
+    const offerData: Record<string, unknown> = {
+      candidate: {
+        connect: [{ documentId: body.candidateDocumentId }],
       },
+      ...(body.capacityClaimDocumentId
+        ? {
+            capacityClaim: {
+              connect: [{ documentId: body.capacityClaimDocumentId }],
+            },
+          }
+        : {}),
+      employer: {
+        connect: [{ documentId: employerDocumentId }],
+      },
+      employerContact: {
+        connect: [{ documentId: contactDocumentId }],
+      },
+      enrollment: {
+        connect: [{ documentId: body.enrollmentDocumentId }],
+      },
+      internalNote: body.internalNote || null,
+      ...(interviewRequestDocumentId
+        ? {
+            interviewRequest: {
+              connect: [{ documentId: interviewRequestDocumentId }],
+            },
+          }
+        : {}),
+      metadata: {
+        capacityClaimDocumentId: body.capacityClaimDocumentId || null,
+        earliestAllowedStartTime: earliestAllowed.toISOString(),
+        interviewRequestDocumentId: interviewRequestDocumentId || null,
+        requestId: requestContext.requestId,
+        source: 'employer_dashboard',
+        submittedByEmployerContactDocumentId: contactDocumentId,
+      },
+      offerState: 'submitted',
+    };
+    const offer = await documents(strapi, 'api::interview-slot-offer.interview-slot-offer').create({
+      data: offerData,
     });
     const offerDocumentId = getDocumentId(offer);
 
@@ -2799,6 +2895,16 @@ export default ({ strapi }) => ({
         })
       )
     );
+
+    if (body.capacityClaimDocumentId) {
+      await interviewRequestService(strapi).markSlotOptionsSubmitted(
+        {
+          capacityClaimDocumentId: body.capacityClaimDocumentId,
+          interviewSlotOfferDocumentId: offerDocumentId,
+        },
+        requestContext
+      );
+    }
 
     return {
       created: true,

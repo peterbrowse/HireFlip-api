@@ -32,6 +32,15 @@ type AuditEventService = {
   record(input: Record<string, unknown>): Promise<unknown>;
 };
 
+type InterviewRequestService = {
+  checkClassInterviewSupply(input: unknown): Promise<{
+    availableInterviewCapacity: number;
+    ready: boolean;
+    reason?: string | null;
+    requiredInterviewCapacity: number;
+  }>;
+};
+
 type DocumentRecord = Record<string, unknown> & {
   amountPence?: number;
   automaticOpeningReadinessStatus?: string;
@@ -347,6 +356,9 @@ const adminAuthService = (strapi: StrapiService) =>
 
 const auditEvents = (strapi: StrapiService) =>
   strapi.service('api::audit-event.audit-event') as unknown as AuditEventService;
+
+const interviewRequestService = (strapi: StrapiService) =>
+  strapi.service('api::interview-request.interview-request') as unknown as InterviewRequestService;
 
 const objectValue = (value: unknown) =>
   value && typeof value === 'object' && !Array.isArray(value)
@@ -1776,10 +1788,6 @@ const shouldAutoOpenClass = (classRecord: DocumentRecord, enrollments: DocumentR
     return false;
   }
 
-  if (classRecord.automaticOpeningReadinessStatus === 'not_ready') {
-    return false;
-  }
-
   const capacity = Number(classRecord.capacity || 0);
   const thresholdPercentage = Number(classRecord.interestThresholdPercentage || 100);
   const requiredInterest = Math.max(1, Math.ceil(capacity * (thresholdPercentage / 100)));
@@ -2272,6 +2280,49 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
       }
 
       try {
+        const supply = await interviewRequestService(strapi).checkClassInterviewSupply({
+          classDocumentId,
+        });
+
+        if (!supply.ready) {
+          if (classRecord.automaticOpeningReadinessStatus !== 'not_ready') {
+            await documents(strapi, 'api::class.class').update({
+              documentId: classDocumentId,
+              data: {
+                automaticOpeningReadinessStatus: 'not_ready',
+              },
+            });
+            await auditEvents(strapi).record({
+              actorType: 'system',
+              eventCategory: 'interview',
+              eventType: 'class.interview_capacity_shortfall',
+              metadata: {
+                availableInterviewCapacity: supply.availableInterviewCapacity,
+                requiredInterviewCapacity: supply.requiredInterviewCapacity,
+                source: 'scheduled_class_opening',
+              },
+              requestId: requestContext.requestId,
+              serviceName: requestContext.serviceName,
+              severity: 'error',
+              source: 'core_api',
+              subjectDisplayName: classRecord.displayTitle || classRecord.name || classDocumentId,
+              subjectId: classDocumentId,
+              subjectType: 'class',
+            });
+          }
+
+          continue;
+        }
+
+        if (classRecord.automaticOpeningReadinessStatus !== 'ready') {
+          await documents(strapi, 'api::class.class').update({
+            documentId: classDocumentId,
+            data: {
+              automaticOpeningReadinessStatus: 'ready',
+            },
+          });
+        }
+
         const openedClass = await openEnrollmentForClass({
           classRecord,
           requestContext,

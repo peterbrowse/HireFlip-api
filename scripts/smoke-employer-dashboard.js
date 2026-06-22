@@ -368,6 +368,9 @@ const main = async () => {
 	    adminReinvitedEmployerInvite: null,
 	    candidate: null,
 	    capacityChangeRequest: null,
+	    capacityClaim: null,
+	    class: null,
+	    candidateProfile: null,
 	    employer: null,
 	    employerContact: null,
 	    employerInvite: null,
@@ -376,6 +379,7 @@ const main = async () => {
 	    invitedEmployer: null,
 	    invitedEmployerContact: null,
 	    interview: null,
+	    interviewRequest: null,
 	    onboardingPolicyDocument: null,
 	    progressionRequest: null,
 	    slotOffer: null,
@@ -408,6 +412,7 @@ const main = async () => {
 
     const adminEmployerService = strapi.service('api::admin-employer.admin-employer');
     const employerDashboardService = strapi.service('api::employer-dashboard.employer-dashboard');
+    const interviewRequestService = strapi.service('api::interview-request.interview-request');
     const adminInviteEmail = `admin-created-employer-smoke-${runId}@example.test`;
     const adminClassArea = await documents(strapi, 'api::class-area.class-area').create({
       data: {
@@ -1132,9 +1137,12 @@ const main = async () => {
       data: {
         assignmentMode: 'automatic',
         companyName: `Employer Smoke ${runId}`,
+        dashboardOnboardingCompletedAt: new Date().toISOString(),
+        dashboardOnboardingState: 'complete',
         employerState: 'active',
         interviewCommitmentCadence: 'quarterly',
         interviewCommitmentVolume: 5,
+        operatingRegions: connect(created.adminClassArea),
         region: 'London',
       },
     });
@@ -1144,6 +1152,10 @@ const main = async () => {
         authIdentityId: `auth0|employer-dashboard-smoke-${runId}`,
         authProvider: 'auth0',
         contactState: 'active',
+        contactRole: 'lead_contact',
+        coverageConfirmedAt: new Date().toISOString(),
+        coverageConfirmedByEmail: `employer-dashboard-smoke-${runId}@example.test`,
+        coverageRegions: connect(created.adminClassArea),
         email: `employer-dashboard-smoke-${runId}@example.test`,
         employer: connect(employer),
         firstName: 'Employer',
@@ -1166,9 +1178,25 @@ const main = async () => {
         preferredCommunicationChannel: 'email',
       },
     });
+    const classRecord = await documents(strapi, 'api::class.class').create({
+      data: {
+        capacity: 1,
+        classArea: connect(created.adminClassArea),
+        currency: 'GBP',
+        displayTitle: `Employer Smoke Class ${runId}`,
+        employerInterviewAvailabilityThresholdPercentage: 150,
+        interviewsGuaranteed: 1,
+        name: `Employer Smoke Class ${runId}`,
+        officialClassCode: `ESC-${runId}`,
+        pricePence: 100000,
+        state: 'in_progress',
+      },
+      populate: ['classArea'],
+    });
     const enrollment = await documents(strapi, 'api::enrollment.enrollment').create({
       data: {
         candidate: connect(candidate),
+        class: connect(classRecord),
         completionStatus: 'completed',
         enrollmentState: 'interview_phase',
         interviewGuaranteeDeadline: addDays(90),
@@ -1177,13 +1205,24 @@ const main = async () => {
         paymentStatus: 'paid',
         qualifyingInterviewsDeliveredCount: 0,
       },
-      populate: ['candidate'],
+      populate: ['candidate', 'class'],
+    });
+    const candidateProfile = await documents(strapi, 'api::candidate-profile.candidate-profile').create({
+      data: {
+        availability: 'First interview availability submitted for smoke test.',
+        candidate: connect(candidate),
+        completedAt: new Date().toISOString(),
+        profileState: 'completed',
+        summary: 'Smoke profile for interview request routing.',
+      },
     });
 
     created.employer = employer;
     created.employerContact = employerContact;
     created.candidate = candidate;
+    created.class = classRecord;
     created.enrollment = enrollment;
+    created.candidateProfile = candidateProfile;
 
     const initialOverview = await employerDashboardService.getOverview({
       email: employerContact.email,
@@ -1192,13 +1231,53 @@ const main = async () => {
     assert(initialOverview.account.companyName === employer.companyName, 'Expected overview company name.');
     assert(initialOverview.summary.availableSlots === 0, 'Expected no available slots initially.');
 
+    const interviewRequest = await interviewRequestService.ensureForEnrollment({
+      enrollmentDocumentId: enrollment.documentId,
+      source: 'smoke_employer_dashboard',
+    });
+    const capacityClaims = await documents(
+      strapi,
+      'api::employer-capacity-claim.employer-capacity-claim'
+    ).findMany({
+      filters: {
+        employer: {
+          documentId: employer.documentId,
+        },
+        interviewRequest: {
+          documentId: interviewRequest.documentId,
+        },
+      },
+      limit: 1,
+      populate: ['interviewRequest'],
+    });
+
+    created.interviewRequest = interviewRequest;
+    created.capacityClaim = capacityClaims[0];
+
+    assert(created.capacityClaim, 'Expected interview request routing to claim employer capacity.');
+
+    const overviewWithClaim = await employerDashboardService.getOverview({
+      authIdentityId: employerContact.authIdentityId,
+    });
+
+    assert(
+      overviewWithClaim.availabilityRequests.length === 1,
+      'Expected one capacity-backed availability request.'
+    );
+    assert(
+      overviewWithClaim.availabilityRequests[0].candidateName === 'Candidate Smoke',
+      'Expected availability request candidate name.'
+    );
+
     let rejectedShortOffer = false;
 
     try {
       await employerDashboardService.createInterviewSlotOffer({
+        capacityClaimDocumentId: created.capacityClaim.documentId,
         candidateDocumentId: candidate.documentId,
         email: employerContact.email,
         enrollmentDocumentId: enrollment.documentId,
+        interviewRequestDocumentId: interviewRequest.documentId,
         slots: [
           {
             endTime: addDays(8, 11),
@@ -1221,10 +1300,12 @@ const main = async () => {
     assert(rejectedShortOffer, 'Expected 2-slot offer to be rejected.');
 
     const slotOfferResult = await employerDashboardService.createInterviewSlotOffer({
+      capacityClaimDocumentId: created.capacityClaim.documentId,
       candidateDocumentId: candidate.documentId,
       email: employerContact.email,
       enrollmentDocumentId: enrollment.documentId,
       internalNote: 'Smoke test 3-option slot offer.',
+      interviewRequestDocumentId: interviewRequest.documentId,
       slots: [
         {
           endTime: addDays(8, 11),
@@ -1257,10 +1338,9 @@ const main = async () => {
     });
 
     assert(overviewWithSlots.summary.availableSlots === 3, 'Expected 3 available slot options.');
-    assert(overviewWithSlots.availabilityRequests.length === 1, 'Expected one availability request.');
     assert(
-      overviewWithSlots.availabilityRequests[0].candidateName === 'Candidate Smoke',
-      'Expected availability request candidate name.'
+      overviewWithSlots.availabilityRequests.length === 0,
+      'Expected fulfilled capacity claim to clear from availability requests.'
     );
 
     const interview = await documents(strapi, 'api::interview.interview').create({
@@ -1338,7 +1418,17 @@ const main = async () => {
     }
 
     await deleteDocument(strapi, 'api::interview-slot-offer.interview-slot-offer', created.slotOffer?.documentId);
+    await deleteDocument(
+      strapi,
+      'api::employer-capacity-claim.employer-capacity-claim',
+      created.capacityClaim?.documentId
+    );
+    await deleteAuditEventsForSubject(strapi, created.interviewRequest?.documentId);
+    await deleteDocument(strapi, 'api::interview-request.interview-request', created.interviewRequest?.documentId);
+    await deleteDocument(strapi, 'api::candidate-profile.candidate-profile', created.candidateProfile?.documentId);
     await deleteDocument(strapi, 'api::enrollment.enrollment', created.enrollment?.documentId);
+    await deleteAuditEventsForSubject(strapi, created.class?.documentId);
+    await deleteDocument(strapi, 'api::class.class', created.class?.documentId);
     await deleteDocument(strapi, 'api::employer-contact.employer-contact', created.employerContact?.documentId);
     await deleteDocument(strapi, 'api::employer.employer', created.employer?.documentId);
     await deleteDocument(strapi, 'api::candidate.candidate', created.candidate?.documentId);

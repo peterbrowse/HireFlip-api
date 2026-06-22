@@ -31,6 +31,17 @@
       "relation": "manyToOne",
       "target": "api::employer-contact.employer-contact"
     },
+    "interviewRequest": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::interview-request.interview-request",
+      "inversedBy": "slotOffers"
+    },
+    "capacityClaim": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::employer-capacity-claim.employer-capacity-claim"
+    },
     "slots": {
       "type": "relation",
       "relation": "oneToMany",

@@ -191,6 +191,10 @@ type AuditEventService = {
   record(input: Record<string, unknown>): Promise<unknown>;
 };
 
+type InterviewRequestService = {
+  ensureForEnrollment(input: unknown, context: RequestContext): Promise<unknown>;
+};
+
 type SupportCaseService = {
   addMessage(input: unknown): Promise<DocumentRecord>;
   casesForCandidate(candidateDocumentId: string): Promise<unknown[]>;
@@ -205,6 +209,8 @@ const documents = (strapi: StrapiDocumentService, uid: string) =>
   strapi.documents(uid) as unknown as DocumentCollection;
 const auditEvents = (strapi: StrapiDocumentService) =>
   strapi.service('api::audit-event.audit-event') as unknown as AuditEventService;
+const interviewRequestService = (strapi: StrapiDocumentService) =>
+  strapi.service('api::interview-request.interview-request') as unknown as InterviewRequestService;
 const supportCaseService = (strapi: StrapiDocumentService) =>
   strapi.service('api::support-case.support-case') as unknown as SupportCaseService;
 
@@ -5327,6 +5333,17 @@ const updateCourseOutcomeIfPassed = async (
     eventType: 'class_relationship_updated',
     strapi,
   });
+  await interviewRequestService(strapi)
+    .ensureForEnrollment(
+      {
+        enrollmentDocumentId: updatedEnrollment.documentId || enrollment.documentId,
+        source: 'candidate_course_passed',
+      },
+      requestContext
+    )
+    .catch((error) => {
+      strapi.log?.error?.('Interview request bootstrap failed after course pass.', error);
+    });
 
   return buildCandidateCourseState(strapi, candidate, updatedEnrollment);
 };

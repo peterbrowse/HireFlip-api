@@ -2291,6 +2291,100 @@ export interface ApiEmployerCapacityChangeRequestEmployerCapacityChangeRequest
   };
 }
 
+export interface ApiEmployerCapacityClaimEmployerCapacityClaim
+  extends Struct.CollectionTypeSchema {
+  collectionName: 'employer_capacity_claims';
+  info: {
+    description: 'A temporary or fulfilled claim against an employer interview commitment for a candidate interview request.';
+    displayName: 'Employer Capacity Claim';
+    pluralName: 'employer-capacity-claims';
+    singularName: 'employer-capacity-claim';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    acceptedAt: Schema.Attribute.DateTime;
+    assignmentNote: Schema.Attribute.Text;
+    assignmentSource: Schema.Attribute.Enumeration<
+      ['automatic', 'admin_override', 'sales_override']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'automatic'>;
+    claimCount: Schema.Attribute.Integer &
+      Schema.Attribute.Required &
+      Schema.Attribute.SetMinMax<
+        {
+          max: 50;
+          min: 1;
+        },
+        number
+      > &
+      Schema.Attribute.DefaultTo<1>;
+    claimState: Schema.Attribute.Enumeration<
+      [
+        'held',
+        'notified',
+        'accepted',
+        'declined',
+        'released',
+        'expired',
+        'fulfilled',
+        'cancelled',
+      ]
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'held'>;
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    declinedAt: Schema.Attribute.DateTime;
+    employer: Schema.Attribute.Relation<'manyToOne', 'api::employer.employer'>;
+    employerContact: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::employer-contact.employer-contact'
+    >;
+    expiresAt: Schema.Attribute.DateTime;
+    fulfilledAt: Schema.Attribute.DateTime;
+    interviewRequest: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::interview-request.interview-request'
+    >;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::employer-capacity-claim.employer-capacity-claim'
+    > &
+      Schema.Attribute.Private;
+    metadata: Schema.Attribute.JSON;
+    notifiedAt: Schema.Attribute.DateTime;
+    publishedAt: Schema.Attribute.DateTime;
+    region: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::class-area.class-area'
+    >;
+    releasedAt: Schema.Attribute.DateTime;
+    releaseReason: Schema.Attribute.Enumeration<
+      [
+        'employer_declined',
+        'expired',
+        'admin_released',
+        'slot_options_submitted',
+        'request_cancelled',
+        'capacity_rebalanced',
+        'other',
+      ]
+    >;
+    slotOffers: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::interview-slot-offer.interview-slot-offer'
+    >;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+  };
+}
+
 export interface ApiEmployerContactEmployerContact
   extends Struct.CollectionTypeSchema {
   collectionName: 'employer_contacts';
@@ -2836,6 +2930,131 @@ export interface ApiInterviewFeedbackInterviewFeedback
   };
 }
 
+export interface ApiInterviewRequestInterviewRequest
+  extends Struct.CollectionTypeSchema {
+  collectionName: 'interview_requests';
+  info: {
+    description: 'Candidate interview fulfilment request created once a candidate is ready for the guaranteed interview phase.';
+    displayName: 'Interview Request';
+    pluralName: 'interview-requests';
+    singularName: 'interview-request';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    candidate: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::candidate.candidate'
+    >;
+    candidateVisibleState: Schema.Attribute.Enumeration<
+      [
+        'waiting_for_candidate',
+        'arranging_interviews',
+        'reviewing_options',
+        'confirmed',
+        'blocked',
+      ]
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'waiting_for_candidate'>;
+    claimedInterviewCount: Schema.Attribute.Integer &
+      Schema.Attribute.Required &
+      Schema.Attribute.SetMinMax<
+        {
+          max: 50;
+          min: 0;
+        },
+        number
+      > &
+      Schema.Attribute.DefaultTo<0>;
+    claims: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::employer-capacity-claim.employer-capacity-claim'
+    >;
+    class: Schema.Attribute.Relation<'manyToOne', 'api::class.class'>;
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    employerResponseDeadline: Schema.Attribute.DateTime;
+    enrollment: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::enrollment.enrollment'
+    >;
+    fulfilledInterviewCount: Schema.Attribute.Integer &
+      Schema.Attribute.Required &
+      Schema.Attribute.SetMinMax<
+        {
+          max: 50;
+          min: 0;
+        },
+        number
+      > &
+      Schema.Attribute.DefaultTo<0>;
+    insufficientCapacityDetectedAt: Schema.Attribute.DateTime;
+    insufficientCapacityReason: Schema.Attribute.Text;
+    lastCapacityCheckAt: Schema.Attribute.DateTime;
+    lastRoutedAt: Schema.Attribute.DateTime;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::interview-request.interview-request'
+    > &
+      Schema.Attribute.Private;
+    metadata: Schema.Attribute.JSON;
+    publishedAt: Schema.Attribute.DateTime;
+    region: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::class-area.class-area'
+    >;
+    requestedInterviewCount: Schema.Attribute.Integer &
+      Schema.Attribute.Required &
+      Schema.Attribute.SetMinMax<
+        {
+          max: 50;
+          min: 1;
+        },
+        number
+      > &
+      Schema.Attribute.DefaultTo<1>;
+    requestState: Schema.Attribute.Enumeration<
+      [
+        'pending_profile',
+        'pending_availability',
+        'pending_capacity',
+        'capacity_claimed',
+        'employer_notified',
+        'slot_options_submitted',
+        'candidate_reviewing',
+        'candidate_selected',
+        'fulfilled',
+        'expired',
+        'cancelled',
+        'manual_review',
+      ]
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'pending_profile'>;
+    responseSlaWorkingDays: Schema.Attribute.Integer &
+      Schema.Attribute.Required &
+      Schema.Attribute.SetMinMax<
+        {
+          max: 20;
+          min: 1;
+        },
+        number
+      > &
+      Schema.Attribute.DefaultTo<2>;
+    slotOffers: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::interview-slot-offer.interview-slot-offer'
+    >;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+  };
+}
+
 export interface ApiInterviewSlotOfferInterviewSlotOffer
   extends Struct.CollectionTypeSchema {
   collectionName: 'interview_slot_offers';
@@ -2856,6 +3075,10 @@ export interface ApiInterviewSlotOfferInterviewSlotOffer
     candidateNotifiedAt: Schema.Attribute.DateTime;
     candidateRespondedAt: Schema.Attribute.DateTime;
     candidateResponseDeadline: Schema.Attribute.DateTime;
+    capacityClaim: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::employer-capacity-claim.employer-capacity-claim'
+    >;
     createdAt: Schema.Attribute.DateTime;
     createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
@@ -2878,6 +3101,10 @@ export interface ApiInterviewSlotOfferInterviewSlotOffer
       'api::enrollment.enrollment'
     >;
     internalNote: Schema.Attribute.Text;
+    interviewRequest: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::interview-request.interview-request'
+    >;
     locale: Schema.Attribute.String & Schema.Attribute.Private;
     localizations: Schema.Attribute.Relation<
       'oneToMany',
@@ -4919,12 +5146,14 @@ declare module '@strapi/strapi' {
       'api::course-test.course-test': ApiCourseTestCourseTest;
       'api::course.course': ApiCourseCourse;
       'api::employer-capacity-change-request.employer-capacity-change-request': ApiEmployerCapacityChangeRequestEmployerCapacityChangeRequest;
+      'api::employer-capacity-claim.employer-capacity-claim': ApiEmployerCapacityClaimEmployerCapacityClaim;
       'api::employer-contact.employer-contact': ApiEmployerContactEmployerContact;
       'api::employer-invite.employer-invite': ApiEmployerInviteEmployerInvite;
       'api::employer-region-commitment.employer-region-commitment': ApiEmployerRegionCommitmentEmployerRegionCommitment;
       'api::employer.employer': ApiEmployerEmployer;
       'api::enrollment.enrollment': ApiEnrollmentEnrollment;
       'api::interview-feedback.interview-feedback': ApiInterviewFeedbackInterviewFeedback;
+      'api::interview-request.interview-request': ApiInterviewRequestInterviewRequest;
       'api::interview-slot-offer.interview-slot-offer': ApiInterviewSlotOfferInterviewSlotOffer;
       'api::interview-slot.interview-slot': ApiInterviewSlotInterviewSlot;
       'api::interview.interview': ApiInterviewInterview;
