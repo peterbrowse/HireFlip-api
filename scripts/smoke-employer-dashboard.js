@@ -109,6 +109,7 @@ const createSmokeFetch = ({ authDomain, connectionId, connectionName, notificati
   const usersById = new Map();
   const notifications = [];
   const blockedUsers = new Set();
+  const passwordTicketRequests = [];
   const tokenPayload = Buffer.from(
     JSON.stringify({
       scope: 'create:users read:users update:users create:user_tickets read:connections',
@@ -212,6 +213,8 @@ const createSmokeFetch = ({ authDomain, connectionId, connectionName, notificati
         return jsonResponse({ message: 'result_url cannot be used together with client_id' }, 400);
       }
 
+      passwordTicketRequests.push(body);
+
       return jsonResponse({
         ticket: `https://${authDomain}/lo/reset?ticket=smoke-${encodeURIComponent(body.user_id || 'user')}`,
       });
@@ -232,6 +235,7 @@ const createSmokeFetch = ({ authDomain, connectionId, connectionName, notificati
     blockedUsers,
     fetch,
     notifications,
+    passwordTicketRequests,
     usersByEmail,
   };
 };
@@ -245,6 +249,7 @@ const main = async () => {
   process.env.AUTH0_MANAGEMENT_CLIENT_SECRET = 'smoke-management-secret';
   process.env.AUTH0_EMPLOYER_CONNECTION_NAME = 'hireflip-employers-smoke';
   process.env.AUTH0_EMPLOYER_CONNECTION_ID = `con_smoke_${runId.replace(/[^a-zA-Z0-9]/g, '')}`;
+  process.env.AUTH0_EMPLOYER_APP_CLIENT_ID = `app_smoke_${runId.replace(/[^a-zA-Z0-9]/g, '')}`;
   process.env.AUTH0_EMPLOYER_PASSWORD_TICKET_TTL_SECONDS = '172800';
   process.env.EMPLOYER_DASHBOARD_BASE_URL = 'http://localhost:3004';
   process.env.NOTIFICATION_SERVICE_URL = `https://notification-smoke-${runId}.example.test`;
@@ -364,6 +369,14 @@ const main = async () => {
 
     assert(created.adminEmployerInvite?.authIdentityId, 'Expected invite to store Auth0 identity.');
     assert(created.adminEmployerInvite?.authPasswordTicketUrl, 'Expected invite to store setup ticket.');
+    assert(
+      smokeFetch.passwordTicketRequests[0]?.client_id === process.env.AUTH0_EMPLOYER_APP_CLIENT_ID,
+      'Expected Auth0 setup ticket to target the employer dashboard app client.'
+    );
+    assert(
+      !('result_url' in smokeFetch.passwordTicketRequests[0]),
+      'Expected Auth0 setup ticket not to mix result_url with client_id.'
+    );
 
     const employersList = await adminEmployerService.listEmployers({
       sessionToken: 's'.repeat(32),
@@ -474,8 +487,10 @@ const main = async () => {
         region: 'Manchester',
       },
     });
+    const invitedAuthIdentityId = `auth0|invited-employer-dashboard-smoke-${runId}`;
     const invitedEmployerContact = await documents(strapi, 'api::employer-contact.employer-contact').create({
       data: {
+        authIdentityId: invitedAuthIdentityId,
         authProvider: 'auth0',
         contactState: 'invited',
         email: `invited-employer-dashboard-smoke-${runId}@example.test`,
@@ -489,6 +504,7 @@ const main = async () => {
     });
     const employerInvite = await documents(strapi, 'api::employer-invite.employer-invite').create({
       data: {
+        authIdentityId: invitedAuthIdentityId,
         employer: connect(invitedEmployer),
         employerContact: connect(invitedEmployerContact),
         expiresAt: addDays(14),
@@ -516,7 +532,7 @@ const main = async () => {
 
     try {
       await employerDashboardService.getOverview({
-        authIdentityId: `auth0|invited-employer-dashboard-smoke-${runId}`,
+        authIdentityId: invitedAuthIdentityId,
         email: invitedEmployerContact.email,
       });
     } catch (error) {
@@ -529,7 +545,7 @@ const main = async () => {
 
     try {
       await employerDashboardService.acceptInvite({
-        authIdentityId: `auth0|invited-employer-dashboard-smoke-${runId}`,
+        authIdentityId: invitedAuthIdentityId,
         email: `wrong-employer-dashboard-smoke-${runId}@example.test`,
         inviteToken,
       });
@@ -539,18 +555,32 @@ const main = async () => {
 
     assert(rejectedMismatchedEmail, 'Expected mismatched invited email to be rejected.');
 
-    const acceptedInvite = await employerDashboardService.acceptInvite({
-      authIdentityId: `auth0|invited-employer-dashboard-smoke-${runId}`,
+    let rejectedWrongPendingIdentity = false;
+
+    try {
+      await employerDashboardService.acceptPendingInvite({
+        authIdentityId: `auth0|wrong-employer-dashboard-smoke-${runId}`,
+        email: invitedEmployerContact.email,
+      });
+    } catch (error) {
+      rejectedWrongPendingIdentity = true;
+    }
+
+    assert(
+      rejectedWrongPendingIdentity,
+      'Expected pending invite recovery to require the pre-provisioned Auth0 identity.'
+    );
+
+    const acceptedInvite = await employerDashboardService.acceptPendingInvite({
+      authIdentityId: invitedAuthIdentityId,
       email: invitedEmployerContact.email,
-      inviteToken,
-      name: 'Invited Employer',
     });
 
     assert(acceptedInvite.accepted === true, 'Expected employer invite to be accepted.');
     assert(acceptedInvite.account.companyName === invitedEmployer.companyName, 'Expected accepted account.');
 
     const acceptedOverview = await employerDashboardService.getOverview({
-      authIdentityId: `auth0|invited-employer-dashboard-smoke-${runId}`,
+      authIdentityId: invitedAuthIdentityId,
       email: invitedEmployerContact.email,
     });
 

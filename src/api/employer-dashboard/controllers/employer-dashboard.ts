@@ -7,6 +7,7 @@ type RequestContext = {
 
 type EmployerDashboardService = {
   acceptInvite(input: unknown, context: RequestContext): Promise<unknown>;
+  acceptPendingInvite(input: unknown, context: RequestContext): Promise<unknown>;
   createInviteSetupTicket(input: unknown, context: RequestContext): Promise<unknown>;
   createInterviewSlotOffer(input: unknown, context: RequestContext): Promise<unknown>;
   getOverview(input: unknown, context: RequestContext): Promise<unknown>;
@@ -60,6 +61,15 @@ export default ({ strapi }) => ({
   async acceptInvite(ctx) {
     ctx.body = {
       data: await employerDashboardService(strapi).acceptInvite(
+        ctx.request.body,
+        getRequestContext(ctx)
+      ),
+    };
+  },
+
+  async acceptPendingInvite(ctx) {
+    ctx.body = {
+      data: await employerDashboardService(strapi).acceptPendingInvite(
         ctx.request.body,
         getRequestContext(ctx)
       ),

@@ -71,6 +71,12 @@ type StrapiDocumentService = {
   documents(uid: string): unknown;
 };
 
+type EmployerInviteAcceptanceIdentity = {
+  authIdentityId: string;
+  email: string;
+  name?: string;
+};
+
 const identitySchema = z
   .object({
     authIdentityId: z.string().trim().min(1).max(160).optional(),
@@ -378,6 +384,153 @@ const assertValidInvite = async (strapi: StrapiDocumentService, inviteToken: str
   return invite;
 };
 
+const normalizedInviteEmail = (invite: DocumentRecord) =>
+  String(invite.inviteEmail || invite.employerContact?.email || '').trim().toLowerCase();
+
+const linkedInviteAuthIdentityId = (invite: DocumentRecord) =>
+  String(invite.authIdentityId || invite.employerContact?.authIdentityId || '').trim();
+
+const expireInviteRecord = async (strapi: StrapiDocumentService, invite: DocumentRecord) => {
+  const inviteDocumentId = getDocumentId(invite);
+
+  if (!inviteDocumentId) {
+    return;
+  }
+
+  await documents(strapi, 'api::employer-invite.employer-invite').update({
+    documentId: inviteDocumentId,
+    data: {
+      inviteState: 'expired',
+    },
+  });
+};
+
+const findPendingInviteForIdentity = async (
+  strapi: StrapiDocumentService,
+  identity: EmployerInviteAcceptanceIdentity
+) => {
+  const filters = compact([
+    identity.email ? { inviteEmail: identity.email } : null,
+    identity.email ? { employerContact: { email: identity.email } } : null,
+    identity.authIdentityId ? { authIdentityId: identity.authIdentityId } : null,
+    identity.authIdentityId ? { employerContact: { authIdentityId: identity.authIdentityId } } : null,
+  ]);
+  const invites = await documents(strapi, 'api::employer-invite.employer-invite').findMany({
+    filters: {
+      inviteState: 'pending',
+      ...(filters.length > 0 ? { $or: filters } : {}),
+    },
+    limit: 10,
+    populate: ['employer', 'employerContact'],
+    sort: ['createdAt:desc'],
+  });
+
+  for (const invite of invites) {
+    if (normalizedInviteEmail(invite) !== identity.email) {
+      continue;
+    }
+
+    const linkedAuthIdentityId = linkedInviteAuthIdentityId(invite);
+
+    if (!linkedAuthIdentityId || linkedAuthIdentityId !== identity.authIdentityId) {
+      continue;
+    }
+
+    if (invite.expiresAt && Date.parse(invite.expiresAt) <= Date.now()) {
+      await expireInviteRecord(strapi, invite);
+      continue;
+    }
+
+    if (!invite.employer || !invite.employerContact) {
+      continue;
+    }
+
+    return invite;
+  }
+
+  throw new ValidationError('No pending employer invite was found for this signed-in account.');
+};
+
+const acceptInviteRecord = async (
+  strapi: StrapiDocumentService,
+  invite: DocumentRecord,
+  identity: EmployerInviteAcceptanceIdentity,
+  requestContext: RequestContext = {}
+) => {
+  const inviteEmail = normalizedInviteEmail(invite);
+  const employerDocumentId = getDocumentId(invite.employer);
+  const employerContactDocumentId = getDocumentId(invite.employerContact);
+  const inviteDocumentId = getDocumentId(invite);
+
+  if (!inviteEmail || inviteEmail !== identity.email) {
+    throw new ValidationError('This invite must be accepted using the invited email address.');
+  }
+
+  if (!employerDocumentId || !employerContactDocumentId || !inviteDocumentId) {
+    throw new ValidationError('Employer invite is missing linked account records.');
+  }
+
+  const existingContacts = await documents(strapi, 'api::employer-contact.employer-contact').findMany({
+    filters: {
+      authIdentityId: identity.authIdentityId,
+    },
+    limit: 5,
+  });
+  const conflictingContact = existingContacts.find(
+    (contact) => getDocumentId(contact) !== employerContactDocumentId
+  );
+
+  if (conflictingContact) {
+    throw new ValidationError('This Auth0 account is already linked to another employer contact.');
+  }
+
+  if (
+    invite.employerContact.authIdentityId &&
+    invite.employerContact.authIdentityId !== identity.authIdentityId
+  ) {
+    throw new ValidationError('This employer contact is already linked to another Auth0 account.');
+  }
+
+  const now = new Date().toISOString();
+  const updatedContact = await documents(strapi, 'api::employer-contact.employer-contact').update({
+    documentId: employerContactDocumentId,
+    data: {
+      accountCreatedAt: invite.employerContact.accountCreatedAt || now,
+      authIdentityId: identity.authIdentityId,
+      authProvider: 'auth0',
+      contactState: 'active',
+    },
+    populate: ['employer'],
+  });
+  await documents(strapi, 'api::employer.employer').update({
+    documentId: employerDocumentId,
+    data: {
+      employerState: 'active',
+    },
+  });
+  const acceptedInvite = await documents(strapi, 'api::employer-invite.employer-invite').update({
+    documentId: inviteDocumentId,
+    data: {
+      acceptedAt: now,
+      acceptedByAuthIdentityId: identity.authIdentityId,
+      acceptedByEmail: identity.email,
+      inviteState: 'accepted',
+      metadata: {
+        ...(invite.metadata && typeof invite.metadata === 'object' ? invite.metadata : {}),
+        acceptedRequestId: requestContext.requestId,
+        acceptedUserAgent: requestContext.userAgent,
+      },
+    },
+    populate: ['employer', 'employerContact'],
+  });
+
+  return {
+    accepted: true,
+    account: accountPayload(updatedContact),
+    invite: publicInvitePayload(acceptedInvite),
+  };
+};
+
 const availabilityRequestPayload = (offer: DocumentRecord) => ({
   candidateName: candidateDisplayName(offer.candidate),
   courseLabel: 'Interview phase',
@@ -479,78 +632,44 @@ export default ({ strapi }) => ({
   async acceptInvite(input: unknown, requestContext: RequestContext = {}) {
     const body = validateAcceptInvite(input);
     const invite = await assertValidInvite(strapi, body.inviteToken);
-    const inviteEmail = String(invite.inviteEmail || invite.employerContact?.email || '').toLowerCase();
-    const employerDocumentId = getDocumentId(invite.employer);
-    const employerContactDocumentId = getDocumentId(invite.employerContact);
-    const inviteDocumentId = getDocumentId(invite);
 
-    if (!inviteEmail || inviteEmail !== body.email) {
-      throw new ValidationError('This invite must be accepted using the invited email address.');
+    if (!body.email) {
+      throw new ValidationError('Employer sign-in did not include a verified identity and email.');
     }
 
-    if (!employerDocumentId || !employerContactDocumentId || !inviteDocumentId) {
-      throw new ValidationError('Employer invite is missing linked account records.');
-    }
-
-    const existingContacts = await documents(strapi, 'api::employer-contact.employer-contact').findMany({
-      filters: {
+    return acceptInviteRecord(
+      strapi,
+      invite,
+      {
         authIdentityId: body.authIdentityId,
+        email: body.email,
+        name: body.name,
       },
-      limit: 5,
-    });
-    const conflictingContact = existingContacts.find(
-      (contact) => getDocumentId(contact) !== employerContactDocumentId
+      requestContext
     );
+  },
 
-    if (conflictingContact) {
-      throw new ValidationError('This Auth0 account is already linked to another employer contact.');
+  async acceptPendingInvite(input: unknown, requestContext: RequestContext = {}) {
+    const identity = validateIdentity(input);
+
+    if (!identity.authIdentityId || !identity.email) {
+      throw new ValidationError('Employer sign-in did not include a verified identity and email.');
     }
 
-    if (
-      invite.employerContact.authIdentityId &&
-      invite.employerContact.authIdentityId !== body.authIdentityId
-    ) {
-      throw new ValidationError('This employer contact is already linked to another Auth0 account.');
-    }
-
-    const now = new Date().toISOString();
-    const updatedContact = await documents(strapi, 'api::employer-contact.employer-contact').update({
-      documentId: employerContactDocumentId,
-      data: {
-        accountCreatedAt: invite.employerContact.accountCreatedAt || now,
-        authIdentityId: body.authIdentityId,
-        authProvider: 'auth0',
-        contactState: 'active',
-      },
-      populate: ['employer'],
-    });
-    await documents(strapi, 'api::employer.employer').update({
-      documentId: employerDocumentId,
-      data: {
-        employerState: 'active',
-      },
-    });
-    const acceptedInvite = await documents(strapi, 'api::employer-invite.employer-invite').update({
-      documentId: inviteDocumentId,
-      data: {
-        acceptedAt: now,
-        acceptedByAuthIdentityId: body.authIdentityId,
-        acceptedByEmail: body.email,
-        inviteState: 'accepted',
-        metadata: {
-          ...(invite.metadata && typeof invite.metadata === 'object' ? invite.metadata : {}),
-          acceptedRequestId: requestContext.requestId,
-          acceptedUserAgent: requestContext.userAgent,
-        },
-      },
-      populate: ['employer', 'employerContact'],
+    const invite = await findPendingInviteForIdentity(strapi, {
+      authIdentityId: identity.authIdentityId,
+      email: identity.email,
     });
 
-    return {
-      accepted: true,
-      account: accountPayload(updatedContact),
-      invite: publicInvitePayload(acceptedInvite),
-    };
+    return acceptInviteRecord(
+      strapi,
+      invite,
+      {
+        authIdentityId: identity.authIdentityId,
+        email: identity.email,
+      },
+      requestContext
+    );
   },
 
   async getOverview(input: unknown) {

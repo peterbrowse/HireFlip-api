@@ -33,6 +33,7 @@ type Auth0ClientConfig = {
   connectionId?: string;
   connectionName: string;
   domain: string;
+  employerAppClientId?: string;
   passwordTicketTtlSeconds: number;
 };
 
@@ -74,6 +75,7 @@ const getConfig = (): Auth0ClientConfig => {
     connectionId: process.env.AUTH0_EMPLOYER_CONNECTION_ID?.trim() || undefined,
     connectionName: requireEnv('AUTH0_EMPLOYER_CONNECTION_NAME'),
     domain,
+    employerAppClientId: process.env.AUTH0_EMPLOYER_APP_CLIENT_ID?.trim() || undefined,
     passwordTicketTtlSeconds: integerEnv('AUTH0_EMPLOYER_PASSWORD_TICKET_TTL_SECONDS', 172800),
   };
 };
@@ -177,14 +179,17 @@ export const getAuth0ManagementClient = () => {
       inviteUrl: string;
       userId: string;
     }) {
+      const redirectPayload = config.employerAppClientId
+        ? { client_id: config.employerAppClientId }
+        : { result_url: inviteUrl };
       const payload = await requestManagementApi<Auth0PasswordTicket>(
         config,
         '/tickets/password-change',
         {
           body: JSON.stringify({
+            ...redirectPayload,
             includeEmailInRedirect: false,
             mark_email_as_verified: true,
-            result_url: inviteUrl,
             ttl_sec: config.passwordTicketTtlSeconds,
             user_id: userId,
           }),

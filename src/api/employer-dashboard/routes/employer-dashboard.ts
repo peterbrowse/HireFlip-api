@@ -36,6 +36,15 @@ export default {
     },
     {
       method: 'POST',
+      path: '/internal/employer-dashboard/invites/accept-pending',
+      handler: 'employer-dashboard.acceptPendingInvite',
+      config: {
+        auth: false,
+        policies: [employerDashboardServicePolicy],
+      },
+    },
+    {
+      method: 'POST',
       path: '/internal/employer-dashboard/invites/setup-ticket',
       handler: 'employer-dashboard.createInviteSetupTicket',
       config: {
