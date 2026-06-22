@@ -18,6 +18,7 @@ type Auth0Identity = {
 export type Auth0User = {
   blocked?: boolean;
   email?: string;
+  email_verified?: boolean;
   identities?: Auth0Identity[];
   user_id: string;
 };
@@ -205,6 +206,23 @@ export const getAuth0ManagementClient = () => {
         expiresAt: new Date(Date.now() + config.passwordTicketTtlSeconds * 1000).toISOString(),
         ticketUrl: payload.ticket,
       };
+    },
+
+    async getEmployerUser({
+      userId,
+    }: {
+      userId: string;
+    }) {
+      const user = await requestManagementApi<Auth0User>(
+        config,
+        `/users/${encodeURIComponent(userId)}`
+      );
+
+      if (!isEmployerConnectionUser(user, config)) {
+        return null;
+      }
+
+      return user;
     },
 
     async ensureEmployerUser({

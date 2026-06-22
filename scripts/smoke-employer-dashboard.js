@@ -161,6 +161,7 @@ const createSmokeFetch = ({ authDomain, connectionId, connectionName, notificati
       const user = {
         blocked: false,
         email,
+        email_verified: true,
         identities: [
           {
             connection: connectionName,
@@ -197,10 +198,25 @@ const createSmokeFetch = ({ authDomain, connectionId, connectionName, notificati
         blockedUsers.add(userId);
       }
 
+      if (body.blocked === false) {
+        blockedUsers.delete(userId);
+      }
+
       usersById.set(userId, user);
 
       if (user.email) {
         usersByEmail.set(String(user.email).toLowerCase(), user);
+      }
+
+      return jsonResponse(user);
+    }
+
+    if (url.pathname.startsWith('/api/v2/users/') && (!init.method || init.method === 'GET')) {
+      const userId = decodeURIComponent(url.pathname.slice('/api/v2/users/'.length));
+      const user = usersById.get(userId);
+
+      if (!user) {
+        return jsonResponse({ message: 'User not found' }, 404);
       }
 
       return jsonResponse(user);
@@ -237,6 +253,7 @@ const createSmokeFetch = ({ authDomain, connectionId, connectionName, notificati
     notifications,
     passwordTicketRequests,
     usersByEmail,
+    usersById,
   };
 };
 
@@ -542,8 +559,54 @@ const main = async () => {
           documentId: reinvitedEmployer.invite.documentId,
         },
         limit: 1,
+        populate: ['employer', 'employerContact'],
       })
     )[0];
+
+    const recoveredAuthIdentityId = `auth0|recovered-employer-dashboard-smoke-${runId}`;
+    smokeFetch.usersById.set(recoveredAuthIdentityId, {
+      blocked: false,
+      email: adminInviteEmail,
+      email_verified: true,
+      identities: [
+        {
+          connection: process.env.AUTH0_EMPLOYER_CONNECTION_NAME,
+          connection_id: process.env.AUTH0_EMPLOYER_CONNECTION_ID,
+          provider: 'auth0',
+        },
+      ],
+      user_id: recoveredAuthIdentityId,
+    });
+
+    const recoveredReinvite = await employerDashboardService.acceptPendingInvite({
+      authIdentityId: recoveredAuthIdentityId,
+      email: adminInviteEmail,
+    });
+
+    assert(recoveredReinvite.accepted === true, 'Expected archived employer re-invite completion.');
+    assert(
+      recoveredReinvite.account.companyName === reinvitedEmployer.invite.companyName,
+      'Expected recovered invite to activate the re-invited employer account.'
+    );
+
+    const recoveredInviteRecord = (
+      await documents(strapi, 'api::employer-invite.employer-invite').findMany({
+        filters: {
+          documentId: reinvitedEmployer.invite.documentId,
+        },
+        limit: 1,
+        populate: ['employerContact'],
+      })
+    )[0];
+
+    assert(
+      recoveredInviteRecord.authIdentityId === recoveredAuthIdentityId,
+      'Expected recovered invite to store the signed-in Auth0 identity.'
+    );
+    assert(
+      recoveredInviteRecord.employerContact?.authIdentityId === recoveredAuthIdentityId,
+      'Expected recovered invite to relink the employer contact Auth0 identity.'
+    );
 
     const inviteToken = randomBytes(32).toString('base64url');
     const invitedEmployer = await documents(strapi, 'api::employer.employer').create({
