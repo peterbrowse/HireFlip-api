@@ -40,12 +40,16 @@ type DocumentRecord = Record<string, unknown> & {
   createdByEmployerContactName?: string;
   createdByStaffDisplayName?: string;
   createdByStaffEmail?: string;
+  currentlyOpenAt?: string;
+  currentlyOpenByContact?: DocumentRecord;
+  currentlyOpenExpiresAt?: string;
   coverageRegions?: DocumentRecord[];
   coverageConfirmedAt?: string;
   coverageConfirmedByEmail?: string;
   dashboardOnboardingCompletedAt?: string;
   dashboardOnboardingMetadata?: unknown;
   dashboardOnboardingState?: string;
+  declinedAt?: string;
   displayTitle?: string;
   documentId?: string;
   email?: string;
@@ -60,7 +64,9 @@ type DocumentRecord = Record<string, unknown> & {
   enrollment?: DocumentRecord;
   expiresAt?: string;
   firstName?: string;
+  fulfilledAt?: string;
   id?: number | string;
+  internalNote?: string;
   introCopy?: string;
   initialInterviewCommitmentCadence?: string;
   initialInterviewCommitmentVolume?: number;
@@ -90,6 +96,8 @@ type DocumentRecord = Record<string, unknown> & {
   region?: string;
   regionCommitments?: DocumentRecord[];
   requestedDetailsAt?: string;
+  releaseNote?: string;
+  releaseReason?: string;
   roleTitle?: string;
   slug?: string;
   phone?: string;
@@ -125,6 +133,7 @@ type AuditEventService = {
 
 type InterviewRequestService = {
   markSlotOptionsSubmitted(input: unknown, context: RequestContext): Promise<unknown>;
+  releaseCapacityClaim(input: unknown, context: RequestContext): Promise<unknown>;
 };
 
 type UploadedFile = {
@@ -154,6 +163,15 @@ const identitySchema = z
 const locationTypeSchema = z.enum(['online', 'phone', 'in_person', 'to_be_confirmed']);
 const cadenceSchema = z.enum(['quarterly', 'biannually', 'annually']);
 const commitmentModeSchema = z.enum(['global', 'per_region']);
+const employerDeclineReasonSchema = z.enum([
+  'contact_reschedule_requested',
+  'no_availability',
+  'wrong_region',
+  'role_paused',
+  'contact_unavailable',
+  'capacity_changed',
+  'other',
+]);
 
 const regionCommitmentSchema = z
   .object({
@@ -180,6 +198,7 @@ const teamContactSchema = z
 const slotSchema = z
   .object({
     endTime: z.string().trim().min(1).max(80),
+    employerContactDocumentId: z.string().trim().min(1).max(120).optional(),
     locationDetails: z.string().trim().max(500).optional().transform((value) => value || undefined),
     locationType: locationTypeSchema.default('online'),
     meetingUrl: z.string().trim().url().max(500).optional().or(z.literal('')).transform((value) => value || undefined),
@@ -195,6 +214,19 @@ const createInterviewSlotOfferSchema = identitySchema
     internalNote: z.string().trim().max(1000).optional().transform((value) => value || undefined),
     interviewRequestDocumentId: z.string().trim().min(1).max(120).optional(),
     slots: z.array(slotSchema).length(3, 'Exactly 3 slot options are required.'),
+  })
+  .strict();
+
+const capacityClaimDetailSchema = identitySchema
+  .extend({
+    capacityClaimDocumentId: z.string().trim().min(1).max(120),
+  })
+  .strict();
+
+const declineCapacityClaimSchema = capacityClaimDetailSchema
+  .extend({
+    declineNote: z.string().trim().max(1000).optional().transform((value) => value || undefined),
+    declineReason: employerDeclineReasonSchema,
   })
   .strict();
 
@@ -281,7 +313,9 @@ const acceptInviteSchema = inviteTokenSchema
 
 const validateIdentity = validateZodSchema(identitySchema);
 const validateCompleteOnboarding = validateZodSchema(completeOnboardingSchema);
+const validateCapacityClaimDetail = validateZodSchema(capacityClaimDetailSchema);
 const validateCreateInterviewSlotOffer = validateZodSchema(createInterviewSlotOfferSchema);
+const validateDeclineCapacityClaim = validateZodSchema(declineCapacityClaimSchema);
 const validateInviteTeamContact = validateZodSchema(inviteTeamContactSchema);
 const validateInviteToken = validateZodSchema(inviteTokenSchema);
 const validateAcceptInvite = validateZodSchema(acceptInviteSchema);
@@ -322,6 +356,11 @@ const objectValue = (value: unknown) => {
 
   return {};
 };
+
+const documentRecordValue = (value: unknown) =>
+  value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as DocumentRecord)
+    : undefined;
 
 const generateInviteToken = () => randomBytes(32).toString('base64url');
 
@@ -677,6 +716,48 @@ const addWorkingDays = (date: Date, days: number) => {
   }
 
   return next;
+};
+
+const londonDatePartsFormatter = new Intl.DateTimeFormat('en-GB', {
+  day: '2-digit',
+  hour: '2-digit',
+  hour12: false,
+  minute: '2-digit',
+  month: '2-digit',
+  timeZone: 'Europe/London',
+  weekday: 'short',
+  year: 'numeric',
+});
+
+const londonDateParts = (date: Date) =>
+  Object.fromEntries(
+    londonDatePartsFormatter
+      .formatToParts(date)
+      .filter((part) => part.type !== 'literal')
+      .map((part) => [part.type, part.value])
+  ) as Record<string, string>;
+
+const localBusinessMinutes = (parts: Record<string, string>) =>
+  Number.parseInt(parts.hour || '0', 10) * 60 + Number.parseInt(parts.minute || '0', 10);
+
+const assertBusinessHoursSlot = (startTime: Date, endTime: Date) => {
+  const start = londonDateParts(startTime);
+  const end = londonDateParts(endTime);
+  const weekday = start.weekday;
+  const sameLocalDay =
+    start.year === end.year && start.month === end.month && start.day === end.day;
+
+  if (weekday === 'Sat' || weekday === 'Sun') {
+    throw new ValidationError('Interview slots must be on working days.');
+  }
+
+  if (!sameLocalDay) {
+    throw new ValidationError('Interview slots must start and end on the same working day.');
+  }
+
+  if (localBusinessMinutes(start) < 9 * 60 || localBusinessMinutes(end) > 17 * 60) {
+    throw new ValidationError('Interview slots must be within business hours, 09:00 to 17:00.');
+  }
 };
 
 const assertIsoDate = (value: string, message: string) => {
@@ -2163,6 +2244,367 @@ const progressionPayload = (offer: DocumentRecord) => ({
   statusLabel: humanize(String(offer.progressionState || 'requested')),
 });
 
+const claimOpenLockMinutes = 15;
+
+const addMinutes = (date: Date, minutes: number) => {
+  const next = new Date(date);
+  next.setUTCMinutes(next.getUTCMinutes() + minutes);
+  return next;
+};
+
+const activeClaimOpenLock = (
+  claim: DocumentRecord,
+  currentContactDocumentId: string,
+  now = new Date()
+) => {
+  const openByDocumentId = getDocumentId(claim.currentlyOpenByContact);
+  const expiresAt = claim.currentlyOpenExpiresAt
+    ? Date.parse(claim.currentlyOpenExpiresAt)
+    : Number.NaN;
+
+  if (
+    !openByDocumentId ||
+    openByDocumentId === currentContactDocumentId ||
+    Number.isNaN(expiresAt) ||
+    expiresAt <= now.getTime()
+  ) {
+    return null;
+  }
+
+  return {
+    contact: claim.currentlyOpenByContact,
+    expiresAt: claim.currentlyOpenExpiresAt,
+  };
+};
+
+const claimOpenByPayload = (claim: DocumentRecord, currentContactDocumentId: string) => {
+  const openByContact = claim.currentlyOpenByContact;
+  const openByDocumentId = getDocumentId(openByContact);
+  const active = Boolean(activeClaimOpenLock(claim, currentContactDocumentId));
+
+  return {
+    active,
+    contactDocumentId: openByDocumentId,
+    email: openByContact?.email || null,
+    expiresAt: claim.currentlyOpenExpiresAt || null,
+    isCurrentContact: Boolean(openByDocumentId && openByDocumentId === currentContactDocumentId),
+    name: openByContact ? contactDisplayName(openByContact) : null,
+    openedAt: claim.currentlyOpenAt || null,
+  };
+};
+
+const slotPayload = (slot: DocumentRecord) => ({
+  assignedContactDocumentId: getDocumentId(slot.employerContact),
+  assignedContactName: slot.employerContact ? contactDisplayName(slot.employerContact) : null,
+  documentId: getDocumentId(slot) || String(slot.id || ''),
+  endTime: slot.endTime || null,
+  endTimeLabel: formatDateTime(slot.endTime),
+  locationLabel: locationLabel(slot),
+  locationType: slot.locationType || 'to_be_confirmed',
+  slotState: slot.slotState || 'offered',
+  startTime: slot.startTime || null,
+  startTimeLabel: formatDateTime(slot.startTime),
+});
+
+const slotOfferPayload = (offer: DocumentRecord) => ({
+  documentId: getDocumentId(offer) || String(offer.id || ''),
+  internalNote: offer.internalNote || null,
+  offerState: offer.offerState || 'submitted',
+  slots: (Array.isArray(offer.slots) ? offer.slots : []).map(slotPayload),
+  submittedAt: offer.createdAt || offer.submittedAt || null,
+});
+
+const activeEmployerContacts = (employer?: DocumentRecord | null) =>
+  (Array.isArray(employer?.contacts) ? employer.contacts : []).filter(
+    (contact) => !['archived', 'disabled'].includes(String(contact.contactState || ''))
+  );
+
+const capacityClaimDetailPayload = async (
+  strapi: StrapiDocumentService,
+  claim: DocumentRecord,
+  contact: DocumentRecord
+) => {
+  const request = claim.interviewRequest;
+  const classRecord = request?.class;
+  const claimRegion = documentRecordValue(claim.region);
+  const requestRegion = documentRecordValue(request?.region);
+  const contactDocumentId = getDocumentId(contact) || '';
+  const contacts = await Promise.all(
+    activeEmployerContacts(claim.employer).map((employerContact) =>
+      publicContactPayload(strapi, employerContact)
+    )
+  );
+  const lockedByOther = Boolean(activeClaimOpenLock(claim, contactDocumentId));
+  const openClaimStates = ['held', 'notified', 'accepted', 'fulfilled'];
+
+  return {
+    assignedContact: claim.employerContact
+      ? await publicContactPayload(strapi, claim.employerContact)
+      : null,
+    canAct: openClaimStates.includes(String(claim.claimState || '')) && !lockedByOther,
+    candidateDocumentId: getDocumentId(request?.candidate) || null,
+    candidateName: candidateDisplayName(request?.candidate),
+    contacts,
+    courseLabel: classRecord?.displayTitle || classRecord?.name || 'Interview phase',
+    currentlyOpenBy: claimOpenByPayload(claim, contactDocumentId),
+    declinedAt: claim.declinedAt || null,
+    documentId: getDocumentId(claim) || String(claim.id || ''),
+    earliestSlotLabel: '4 working days notice required',
+    enrollmentDocumentId: getDocumentId(request?.enrollment) || null,
+    expiresAt: claim.expiresAt || null,
+    fulfilledAt: claim.fulfilledAt || null,
+    interviewRequestDocumentId: getDocumentId(request) || null,
+    regionLabel:
+      publicClassAreaOption(claimRegion || requestRegion)?.label ||
+      'Region not recorded',
+    releaseNote: claim.releaseNote || null,
+    releaseReason: claim.releaseReason || null,
+    responseLabel: claim.expiresAt ? formatDateTime(claim.expiresAt) : '2 working days',
+    slotOffers: (Array.isArray(claim.slotOffers) ? claim.slotOffers : []).map(slotOfferPayload),
+    state: claim.claimState || 'notified',
+    statusLabel: humanize(String(claim.claimState || request?.requestState || 'notified')),
+  };
+};
+
+const findScopedCapacityClaim = async (
+  strapi: StrapiDocumentService,
+  contact: DocumentRecord,
+  capacityClaimDocumentId: string
+) => {
+  const employerDocumentId = getDocumentId(contact.employer);
+  const contactDocumentId = getDocumentId(contact);
+
+  if (!employerDocumentId || !contactDocumentId) {
+    throw new ValidationError('Employer contact is not linked to an active employer.');
+  }
+
+  const claims = await documents(strapi, 'api::employer-capacity-claim.employer-capacity-claim').findMany({
+    filters: {
+      documentId: capacityClaimDocumentId,
+      employer: {
+        documentId: employerDocumentId,
+      },
+      ...(isLeadContact(contact)
+        ? {}
+        : {
+            employerContact: {
+              documentId: contactDocumentId,
+            },
+          }),
+    },
+    limit: 1,
+    populate: {
+      currentlyOpenByContact: true,
+      employer: {
+        populate: {
+          contacts: {
+            populate: ['coverageRegions', 'profileImage'],
+          },
+        },
+      },
+      employerContact: {
+        populate: ['coverageRegions', 'profileImage'],
+      },
+      interviewRequest: {
+        populate: {
+          candidate: true,
+          class: true,
+          enrollment: true,
+          region: true,
+        },
+      },
+      region: true,
+      slotOffers: {
+        populate: {
+          slots: {
+            populate: ['employerContact'],
+          },
+        },
+      },
+    },
+  });
+
+  const claim = claims[0];
+
+  if (!claim) {
+    throw new ValidationError('Interview capacity claim could not be found.');
+  }
+
+  return claim;
+};
+
+const assertClaimNotLockedByAnother = (claim: DocumentRecord, contactDocumentId: string) => {
+  const lock = activeClaimOpenLock(claim, contactDocumentId);
+
+  if (lock) {
+    throw new ValidationError(`This request is currently open by ${contactDisplayName(lock.contact || {})}.`);
+  }
+};
+
+const openCapacityClaimForContact = async (
+  strapi: StrapiDocumentService,
+  claim: DocumentRecord,
+  contactDocumentId: string
+) => {
+  const now = new Date();
+  const claimDocumentId = getDocumentId(claim);
+
+  if (!claimDocumentId) {
+    throw new ValidationError('Interview capacity claim could not be updated.');
+  }
+
+  assertClaimNotLockedByAnother(claim, contactDocumentId);
+
+  return documents(strapi, 'api::employer-capacity-claim.employer-capacity-claim').update({
+    documentId: claimDocumentId,
+    data: {
+      currentlyOpenAt: now.toISOString(),
+      currentlyOpenByContact: {
+        connect: [{ documentId: contactDocumentId }],
+      },
+      currentlyOpenExpiresAt: addMinutes(now, claimOpenLockMinutes).toISOString(),
+    },
+    populate: {
+      currentlyOpenByContact: true,
+      employer: {
+        populate: {
+          contacts: {
+            populate: ['coverageRegions', 'profileImage'],
+          },
+        },
+      },
+      employerContact: {
+        populate: ['coverageRegions', 'profileImage'],
+      },
+      interviewRequest: {
+        populate: {
+          candidate: true,
+          class: true,
+          enrollment: true,
+          region: true,
+        },
+      },
+      region: true,
+      slotOffers: {
+        populate: {
+          slots: {
+            populate: ['employerContact'],
+          },
+        },
+      },
+    },
+  });
+};
+
+const activeSlotOfferStates = ['draft', 'submitted', 'sent'];
+const selectedSlotOfferStates = ['candidate_selected', 'completed'];
+
+const cancelSupersededSlotOffers = async (
+  strapi: StrapiDocumentService,
+  capacityClaim: DocumentRecord,
+  requestContext: RequestContext,
+  contactDocumentId: string
+) => {
+  const offers = Array.isArray(capacityClaim.slotOffers) ? capacityClaim.slotOffers : [];
+
+  if (offers.some((offer) => selectedSlotOfferStates.includes(String(offer.offerState || '')))) {
+    throw new ValidationError('Slot options cannot be edited after the candidate has responded.');
+  }
+
+  await Promise.all(
+    offers
+      .filter((offer) => activeSlotOfferStates.includes(String(offer.offerState || '')))
+      .map(async (offer) => {
+        const offerDocumentId = getDocumentId(offer);
+
+        if (!offerDocumentId) {
+          return;
+        }
+
+        await Promise.all(
+          (Array.isArray(offer.slots) ? offer.slots : [])
+            .filter((slot) => ['available', 'offered', 'held'].includes(String(slot.slotState || '')))
+            .map((slot) => {
+              const slotDocumentId = getDocumentId(slot);
+
+              return slotDocumentId
+                ? documents(strapi, 'api::interview-slot.interview-slot').update({
+                    documentId: slotDocumentId,
+                    data: {
+                      metadata: {
+                        ...objectValue(slot.metadata),
+                        cancelledByEmployerContactDocumentId: contactDocumentId,
+                        cancelledRequestId: requestContext.requestId,
+                        cancelledSource: 'employer_dashboard_offer_edit',
+                      },
+                      slotState: 'cancelled',
+                    },
+                  })
+                : Promise.resolve({});
+            })
+        );
+
+        await documents(strapi, 'api::interview-slot-offer.interview-slot-offer').update({
+          documentId: offerDocumentId,
+          data: {
+            metadata: {
+              ...objectValue(offer.metadata),
+              cancelledByEmployerContactDocumentId: contactDocumentId,
+              cancelledRequestId: requestContext.requestId,
+              cancelledSource: 'employer_dashboard_offer_edit',
+            },
+            offerState: 'cancelled',
+          },
+        });
+      })
+  );
+};
+
+const contactMapForEmployer = (employer?: DocumentRecord | null) =>
+  new Map(
+    activeEmployerContacts(employer)
+      .map((contact) => [getDocumentId(contact), contact] as const)
+      .filter((entry): entry is readonly [string, DocumentRecord] => Boolean(entry[0]))
+  );
+
+const assertSlotContact = ({
+  actorContact,
+  contactMap,
+  fallbackContactDocumentId,
+  regionDocumentId,
+  requestedContactDocumentId,
+}: {
+  actorContact: DocumentRecord;
+  contactMap: Map<string, DocumentRecord>;
+  fallbackContactDocumentId: string;
+  regionDocumentId?: string | null;
+  requestedContactDocumentId?: string;
+}) => {
+  const assignedContactDocumentId = requestedContactDocumentId || fallbackContactDocumentId;
+  const assignedContact = contactMap.get(assignedContactDocumentId);
+
+  if (!assignedContact) {
+    throw new ValidationError('Assigned interview contact is not linked to this employer.');
+  }
+
+  if (!isLeadContact(actorContact) && assignedContactDocumentId !== fallbackContactDocumentId) {
+    throw new ValidationError('Team contacts can only assign interview slots to themselves.');
+  }
+
+  if (
+    regionDocumentId &&
+    !isLeadContact(assignedContact) &&
+    !regionDocumentIds(assignedContact.coverageRegions).includes(regionDocumentId)
+  ) {
+    throw new ValidationError('Assigned interview contact does not cover this request region.');
+  }
+
+  return {
+    assignedContact,
+    assignedContactDocumentId,
+  };
+};
+
 export default ({ strapi }) => ({
   async validateInvite(input: unknown) {
     const body = validateInviteToken(input);
@@ -2982,6 +3424,77 @@ export default ({ strapi }) => ({
 	      invited: true,
 	    };
 	  },
+
+  async getCapacityClaim(input: unknown) {
+    const body = validateCapacityClaimDetail(input);
+    const contact = await findEmployerContact(strapi, body);
+    const contactDocumentId = getDocumentId(contact);
+
+    if (!contactDocumentId) {
+      throw new ValidationError('Employer contact record could not be found.');
+    }
+
+    const claim = await findScopedCapacityClaim(strapi, contact, body.capacityClaimDocumentId);
+    const openedClaim = activeClaimOpenLock(claim, contactDocumentId)
+      ? claim
+      : await openCapacityClaimForContact(strapi, claim, contactDocumentId);
+
+    return {
+      account: await accountPayload(strapi, contact),
+      claim: await capacityClaimDetailPayload(strapi, openedClaim, contact),
+      generatedAt: new Date().toISOString(),
+    };
+  },
+
+  async declineCapacityClaim(input: unknown, requestContext: RequestContext = {}) {
+    const body = validateDeclineCapacityClaim(input);
+    const contact = await findEmployerContact(strapi, body);
+    const contactDocumentId = getDocumentId(contact);
+
+    if (!contactDocumentId) {
+      throw new ValidationError('Employer contact record could not be found.');
+    }
+
+    const claim = await findScopedCapacityClaim(strapi, contact, body.capacityClaimDocumentId);
+
+    assertClaimNotLockedByAnother(claim, contactDocumentId);
+
+    const result = await interviewRequestService(strapi).releaseCapacityClaim(
+      {
+        capacityClaimDocumentId: body.capacityClaimDocumentId,
+        releaseNote: body.declineNote,
+        releaseReason: body.declineReason,
+        releasedByEmployerContactDocumentId: contactDocumentId,
+      },
+      requestContext
+    );
+
+    await auditEvents(strapi).record({
+      actorDisplayName: contactDisplayName(contact),
+      actorEmail: body.email || contact.email || undefined,
+      actorId: contactDocumentId,
+      actorType: 'employer_contact',
+      eventCategory: 'employer',
+      eventType: 'employer.capacity_claim_declined',
+      ipAddress: requestContext.ipAddress,
+      metadata: {
+        capacityClaimDocumentId: body.capacityClaimDocumentId,
+        declineNote: body.declineNote || null,
+        declineReason: body.declineReason,
+        requestId: requestContext.requestId,
+      },
+      requestId: requestContext.requestId,
+      serviceName: requestContext.serviceName,
+      severity: 'warning',
+      source: 'employer_dashboard',
+      subjectDisplayName: contact.employer?.companyName || 'Employer',
+      subjectId: getDocumentId(contact.employer) || undefined,
+      subjectType: 'employer',
+      userAgent: requestContext.userAgent,
+    });
+
+    return result;
+  },
 	
 	  async getOverview(input: unknown) {
 	    const identity = validateIdentity(input);
@@ -3176,7 +3689,20 @@ export default ({ strapi }) => ({
           documentId: body.capacityClaimDocumentId,
         },
         limit: 1,
-        populate: ['employer', 'employerContact', 'interviewRequest'],
+        populate: {
+          currentlyOpenByContact: true,
+          employer: {
+            populate: ['contacts'],
+          },
+          employerContact: true,
+          interviewRequest: {
+            populate: ['region'],
+          },
+          region: true,
+          slotOffers: {
+            populate: ['slots'],
+          },
+        },
       });
 
       capacityClaim = capacityClaims[0] || null;
@@ -3196,7 +3722,9 @@ export default ({ strapi }) => ({
         throw new ValidationError('Interview capacity claim is assigned to another employer contact.');
       }
 
-      if (!['held', 'notified', 'accepted'].includes(String(capacityClaim.claimState || ''))) {
+      assertClaimNotLockedByAnother(capacityClaim, contactDocumentId);
+
+      if (!['held', 'notified', 'accepted', 'fulfilled'].includes(String(capacityClaim.claimState || ''))) {
         throw new ValidationError('Interview capacity claim is not open for slot options.');
       }
 
@@ -3215,6 +3743,11 @@ export default ({ strapi }) => ({
 
     const now = new Date();
     const earliestAllowed = addWorkingDays(now, 4);
+    const regionDocumentId = getDocumentId(
+      documentRecordValue(capacityClaim?.region) ||
+        documentRecordValue(capacityClaim?.interviewRequest?.region)
+    );
+    const employerContactMap = contactMapForEmployer(capacityClaim?.employer || contact.employer);
     const normalizedSlots = body.slots.map((slot) => {
       const startTime = assertIsoDate(slot.startTime, 'Slot start time is invalid.');
       const endTime = assertIsoDate(slot.endTime, 'Slot end time is invalid.');
@@ -3226,9 +3759,18 @@ export default ({ strapi }) => ({
       if (startTime < earliestAllowed) {
         throw new ValidationError('The earliest slot must allow at least 4 working days notice.');
       }
+      assertBusinessHoursSlot(startTime, endTime);
+      const assignedContact = assertSlotContact({
+        actorContact: contact,
+        contactMap: employerContactMap,
+        fallbackContactDocumentId: contactDocumentId,
+        regionDocumentId,
+        requestedContactDocumentId: slot.employerContactDocumentId,
+      });
 
       return {
         ...slot,
+        employerContactDocumentId: assignedContact.assignedContactDocumentId,
         endTime: endTime.toISOString(),
         startTime: startTime.toISOString(),
       };
@@ -3237,6 +3779,10 @@ export default ({ strapi }) => ({
 
     if (uniqueStarts.size !== normalizedSlots.length) {
       throw new ValidationError('Slot options must use different start times.');
+    }
+
+    if (capacityClaim) {
+      await cancelSupersededSlotOffers(strapi, capacityClaim, requestContext, contactDocumentId);
     }
 
     const offerData: Record<string, unknown> = {
@@ -3295,7 +3841,7 @@ export default ({ strapi }) => ({
               connect: [{ documentId: employerDocumentId }],
             },
             employerContact: {
-              connect: [{ documentId: contactDocumentId }],
+              connect: [{ documentId: slot.employerContactDocumentId }],
             },
             endTime: slot.endTime,
             locationDetails: slot.locationDetails || null,

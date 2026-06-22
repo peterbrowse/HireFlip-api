@@ -108,6 +108,24 @@ export default {
     },
     {
       method: 'POST',
+      path: '/internal/employer-dashboard/capacity-claims/detail',
+      handler: 'employer-dashboard.capacityClaim',
+      config: {
+        auth: false,
+        policies: [employerDashboardServicePolicy],
+      },
+    },
+    {
+      method: 'POST',
+      path: '/internal/employer-dashboard/capacity-claims/decline',
+      handler: 'employer-dashboard.declineCapacityClaim',
+      config: {
+        auth: false,
+        policies: [employerDashboardServicePolicy],
+      },
+    },
+    {
+      method: 'POST',
       path: '/internal/employer-dashboard/interview-slot-offers/create',
       handler: 'employer-dashboard.createInterviewSlotOffer',
       config: {

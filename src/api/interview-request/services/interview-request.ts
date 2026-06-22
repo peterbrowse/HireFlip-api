@@ -52,6 +52,8 @@ type DocumentRecord = Record<string, unknown> & {
   regionCommitments?: DocumentRecord[];
   requestState?: string;
   responseSlaWorkingDays?: number;
+  releaseNote?: string;
+  releaseReason?: string;
   slug?: string;
   title?: string;
   updatedAt?: string;
@@ -97,9 +99,34 @@ const markSubmittedSchema = z
   })
   .strict();
 
+const releaseCapacityClaimSchema = z
+  .object({
+    capacityClaimDocumentId: z.string().trim().min(1).max(120),
+    releaseNote: z.string().trim().max(1000).optional().transform((value) => value || undefined),
+    releaseReason: z
+      .enum([
+        'employer_declined',
+        'contact_reschedule_requested',
+        'no_availability',
+        'wrong_region',
+        'role_paused',
+        'contact_unavailable',
+        'capacity_changed',
+        'expired',
+        'admin_released',
+        'request_cancelled',
+        'capacity_rebalanced',
+        'other',
+      ])
+      .default('employer_declined'),
+    releasedByEmployerContactDocumentId: z.string().trim().min(1).max(120).optional(),
+  })
+  .strict();
+
 const validateEnsureForEnrollment = validateZodSchema(ensureForEnrollmentSchema);
 const validateClassSupply = validateZodSchema(classSupplySchema);
 const validateMarkSubmitted = validateZodSchema(markSubmittedSchema);
+const validateReleaseCapacityClaim = validateZodSchema(releaseCapacityClaimSchema);
 
 const consumingClaimStates = ['held', 'notified', 'accepted', 'fulfilled'];
 const routedRequestStates = [
@@ -285,6 +312,21 @@ const findActiveClaimsForRequest = async (
       },
       claimState: {
         $in: consumingClaimStates,
+      },
+    },
+    limit: 100,
+    populate: ['employer', 'employerContact', 'region'],
+    sort: ['createdAt:asc'],
+  });
+
+const findAllClaimsForRequest = async (
+  strapi: StrapiDocumentService,
+  requestDocumentId: string
+) =>
+  documents(strapi, 'api::employer-capacity-claim.employer-capacity-claim').findMany({
+    filters: {
+      interviewRequest: {
+        documentId: requestDocumentId,
       },
     },
     limit: 100,
@@ -493,9 +535,12 @@ const routeInterviewRequest = async (
     });
   }
 
-  const existingClaims = await findActiveClaimsForRequest(strapi, requestDocumentId);
+  const [existingClaims, allClaims] = await Promise.all([
+    findActiveClaimsForRequest(strapi, requestDocumentId),
+    findAllClaimsForRequest(strapi, requestDocumentId),
+  ]);
   const existingEmployerIds = new Set(
-    existingClaims.map((claim) => getDocumentId(claim.employer)).filter((documentId): documentId is string => Boolean(documentId))
+    allClaims.map((claim) => getDocumentId(claim.employer)).filter((documentId): documentId is string => Boolean(documentId))
   );
   const existingClaimCount = existingClaims.reduce(
     (total, claim) => total + integerValue(claim.claimCount, 1),
@@ -748,6 +793,113 @@ export default factories.createCoreService('api::interview-request.interview-req
 
     return {
       submitted: true,
+    };
+  },
+
+  async releaseCapacityClaim(input: unknown, requestContext: RequestContext = {}) {
+    const body = validateReleaseCapacityClaim(input);
+    const claims = await documents(strapi, 'api::employer-capacity-claim.employer-capacity-claim').findMany({
+      filters: {
+        documentId: body.capacityClaimDocumentId,
+      },
+      limit: 1,
+      populate: {
+        employer: true,
+        employerContact: true,
+        interviewRequest: {
+          populate: ['candidate', 'class', 'region'],
+        },
+      },
+    });
+    const claim = claims[0];
+
+    if (!claim) {
+      throw new ValidationError('Capacity claim could not be found.');
+    }
+
+    if (!['held', 'notified', 'accepted'].includes(String(claim.claimState || ''))) {
+      throw new ValidationError('Capacity claim is not open for release.');
+    }
+
+    const request = claim.interviewRequest;
+    const requestDocumentId = getDocumentId(request);
+    const now = new Date().toISOString();
+    const releasedClaim = await documents(strapi, 'api::employer-capacity-claim.employer-capacity-claim').update({
+      documentId: body.capacityClaimDocumentId,
+      data: {
+        claimState: body.releaseReason === 'expired' ? 'expired' : 'declined',
+        declinedAt: body.releaseReason === 'expired' ? null : now,
+        releaseNote: body.releaseNote || null,
+        releaseReason: body.releaseReason,
+        releasedAt: now,
+        metadata: {
+          ...objectValue(claim.metadata),
+          releasedByEmployerContactDocumentId: body.releasedByEmployerContactDocumentId || null,
+          releasedRequestId: requestContext.requestId,
+          releasedSource: 'employer_dashboard',
+        },
+      },
+      populate: ['employer', 'employerContact', 'interviewRequest'],
+    });
+
+    if (requestDocumentId) {
+      const activeClaims = await findActiveClaimsForRequest(strapi, requestDocumentId);
+      const activeClaimCount = activeClaims.reduce(
+        (total, activeClaim) => total + integerValue(activeClaim.claimCount, 1),
+        0
+      );
+
+      await documents(strapi, 'api::interview-request.interview-request').update({
+        documentId: requestDocumentId,
+        data: {
+          candidateVisibleState: activeClaimCount > 0 ? 'arranging_interviews' : 'blocked',
+          claimedInterviewCount: activeClaimCount,
+          lastCapacityCheckAt: now,
+          requestState: activeClaimCount > 0 ? 'employer_notified' : 'pending_capacity',
+        },
+      });
+
+      await routeInterviewRequest(
+        strapi,
+        {
+          ...request,
+          claimedInterviewCount: activeClaimCount,
+          requestState: 'pending_capacity',
+        },
+        requestContext
+      );
+    }
+
+    await auditEvents(strapi).record({
+      actorId: body.releasedByEmployerContactDocumentId || undefined,
+      actorType: body.releaseReason === 'expired' ? 'system' : 'employer_contact',
+      eventCategory: 'interview',
+      eventType:
+        body.releaseReason === 'expired'
+          ? 'interview_request.capacity_claim_expired'
+          : 'interview_request.capacity_claim_declined',
+      metadata: {
+        capacityClaimDocumentId: body.capacityClaimDocumentId,
+        releaseNote: body.releaseNote || null,
+        releaseReason: body.releaseReason,
+        requestId: requestContext.requestId,
+      },
+      requestId: requestContext.requestId,
+      serviceName: requestContext.serviceName,
+      severity: 'warning',
+      source: body.releaseReason === 'expired' ? 'core_api' : 'employer_dashboard',
+      subjectId: requestDocumentId || body.capacityClaimDocumentId,
+      subjectType: requestDocumentId ? 'interview_request' : 'employer_capacity_claim',
+      userAgent: requestContext.userAgent,
+    });
+
+    return {
+      claim: {
+        claimState: releasedClaim.claimState,
+        documentId: getDocumentId(releasedClaim),
+        releaseReason: releasedClaim.releaseReason || null,
+      },
+      released: true,
     };
   },
 

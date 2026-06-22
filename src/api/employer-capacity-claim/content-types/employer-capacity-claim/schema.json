@@ -72,6 +72,17 @@
     "declinedAt": {
       "type": "datetime"
     },
+    "currentlyOpenByContact": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::employer-contact.employer-contact"
+    },
+    "currentlyOpenAt": {
+      "type": "datetime"
+    },
+    "currentlyOpenExpiresAt": {
+      "type": "datetime"
+    },
     "releasedAt": {
       "type": "datetime"
     },
@@ -82,6 +93,12 @@
       "type": "enumeration",
       "enum": [
         "employer_declined",
+        "contact_reschedule_requested",
+        "no_availability",
+        "wrong_region",
+        "role_paused",
+        "contact_unavailable",
+        "capacity_changed",
         "expired",
         "admin_released",
         "slot_options_submitted",
@@ -101,6 +118,9 @@
       "required": true
     },
     "assignmentNote": {
+      "type": "text"
+    },
+    "releaseNote": {
       "type": "text"
     },
     "metadata": {

@@ -11,6 +11,8 @@ type EmployerDashboardService = {
   completeOnboarding(input: unknown, context: RequestContext): Promise<unknown>;
   createInviteSetupTicket(input: unknown, context: RequestContext): Promise<unknown>;
   createInterviewSlotOffer(input: unknown, context: RequestContext): Promise<unknown>;
+  declineCapacityClaim(input: unknown, context: RequestContext): Promise<unknown>;
+  getCapacityClaim(input: unknown, context: RequestContext): Promise<unknown>;
   getOnboarding(input: unknown, context: RequestContext): Promise<unknown>;
   getOverview(input: unknown, context: RequestContext): Promise<unknown>;
   inviteTeamContact(input: unknown, context: RequestContext): Promise<unknown>;
@@ -60,6 +62,24 @@ export default ({ strapi }) => ({
       ),
     };
 	  },
+
+  async capacityClaim(ctx) {
+    ctx.body = {
+      data: await employerDashboardService(strapi).getCapacityClaim(
+        ctx.request.body,
+        getRequestContext(ctx)
+      ),
+    };
+  },
+
+  async declineCapacityClaim(ctx) {
+    ctx.body = {
+      data: await employerDashboardService(strapi).declineCapacityClaim(
+        ctx.request.body,
+        getRequestContext(ctx)
+      ),
+    };
+  },
 
 	  async onboarding(ctx) {
 	    ctx.body = {

@@ -171,6 +171,22 @@ const addDays = (days, hour = 10) => {
   return date.toISOString();
 };
 
+const addWorkingDays = (days, hour = 10) => {
+  const date = new Date();
+  let remaining = days;
+
+  while (remaining > 0) {
+    date.setUTCDate(date.getUTCDate() + 1);
+
+    if (![0, 6].includes(date.getUTCDay())) {
+      remaining -= 1;
+    }
+  }
+
+  date.setUTCHours(hour, 0, 0, 0);
+  return date.toISOString();
+};
+
 const jsonResponse = (body, status = 200) =>
   new Response(JSON.stringify(body), {
     headers: {
@@ -1164,6 +1180,37 @@ const main = async () => {
       },
       populate: ['employer'],
     });
+    const rerouteEmployer = await documents(strapi, 'api::employer.employer').create({
+      data: {
+        assignmentMode: 'automatic',
+        companyName: `ZZ Employer Smoke ${runId}`,
+        dashboardOnboardingCompletedAt: new Date().toISOString(),
+        dashboardOnboardingState: 'complete',
+        employerState: 'active',
+        interviewCommitmentCadence: 'quarterly',
+        interviewCommitmentVolume: 5,
+        operatingRegions: connect(created.adminClassArea),
+        region: 'London',
+      },
+    });
+    const rerouteEmployerContact = await documents(strapi, 'api::employer-contact.employer-contact').create({
+      data: {
+        accountCreatedAt: new Date().toISOString(),
+        authIdentityId: `auth0|employer-dashboard-reroute-smoke-${runId}`,
+        authProvider: 'auth0',
+        contactState: 'active',
+        contactRole: 'lead_contact',
+        coverageConfirmedAt: new Date().toISOString(),
+        coverageConfirmedByEmail: `employer-dashboard-reroute-smoke-${runId}@example.test`,
+        coverageRegions: connect(created.adminClassArea),
+        email: `employer-dashboard-reroute-smoke-${runId}@example.test`,
+        employer: connect(rerouteEmployer),
+        firstName: 'Reroute',
+        lastName: 'Smoke',
+        roleTitle: 'Hiring manager',
+      },
+      populate: ['employer'],
+    });
     const candidate = await documents(strapi, 'api::candidate.candidate').create({
       data: {
         accountOnboardingCompletedAt: new Date().toISOString(),
@@ -1219,6 +1266,8 @@ const main = async () => {
 
     created.employer = employer;
     created.employerContact = employerContact;
+    created.rerouteEmployer = rerouteEmployer;
+    created.rerouteEmployerContact = rerouteEmployerContact;
     created.candidate = candidate;
     created.class = classRecord;
     created.enrollment = enrollment;
@@ -1269,27 +1318,78 @@ const main = async () => {
       'Expected availability request candidate name.'
     );
 
+    const claimDetail = await employerDashboardService.getCapacityClaim({
+      authIdentityId: employerContact.authIdentityId,
+      capacityClaimDocumentId: created.capacityClaim.documentId,
+    });
+
+    assert(
+      claimDetail.claim.currentlyOpenBy.isCurrentContact === true,
+      'Expected detail view to mark the claim as open by the current contact.'
+    );
+    assert(claimDetail.claim.canAct === true, 'Expected current contact to be able to act.');
+
+    const declineResult = await employerDashboardService.declineCapacityClaim({
+      authIdentityId: employerContact.authIdentityId,
+      capacityClaimDocumentId: created.capacityClaim.documentId,
+      declineNote: 'Smoke test cannot cover this request.',
+      declineReason: 'no_availability',
+    });
+
+    assert(declineResult.released === true, 'Expected decline to release the first claim.');
+
+    const reroutedClaims = await documents(
+      strapi,
+      'api::employer-capacity-claim.employer-capacity-claim'
+    ).findMany({
+      filters: {
+        interviewRequest: {
+          documentId: interviewRequest.documentId,
+        },
+        claimState: {
+          $in: ['held', 'notified', 'accepted'],
+        },
+      },
+      limit: 10,
+      populate: ['interviewRequest', 'employer', 'employerContact'],
+      sort: ['createdAt:desc'],
+    });
+
+    const reroutedClaim = reroutedClaims.find(
+      (claim) => claim.documentId !== created.capacityClaim.documentId
+    );
+
+    assert(reroutedClaim, 'Expected decline to reroute capacity to another eligible employer.');
+    assert(reroutedClaim.employer, 'Expected rerouted claim to include an employer.');
+    assert(reroutedClaim.employerContact, 'Expected rerouted claim to include an employer contact.');
+
+    created.declinedCapacityClaim = created.capacityClaim;
+    created.capacityClaim = reroutedClaim;
+
+    const slotEmployer = reroutedClaim.employer;
+    const slotEmployerContact = reroutedClaim.employerContact;
+
     let rejectedShortOffer = false;
 
     try {
       await employerDashboardService.createInterviewSlotOffer({
         capacityClaimDocumentId: created.capacityClaim.documentId,
         candidateDocumentId: candidate.documentId,
-        email: employerContact.email,
+        email: slotEmployerContact.email,
         enrollmentDocumentId: enrollment.documentId,
         interviewRequestDocumentId: interviewRequest.documentId,
         slots: [
           {
-            endTime: addDays(8, 11),
+            employerContactDocumentId: slotEmployerContact.documentId,
+            endTime: addWorkingDays(8, 11),
             locationType: 'online',
-            meetingUrl: 'https://example.test/interview-one',
-            startTime: addDays(8, 10),
+            startTime: addWorkingDays(8, 10),
           },
           {
-            endTime: addDays(9, 12),
+            employerContactDocumentId: slotEmployerContact.documentId,
+            endTime: addWorkingDays(9, 12),
             locationType: 'online',
-            meetingUrl: 'https://example.test/interview-two',
-            startTime: addDays(9, 11),
+            startTime: addWorkingDays(9, 11),
           },
         ],
       });
@@ -1302,27 +1402,28 @@ const main = async () => {
     const slotOfferResult = await employerDashboardService.createInterviewSlotOffer({
       capacityClaimDocumentId: created.capacityClaim.documentId,
       candidateDocumentId: candidate.documentId,
-      email: employerContact.email,
+      email: slotEmployerContact.email,
       enrollmentDocumentId: enrollment.documentId,
       internalNote: 'Smoke test 3-option slot offer.',
       interviewRequestDocumentId: interviewRequest.documentId,
       slots: [
         {
-          endTime: addDays(8, 11),
+          employerContactDocumentId: slotEmployerContact.documentId,
+          endTime: addWorkingDays(8, 11),
           locationType: 'online',
-          meetingUrl: 'https://example.test/interview-one',
-          startTime: addDays(8, 10),
+          startTime: addWorkingDays(8, 10),
         },
         {
-          endTime: addDays(9, 12),
+          employerContactDocumentId: slotEmployerContact.documentId,
+          endTime: addWorkingDays(9, 12),
           locationType: 'phone',
-          startTime: addDays(9, 11),
+          startTime: addWorkingDays(9, 11),
         },
         {
-          endTime: addDays(10, 15),
-          locationDetails: 'Smoke test office',
+          employerContactDocumentId: slotEmployerContact.documentId,
+          endTime: addWorkingDays(10, 15),
           locationType: 'in_person',
-          startTime: addDays(10, 14),
+          startTime: addWorkingDays(10, 14),
         },
       ],
     });
@@ -1334,7 +1435,7 @@ const main = async () => {
     created.slots = slotOfferResult.offer.slots;
 
     const overviewWithSlots = await employerDashboardService.getOverview({
-      authIdentityId: employerContact.authIdentityId,
+      authIdentityId: slotEmployerContact.authIdentityId,
     });
 
     assert(overviewWithSlots.summary.availableSlots === 3, 'Expected 3 available slot options.');
@@ -1348,8 +1449,8 @@ const main = async () => {
         candidate: connect(candidate),
         completedAt: addDays(-1, 11),
         countsTowardGuarantee: false,
-        employer: connect(employer),
-        employerContact: connect(employerContact),
+        employer: connect(slotEmployer),
+        employerContact: connect(slotEmployerContact),
         enrollment: connect(enrollment),
         interviewSlot: {
           connect: [{ documentId: created.slots[0].documentId }],
@@ -1363,10 +1464,10 @@ const main = async () => {
     const progressionRequest = await documents(strapi, 'api::offer.offer').create({
       data: {
         candidate: connect(candidate),
-        employer: connect(employer),
+        employer: connect(slotEmployer),
         interview: connect(interview),
         progressionState: 'requested',
-        requestedByEmployerContact: connect(employerContact),
+        requestedByEmployerContact: connect(slotEmployerContact),
         requestedDetailsAt: new Date().toISOString(),
       },
       populate: ['candidate', 'employer', 'interview', 'requestedByEmployerContact'],
@@ -1376,7 +1477,7 @@ const main = async () => {
     created.progressionRequest = progressionRequest;
 
     const overviewWithFeedbackDue = await employerDashboardService.getOverview({
-      email: employerContact.email,
+      email: slotEmployerContact.email,
     });
 
     assert(overviewWithFeedbackDue.summary.feedbackDue === 1, 'Expected one feedback request.');
@@ -1393,7 +1494,7 @@ const main = async () => {
         outcome: 'progressing',
         rating: 5,
         submittedAt: new Date().toISOString(),
-        submittedById: employerContact.documentId,
+        submittedById: slotEmployerContact.documentId,
         submittedByType: 'employer_contact',
       },
       populate: ['interview'],
@@ -1402,7 +1503,7 @@ const main = async () => {
     created.feedback = feedback;
 
     const overviewAfterFeedback = await employerDashboardService.getOverview({
-      email: employerContact.email,
+      email: slotEmployerContact.email,
     });
 
     assert(overviewAfterFeedback.summary.feedbackDue === 0, 'Expected feedback request to clear.');
@@ -1423,12 +1524,19 @@ const main = async () => {
       'api::employer-capacity-claim.employer-capacity-claim',
       created.capacityClaim?.documentId
     );
+    await deleteDocument(
+      strapi,
+      'api::employer-capacity-claim.employer-capacity-claim',
+      created.declinedCapacityClaim?.documentId
+    );
     await deleteAuditEventsForSubject(strapi, created.interviewRequest?.documentId);
     await deleteDocument(strapi, 'api::interview-request.interview-request', created.interviewRequest?.documentId);
     await deleteDocument(strapi, 'api::candidate-profile.candidate-profile', created.candidateProfile?.documentId);
     await deleteDocument(strapi, 'api::enrollment.enrollment', created.enrollment?.documentId);
     await deleteAuditEventsForSubject(strapi, created.class?.documentId);
     await deleteDocument(strapi, 'api::class.class', created.class?.documentId);
+    await deleteDocument(strapi, 'api::employer-contact.employer-contact', created.rerouteEmployerContact?.documentId);
+    await deleteDocument(strapi, 'api::employer.employer', created.rerouteEmployer?.documentId);
     await deleteDocument(strapi, 'api::employer-contact.employer-contact', created.employerContact?.documentId);
     await deleteDocument(strapi, 'api::employer.employer', created.employer?.documentId);
     await deleteDocument(strapi, 'api::candidate.candidate', created.candidate?.documentId);
