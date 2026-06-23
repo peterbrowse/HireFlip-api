@@ -7,8 +7,14 @@ type RequestContext = {
 
 type CandidateService = {
   expireWaitingListOfferByDocumentId(offerDocumentId: string, context?: RequestContext): Promise<unknown>;
+  reconcileCandidateInterviewSlotOffers(limit?: number, context?: RequestContext): Promise<unknown>;
   reconcileProviderCheckoutPayments(limit?: number, context?: RequestContext): Promise<unknown>;
   syncWaitingListOfferExpiryJobs(limit?: number, context?: RequestContext): Promise<unknown>;
+};
+
+type InterviewRequestService = {
+  reconcileEmployerCapacityClaims(limit?: number, context?: RequestContext): Promise<unknown>;
+  reconcileEmployerInterviewDetails(limit?: number, context?: RequestContext): Promise<unknown>;
 };
 
 type PaymentWebhookEventService = {
@@ -23,7 +29,10 @@ type AdminClassService = {
   reconcileScheduledClassOpenings(limit?: number, context?: RequestContext): Promise<unknown>;
 };
 
-type ClassWorkflowJobName = 'expire-waiting-list-offer' | 'reconcile-payments';
+type ClassWorkflowJobName =
+  | 'expire-waiting-list-offer'
+  | 'reconcile-interview-workflows'
+  | 'reconcile-payments';
 
 type ClassWorkflowJobData = {
   classDocumentId?: string;
@@ -108,6 +117,12 @@ const getReconciliationRepeatEveryMs = () =>
 const getReconciliationLimit = () =>
   envInt('CLASS_WORKFLOW_PAYMENT_RECONCILIATION_LIMIT', envInt('PAYMENT_WEBHOOK_RETRY_LIMIT', 50));
 
+const getInterviewReconciliationRepeatEveryMs = () =>
+  envInt('CLASS_WORKFLOW_INTERVIEW_RECONCILIATION_INTERVAL_MS', 60000);
+
+const getInterviewReconciliationLimit = () =>
+  envInt('CLASS_WORKFLOW_INTERVIEW_RECONCILIATION_LIMIT', 100);
+
 const getWaitingListOfferSyncLimit = () =>
   envInt('CLASS_WORKFLOW_WAITING_LIST_OFFER_SYNC_LIMIT', 1000);
 
@@ -141,6 +156,9 @@ export const addWaitingListOfferExpiryJob = async (data: ClassWorkflowJobData) =
 const candidateService = (strapi: Core.Strapi) =>
   strapi.service('api::candidate.candidate') as unknown as CandidateService;
 
+const interviewRequestService = (strapi: Core.Strapi) =>
+  strapi.service('api::interview-request.interview-request') as unknown as InterviewRequestService;
+
 const paymentWebhookEventService = (strapi: Core.Strapi) =>
   strapi.service('api::payment-webhook-event.payment-webhook-event') as unknown as PaymentWebhookEventService;
 
@@ -169,6 +187,32 @@ export const schedulePaymentReconciliationJob = async () => {
       jobId: 'payment-reconciliation',
       repeat: {
         every: getReconciliationRepeatEveryMs(),
+      },
+      removeOnComplete: envInt('CLASS_WORKFLOW_QUEUE_REMOVE_ON_COMPLETE', 1000),
+      removeOnFail: envInt('CLASS_WORKFLOW_QUEUE_REMOVE_ON_FAIL', 5000),
+    }
+  );
+};
+
+export const scheduleInterviewWorkflowReconciliationJob = async () => {
+  if (!queueEnabled() || !envBool('CLASS_WORKFLOW_INTERVIEW_RECONCILIATION_ENABLED', true)) {
+    return undefined;
+  }
+
+  return getWorkflowQueue().add(
+    'reconcile-interview-workflows',
+    {
+      limit: getInterviewReconciliationLimit(),
+    },
+    {
+      attempts: envInt('CLASS_WORKFLOW_QUEUE_JOB_ATTEMPTS', 5),
+      backoff: {
+        delay: envInt('CLASS_WORKFLOW_QUEUE_JOB_BACKOFF_MS', 5000),
+        type: 'exponential',
+      },
+      jobId: 'interview-workflow-reconciliation',
+      repeat: {
+        every: getInterviewReconciliationRepeatEveryMs(),
       },
       removeOnComplete: envInt('CLASS_WORKFLOW_QUEUE_REMOVE_ON_COMPLETE', 1000),
       removeOnFail: envInt('CLASS_WORKFLOW_QUEUE_REMOVE_ON_FAIL', 5000),
@@ -236,6 +280,36 @@ export const startClassWorkflowWorker = (strapi: Core.Strapi) => {
           });
         } catch (error) {
           throw new Error(`Scheduled class opening reconciliation failed: ${formatJobError(error)}`);
+        }
+
+        return;
+      }
+
+      if (job.name === 'reconcile-interview-workflows') {
+        const limit = 'limit' in job.data ? job.data.limit : getInterviewReconciliationLimit();
+
+        try {
+          await interviewRequestService(strapi).reconcileEmployerCapacityClaims(limit, {
+            serviceName: 'class-workflow-worker',
+          });
+        } catch (error) {
+          throw new Error(`Employer capacity-claim reconciliation failed: ${formatJobError(error)}`);
+        }
+
+        try {
+          await candidateService(strapi).reconcileCandidateInterviewSlotOffers(limit, {
+            serviceName: 'class-workflow-worker',
+          });
+        } catch (error) {
+          throw new Error(`Candidate interview-slot reconciliation failed: ${formatJobError(error)}`);
+        }
+
+        try {
+          await interviewRequestService(strapi).reconcileEmployerInterviewDetails(limit, {
+            serviceName: 'class-workflow-worker',
+          });
+        } catch (error) {
+          throw new Error(`Employer interview-detail reconciliation failed: ${formatJobError(error)}`);
         }
 
         return;

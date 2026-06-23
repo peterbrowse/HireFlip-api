@@ -1,5 +1,6 @@
 import type { Core } from '@strapi/strapi';
 import {
+  scheduleInterviewWorkflowReconciliationJob,
   schedulePaymentReconciliationJob,
   startClassWorkflowWorker,
   stopClassWorkflowQueue,
@@ -123,6 +124,9 @@ export default {
     });
     void schedulePaymentReconciliationJob().catch((error) => {
       strapi.log.error('Payment reconciliation job scheduling failed.', error);
+    });
+    void scheduleInterviewWorkflowReconciliationJob().catch((error) => {
+      strapi.log.error('Interview workflow reconciliation job scheduling failed.', error);
     });
   },
 

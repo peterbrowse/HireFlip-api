@@ -85,6 +85,8 @@ const addWorkingDays = (days, hour = 10) => {
   return date.toISOString();
 };
 
+const hoursAgo = (hours) => new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+
 const jsonResponse = (body, status = 202) =>
   new Response(JSON.stringify(body), {
     headers: {
@@ -233,7 +235,10 @@ const main = async () => {
 
   const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   process.env.CANDIDATE_DASHBOARD_BASE_URL = 'http://localhost:3001';
+  process.env.CANDIDATE_INTERVIEW_SLOT_REMINDER_INTERVAL_HOURS = '1';
   process.env.EMPLOYER_DASHBOARD_BASE_URL = 'http://localhost:3004';
+  process.env.EMPLOYER_CAPACITY_CLAIM_REMINDER_INTERVAL_HOURS = '1';
+  process.env.EMPLOYER_INTERVIEW_DETAILS_REMINDER_INTERVAL_HOURS = '1';
   process.env.NOTIFICATION_SERVICE_URL = `https://candidate-interview-smoke-${runId}.example.test`;
   process.env.NOTIFICATION_SERVICE_TOKEN = 'candidate-interview-smoke-token';
 
@@ -256,6 +261,7 @@ const main = async () => {
 
   try {
     const candidateService = strapi.service('api::candidate.candidate');
+    const interviewRequestService = strapi.service('api::interview-request.interview-request');
     const now = new Date().toISOString();
 
     created.classArea = await documents(strapi, 'api::class-area.class-area').create({
@@ -345,6 +351,116 @@ const main = async () => {
       subject: created.candidate.authIdentityId,
       type: 'auth0',
     };
+
+    const employerReminderRequest = await documents(strapi, 'api::interview-request.interview-request').create({
+      data: {
+        candidate: connect(created.candidate),
+        candidateVisibleState: 'arranging_interviews',
+        claimedInterviewCount: 1,
+        class: connect(created.classRecord),
+        enrollment: connect(created.enrollment),
+        region: connect(created.classArea),
+        requestState: 'employer_notified',
+        requestedInterviewCount: 1,
+        responseSlaWorkingDays: 2,
+      },
+      populate: ['candidate', 'class', 'enrollment', 'region'],
+    });
+    const employerReminderClaim = await documents(strapi, 'api::employer-capacity-claim.employer-capacity-claim').create({
+      data: {
+        claimCount: 1,
+        claimState: 'notified',
+        employer: connect(created.employer),
+        employerContact: connect(created.contact),
+        expiresAt: addWorkingDays(1, 16),
+        interviewRequest: connect(employerReminderRequest),
+        notifiedAt: hoursAgo(2),
+        region: connect(created.classArea),
+      },
+      populate: ['employer', 'employerContact', 'interviewRequest', 'region'],
+    });
+    created.fixtures.push({
+      claim: employerReminderClaim,
+      offer: null,
+      request: employerReminderRequest,
+      slots: [],
+    });
+
+    const employerReminderSummary = await interviewRequestService.reconcileEmployerCapacityClaims(25, {
+      requestId: `candidate-interview-smoke-${runId}`,
+    });
+
+    assert(employerReminderSummary.reminded >= 1, 'Expected employer capacity claim reminder.');
+    assert(
+      smokeFetch.notifications.some((notification) => notification.type === 'employer_capacity_claim_response_reminder'),
+      'Expected employer capacity claim reminder notification.'
+    );
+
+    const remindedClaim = await documents(strapi, 'api::employer-capacity-claim.employer-capacity-claim').findMany({
+      filters: {
+        documentId: employerReminderClaim.documentId,
+      },
+      limit: 1,
+    });
+
+    assert(
+      remindedClaim[0]?.employerResponseReminderCount === 1,
+      'Expected employer capacity claim reminder count to increment.'
+    );
+
+    const employerExpiredRequest = await documents(strapi, 'api::interview-request.interview-request').create({
+      data: {
+        candidate: connect(created.candidate),
+        candidateVisibleState: 'arranging_interviews',
+        claimedInterviewCount: 1,
+        class: connect(created.classRecord),
+        enrollment: connect(created.enrollment),
+        region: connect(created.classArea),
+        requestState: 'employer_notified',
+        requestedInterviewCount: 1,
+        responseSlaWorkingDays: 2,
+      },
+      populate: ['candidate', 'class', 'enrollment', 'region'],
+    });
+    const employerExpiredClaim = await documents(strapi, 'api::employer-capacity-claim.employer-capacity-claim').create({
+      data: {
+        claimCount: 1,
+        claimState: 'notified',
+        employer: connect(created.employer),
+        employerContact: connect(created.contact),
+        expiresAt: hoursAgo(1),
+        interviewRequest: connect(employerExpiredRequest),
+        notifiedAt: hoursAgo(48),
+        region: connect(created.classArea),
+      },
+      populate: ['employer', 'employerContact', 'interviewRequest', 'region'],
+    });
+    created.fixtures.push({
+      claim: employerExpiredClaim,
+      offer: null,
+      request: employerExpiredRequest,
+      slots: [],
+    });
+
+    const employerExpirySummary = await interviewRequestService.reconcileEmployerCapacityClaims(25, {
+      requestId: `candidate-interview-smoke-${runId}`,
+    });
+
+    assert(employerExpirySummary.expired >= 1, 'Expected employer capacity claim expiry.');
+    assert(
+      smokeFetch.notifications.some((notification) => notification.type === 'employer_capacity_claim_expired_lead_warning'),
+      'Expected lead warning when employer capacity claim expires.'
+    );
+
+    const expiredClaim = await documents(strapi, 'api::employer-capacity-claim.employer-capacity-claim').findMany({
+      filters: {
+        documentId: employerExpiredClaim.documentId,
+      },
+      limit: 1,
+    });
+
+    assert(expiredClaim[0]?.claimState === 'expired', 'Expected expired employer claim to be released as expired.');
+
     const firstFixture = await createOfferFixture({
       candidate: created.candidate,
       classArea: created.classArea,
@@ -365,6 +481,49 @@ const main = async () => {
 
     assert(initialState.activeOffer?.documentId === firstFixture.offer.documentId, 'Expected active slot offer.');
     assert(initialState.activeOffer.slots.length === 3, 'Expected three candidate slot options.');
+
+    const reminderFixture = await createOfferFixture({
+      candidate: created.candidate,
+      classArea: created.classArea,
+      classRecord: created.classRecord,
+      contact: created.contact,
+      employer: created.employer,
+      enrollment: created.enrollment,
+      runId,
+      strapi,
+      suffix: 'candidate-reminder',
+    });
+
+    created.fixtures.push(reminderFixture);
+
+    await documents(strapi, 'api::interview-slot-offer.interview-slot-offer').update({
+      documentId: reminderFixture.offer.documentId,
+      data: {
+        candidateNotifiedAt: hoursAgo(2),
+      },
+    });
+
+    const candidateReminderSummary = await candidateService.reconcileCandidateInterviewSlotOffers(25, {
+      requestId: `candidate-interview-smoke-${runId}`,
+    });
+
+    assert(candidateReminderSummary.reminded >= 1, 'Expected candidate interview slot reminder.');
+    assert(
+      smokeFetch.notifications.some((notification) => notification.type === 'candidate_interview_slot_response_reminder'),
+      'Expected candidate interview slot reminder notification.'
+    );
+
+    const remindedOffer = await documents(strapi, 'api::interview-slot-offer.interview-slot-offer').findMany({
+      filters: {
+        documentId: reminderFixture.offer.documentId,
+      },
+      limit: 1,
+    });
+
+    assert(
+      remindedOffer[0]?.candidateResponseReminderCount === 1,
+      'Expected candidate slot reminder count to increment.'
+    );
 
     const warningDecline = await candidateService.declineCurrentCandidateInterviewSlotOffer(
       auth,
@@ -418,6 +577,56 @@ const main = async () => {
 
     assert(strikeDecline.warningState === 'strike_applied', 'Expected repeat decline to apply a strike.');
     assert(strikeDecline.strike?.strikeNumber === 1, 'Expected first strike number.');
+
+    const expiredCandidateFixture = await createOfferFixture({
+      candidate: created.candidate,
+      classArea: created.classArea,
+      classRecord: created.classRecord,
+      contact: created.contact,
+      employer: created.employer,
+      enrollment: created.enrollment,
+      runId,
+      strapi,
+      suffix: 'candidate-expiry',
+    });
+
+    created.fixtures.push(expiredCandidateFixture);
+
+    await documents(strapi, 'api::interview-slot-offer.interview-slot-offer').update({
+      documentId: expiredCandidateFixture.offer.documentId,
+      data: {
+        candidateNotifiedAt: hoursAgo(48),
+        candidateResponseDeadline: hoursAgo(1),
+      },
+    });
+
+    const candidateExpirySummary = await candidateService.reconcileCandidateInterviewSlotOffers(25, {
+      requestId: `candidate-interview-smoke-${runId}`,
+    });
+
+    assert(candidateExpirySummary.expired >= 1, 'Expected candidate interview slot expiry.');
+
+    const expiredOffer = await documents(strapi, 'api::interview-slot-offer.interview-slot-offer').findMany({
+      filters: {
+        documentId: expiredCandidateFixture.offer.documentId,
+      },
+      limit: 1,
+      populate: ['capacityClaim'],
+    });
+
+    assert(expiredOffer[0]?.offerState === 'expired', 'Expected overdue candidate slot offer to expire.');
+
+    const expiredOfferClaim = await documents(strapi, 'api::employer-capacity-claim.employer-capacity-claim').findMany({
+      filters: {
+        documentId: expiredCandidateFixture.claim.documentId,
+      },
+      limit: 1,
+    });
+
+    assert(
+      expiredOfferClaim[0]?.claimState === 'expired',
+      'Expected overdue candidate slot offer to expire its capacity claim.'
+    );
 
     const thirdFixture = await createOfferFixture({
       candidate: created.candidate,
@@ -474,6 +683,35 @@ const main = async () => {
       'Expected employer interview detail page to show setup needed.'
     );
 
+    await documents(strapi, 'api::interview.interview').update({
+      documentId: interviewDocumentId,
+      data: {
+        lastEmployerDetailsReminderSentAt: hoursAgo(2),
+      },
+    });
+
+    const detailsReminderSummary = await interviewRequestService.reconcileEmployerInterviewDetails(25, {
+      requestId: `candidate-interview-smoke-${runId}`,
+    });
+
+    assert(detailsReminderSummary.reminded >= 1, 'Expected employer interview-details reminder.');
+    assert(
+      smokeFetch.notifications.some((notification) => notification.type === 'employer_interview_details_reminder'),
+      'Expected employer interview-details reminder notification.'
+    );
+
+    const remindedInterview = await documents(strapi, 'api::interview.interview').findMany({
+      filters: {
+        documentId: interviewDocumentId,
+      },
+      limit: 1,
+    });
+
+    assert(
+      remindedInterview[0]?.employerDetailsReminderCount === 1,
+      'Expected employer interview-details reminder count to increment.'
+    );
+
     const confirmedDetail = await employerDashboardService.updateInterviewSetup(
       {
         ...employerIdentity,
@@ -499,13 +737,16 @@ const main = async () => {
     const confirmedCandidateState = await candidateService.getCurrentCandidateInterviewSlotOffers(auth, {
       requestId: `candidate-interview-smoke-${runId}`,
     });
+    const confirmedOffer = confirmedCandidateState.offers.find(
+      (offer) => offer.documentId === thirdFixture.offer.documentId
+    );
 
     assert(
-      confirmedCandidateState.activeOffer?.selectedInterview?.detailsPending === false,
+      confirmedOffer?.selectedInterview?.detailsPending === false,
       'Expected candidate dashboard to reveal confirmed details.'
     );
     assert(
-      confirmedCandidateState.activeOffer?.selectedInterview?.locationDetails ===
+      confirmedOffer?.selectedInterview?.locationDetails ===
         'HireFlip Smoke Office, 1 Test Street, London',
       'Expected candidate dashboard to include confirmed location details.'
     );
@@ -553,6 +794,22 @@ const main = async () => {
 
       await deleteDocument(strapi, 'api::interview-slot-offer.interview-slot-offer', fixture.offer?.documentId);
       await deleteDocument(strapi, 'api::employer-capacity-claim.employer-capacity-claim', fixture.claim?.documentId);
+
+      const extraClaims = fixture.request?.documentId
+        ? await documents(strapi, 'api::employer-capacity-claim.employer-capacity-claim').findMany({
+            filters: {
+              interviewRequest: {
+                documentId: fixture.request.documentId,
+              },
+            },
+            limit: 100,
+          })
+        : [];
+
+      for (const claim of extraClaims) {
+        await deleteDocument(strapi, 'api::employer-capacity-claim.employer-capacity-claim', claim.documentId);
+      }
+
       await deleteDocument(strapi, 'api::interview-request.interview-request', fixture.request?.documentId);
     }
 

@@ -66,6 +66,15 @@
     "notifiedAt": {
       "type": "datetime"
     },
+    "employerResponseReminderCount": {
+      "type": "integer",
+      "min": 0,
+      "default": 0,
+      "required": true
+    },
+    "lastEmployerResponseReminderSentAt": {
+      "type": "datetime"
+    },
     "acceptedAt": {
       "type": "datetime"
     },

@@ -27,7 +27,10 @@ type DocumentRecord = Record<string, unknown> & {
   email?: string;
   employer?: DocumentRecord;
   employerContact?: DocumentRecord;
+  employerDetailsReminderCount?: number;
+  employerResponseReminderCount?: number;
   employerState?: string;
+  expiresAt?: string;
   firstName?: string;
   fulfilledInterviewCount?: number;
   id?: number | string;
@@ -44,6 +47,8 @@ type DocumentRecord = Record<string, unknown> & {
   interviewGuaranteeDeadline?: string;
   interviewsGuaranteed?: number;
   lastName?: string;
+  lastEmployerResponseReminderSentAt?: string;
+  lastEmployerDetailsReminderSentAt?: string;
   metadata?: unknown;
   name?: string;
   operatingRegions?: DocumentRecord[];
@@ -54,6 +59,7 @@ type DocumentRecord = Record<string, unknown> & {
   responseSlaWorkingDays?: number;
   releaseNote?: string;
   releaseReason?: string;
+  scheduledStartTime?: string;
   slug?: string;
   title?: string;
   updatedAt?: string;
@@ -182,6 +188,16 @@ const documentRecordValue = (value: unknown): DocumentRecord | undefined =>
     ? (value as DocumentRecord)
     : undefined;
 
+const relationConnect = (record?: unknown) => {
+  const documentRecord = documentRecordValue(record);
+
+  return documentRecord?.documentId
+    ? {
+        connect: [{ documentId: documentRecord.documentId }],
+      }
+    : undefined;
+};
+
 const getIntegerEnv = (name: string, fallback: number) => {
   const value = Number.parseInt(process.env[name] || '', 10);
   return Number.isFinite(value) && value > 0 ? value : fallback;
@@ -191,6 +207,28 @@ const trimTrailingSlash = (value: string) => value.replace(/\/+$/, '');
 
 const candidateDashboardInterviewUrl = () =>
   `${trimTrailingSlash(process.env.CANDIDATE_DASHBOARD_BASE_URL || 'http://localhost:3001')}/interviews`;
+
+const employerDashboardAvailabilityUrl = (claimDocumentId?: string) =>
+  `${trimTrailingSlash(process.env.EMPLOYER_DASHBOARD_BASE_URL || 'http://localhost:3004')}/availability${
+    claimDocumentId ? `/${claimDocumentId}` : ''
+  }`;
+
+const employerDashboardInterviewUrl = (interviewDocumentId?: string) =>
+  `${trimTrailingSlash(process.env.EMPLOYER_DASHBOARD_BASE_URL || 'http://localhost:3004')}/interviews${
+    interviewDocumentId ? `/${interviewDocumentId}` : ''
+  }`;
+
+const employerCapacityClaimReminderIntervalMs = () =>
+  getIntegerEnv('EMPLOYER_CAPACITY_CLAIM_REMINDER_INTERVAL_HOURS', 12) * 60 * 60 * 1000;
+
+const employerCapacityClaimReminderMax = () =>
+  getIntegerEnv('EMPLOYER_CAPACITY_CLAIM_REMINDER_MAX', 4);
+
+const employerInterviewDetailsReminderIntervalMs = () =>
+  getIntegerEnv('EMPLOYER_INTERVIEW_DETAILS_REMINDER_INTERVAL_HOURS', 12) * 60 * 60 * 1000;
+
+const employerInterviewDetailsReminderMax = () =>
+  getIntegerEnv('EMPLOYER_INTERVIEW_DETAILS_REMINDER_MAX', 4);
 
 const integerValue = (value: unknown, fallback = 0) => {
   const parsed = Number(value);
@@ -642,6 +680,242 @@ const queueCandidateSlotOfferNotification = async ({
   };
 };
 
+const activeEmployerContacts = (employer?: DocumentRecord | null) =>
+  (Array.isArray(employer?.contacts) ? employer.contacts : []).filter(
+    (contact) => !['archived', 'disabled'].includes(String(contact.contactState || ''))
+  );
+
+const leadEmployerContact = (employer?: DocumentRecord | null) =>
+  activeEmployerContacts(employer).find((contact) => contact.contactRole === 'lead_contact') ||
+  activeEmployerContacts(employer)[0] ||
+  null;
+
+const queueEmployerCapacityClaimReminderNotification = async ({
+  claim,
+  requestContext,
+  strapi,
+}: {
+  claim: DocumentRecord;
+  requestContext: RequestContext;
+  strapi: StrapiDocumentService;
+}) => {
+  const employerContact = documentRecordValue(claim.employerContact);
+
+  if (!employerContact?.email) {
+    return {
+      emailQueued: false,
+    };
+  }
+
+  const claimDocumentId = getDocumentId(claim);
+  const dashboardUrl = employerDashboardAvailabilityUrl(claimDocumentId);
+  const subject = 'Reminder: interview availability is needed';
+  const bodyLines = [
+    `Hi ${employerContact.firstName || 'there'},`,
+    'HireFlip is still waiting for three interview slot options for this candidate request.',
+    'Please review the request in your employer dashboard before the response window closes.',
+  ];
+  const emailQueueResult = await requestNotificationServiceEmail({
+    correlationId: claimDocumentId,
+    subject,
+    template: {
+      key: 'generic_branded_message',
+      variables: {
+        bodyLines,
+        ctaLabel: 'Review availability request',
+        ctaUrl: dashboardUrl,
+        heading: subject,
+        subject,
+      },
+    },
+    to: String(employerContact.email),
+    type: 'employer_capacity_claim_response_reminder',
+  });
+
+  await documents(strapi, 'api::notification-event.notification-event').create({
+    data: {
+      channel: 'email',
+      deliveryState: emailQueueResult?.data?.queued === true ? 'queued' : 'failed',
+      employer: relationConnect(claim.employer),
+      eventType: 'employer.capacity_claim_response_reminder',
+      metadata: {
+        capacityClaimDocumentId: claimDocumentId,
+        dashboardUrl,
+        employerResponseDeadline: claim.expiresAt || null,
+        notificationServiceJobId:
+          typeof emailQueueResult?.data?.jobId === 'string'
+            ? emailQueueResult.data.jobId
+            : undefined,
+        reminderCount: integerValue(claim.employerResponseReminderCount) + 1,
+        requestId: requestContext.requestId,
+      },
+      priority: 'urgent',
+      recipientEmail: String(employerContact.email),
+      recipientId: getDocumentId(employerContact),
+      recipientType: 'employer_contact',
+      relatedId: claimDocumentId,
+      relatedType: 'employer_capacity_claim',
+      templateKey: 'generic_branded_message',
+    },
+  });
+
+  return {
+    emailQueued: emailQueueResult?.data?.queued === true,
+  };
+};
+
+const queueEmployerCapacityClaimExpiredLeadNotification = async ({
+  claim,
+  requestContext,
+  strapi,
+}: {
+  claim: DocumentRecord;
+  requestContext: RequestContext;
+  strapi: StrapiDocumentService;
+}) => {
+  const leadContact = leadEmployerContact(claim.employer);
+  const assignedContact = documentRecordValue(claim.employerContact);
+
+  if (!leadContact?.email) {
+    return {
+      emailQueued: false,
+    };
+  }
+
+  const claimDocumentId = getDocumentId(claim);
+  const assignedName = assignedContact ? displayName(assignedContact) || 'A listed contact' : 'A listed contact';
+  const dashboardUrl = employerDashboardAvailabilityUrl();
+  const subject = 'Interview availability request expired';
+  const bodyLines = [
+    `Hi ${leadContact.firstName || 'there'},`,
+    `${assignedName} let an interview availability request expire before submitting slot options.`,
+    'HireFlip has released the capacity and will try to route the candidate to another eligible employer. Please review your SLA agreement and make sure future requests are covered on time.',
+  ];
+  const emailQueueResult = await requestNotificationServiceEmail({
+    correlationId: claimDocumentId,
+    subject,
+    template: {
+      key: 'generic_branded_message',
+      variables: {
+        bodyLines,
+        ctaLabel: 'View availability requests',
+        ctaUrl: dashboardUrl,
+        heading: subject,
+        subject,
+      },
+    },
+    to: String(leadContact.email),
+    type: 'employer_capacity_claim_expired_lead_warning',
+  });
+
+  await documents(strapi, 'api::notification-event.notification-event').create({
+    data: {
+      channel: 'email',
+      deliveryState: emailQueueResult?.data?.queued === true ? 'queued' : 'failed',
+      employer: relationConnect(claim.employer),
+      eventType: 'employer.capacity_claim_expired_lead_warning',
+      metadata: {
+        assignedContactDocumentId: getDocumentId(assignedContact),
+        capacityClaimDocumentId: claimDocumentId,
+        dashboardUrl,
+        employerResponseDeadline: claim.expiresAt || null,
+        notificationServiceJobId:
+          typeof emailQueueResult?.data?.jobId === 'string'
+            ? emailQueueResult.data.jobId
+            : undefined,
+        requestId: requestContext.requestId,
+      },
+      priority: 'urgent',
+      recipientEmail: String(leadContact.email),
+      recipientId: getDocumentId(leadContact),
+      recipientType: 'employer_contact',
+      relatedId: claimDocumentId,
+      relatedType: 'employer_capacity_claim',
+      templateKey: 'generic_branded_message',
+    },
+  });
+
+  return {
+    emailQueued: emailQueueResult?.data?.queued === true,
+  };
+};
+
+const queueEmployerInterviewDetailsReminderNotification = async ({
+  interview,
+  requestContext,
+  strapi,
+}: {
+  interview: DocumentRecord;
+  requestContext: RequestContext;
+  strapi: StrapiDocumentService;
+}) => {
+  const employerContact = documentRecordValue(interview.employerContact);
+
+  if (!employerContact?.email) {
+    return {
+      emailQueued: false,
+    };
+  }
+
+  const interviewDocumentId = getDocumentId(interview);
+  const dashboardUrl = employerDashboardInterviewUrl(interviewDocumentId);
+  const candidate = documentRecordValue(interview.candidate);
+  const candidateName = candidate ? displayName(candidate) || 'the candidate' : 'the candidate';
+  const subject = 'Reminder: interview details need confirming';
+  const bodyLines = [
+    `Hi ${employerContact.firstName || 'there'},`,
+    `${candidateName} has selected an interview slot and is waiting for the final location or joining instructions.`,
+    'Please confirm the interview details in your HireFlip employer dashboard.',
+  ];
+  const emailQueueResult = await requestNotificationServiceEmail({
+    correlationId: interviewDocumentId,
+    subject,
+    template: {
+      key: 'generic_branded_message',
+      variables: {
+        bodyLines,
+        ctaLabel: 'Confirm interview details',
+        ctaUrl: dashboardUrl,
+        heading: subject,
+        subject,
+      },
+    },
+    to: String(employerContact.email),
+    type: 'employer_interview_details_reminder',
+  });
+
+  await documents(strapi, 'api::notification-event.notification-event').create({
+    data: {
+      channel: 'email',
+      deliveryState: emailQueueResult?.data?.queued === true ? 'queued' : 'failed',
+      employer: relationConnect(interview.employer),
+      eventType: 'employer.interview_details_reminder',
+      interview: relationConnect(interview),
+      metadata: {
+        dashboardUrl,
+        interviewDocumentId,
+        notificationServiceJobId:
+          typeof emailQueueResult?.data?.jobId === 'string'
+            ? emailQueueResult.data.jobId
+            : undefined,
+        reminderCount: integerValue(interview.employerDetailsReminderCount) + 1,
+        requestId: requestContext.requestId,
+      },
+      priority: 'urgent',
+      recipientEmail: String(employerContact.email),
+      recipientId: getDocumentId(employerContact),
+      recipientType: 'employer_contact',
+      relatedId: interviewDocumentId,
+      relatedType: 'interview',
+      templateKey: 'generic_branded_message',
+    },
+  });
+
+  return {
+    emailQueued: emailQueueResult?.data?.queued === true,
+  };
+};
+
 const consumedClaimsForEmployer = async ({
   cadence,
   employerDocumentId,
@@ -955,6 +1229,198 @@ const routeInterviewRequest = async (
 };
 
 export default factories.createCoreService('api::interview-request.interview-request', ({ strapi }) => ({
+  async reconcileEmployerCapacityClaims(limit = 100, requestContext: RequestContext = {}) {
+    const now = Date.now();
+    const reminderIntervalMs = employerCapacityClaimReminderIntervalMs();
+    const reminderMax = employerCapacityClaimReminderMax();
+    const claims = await documents(strapi, 'api::employer-capacity-claim.employer-capacity-claim').findMany({
+      filters: {
+        claimState: {
+          $in: ['held', 'notified', 'accepted'],
+        },
+      },
+      limit,
+      populate: {
+        employer: {
+          populate: {
+            contacts: true,
+          },
+        },
+        employerContact: true,
+        interviewRequest: {
+          populate: ['candidate', 'class', 'region'],
+        },
+        region: true,
+      },
+      sort: ['expiresAt:asc', 'createdAt:asc'],
+    });
+    const summary = {
+      checked: claims.length,
+      errors: [] as Array<{ capacityClaimDocumentId?: string; error: string }>,
+      expired: 0,
+      reminded: 0,
+      skipped: 0,
+    };
+
+    for (const claim of claims) {
+      const capacityClaimDocumentId = getDocumentId(claim);
+
+      try {
+        const expiresAtMs = claim.expiresAt ? Date.parse(claim.expiresAt) : Number.NaN;
+
+        if (!capacityClaimDocumentId || Number.isNaN(expiresAtMs)) {
+          summary.skipped += 1;
+          continue;
+        }
+
+        if (expiresAtMs <= now) {
+          await queueEmployerCapacityClaimExpiredLeadNotification({
+            claim,
+            requestContext,
+            strapi,
+          });
+          await this.releaseCapacityClaim(
+            {
+              capacityClaimDocumentId,
+              releaseNote: 'Employer response SLA expired.',
+              releaseReason: 'expired',
+            },
+            {
+              ...requestContext,
+              serviceName: requestContext.serviceName || 'class-workflow-worker',
+            }
+          );
+          summary.expired += 1;
+          continue;
+        }
+
+        const reminderCount = integerValue(claim.employerResponseReminderCount);
+
+        if (reminderCount >= reminderMax) {
+          summary.skipped += 1;
+          continue;
+        }
+
+        const lastReminderMs = claim.lastEmployerResponseReminderSentAt
+          ? Date.parse(claim.lastEmployerResponseReminderSentAt)
+          : Number.NaN;
+        const notifiedMs = claim.notifiedAt ? Date.parse(String(claim.notifiedAt)) : Number.NaN;
+        const createdMs = claim.createdAt ? Date.parse(String(claim.createdAt)) : now;
+        const referenceMs = Number.isNaN(lastReminderMs)
+          ? Number.isNaN(notifiedMs)
+            ? createdMs
+            : notifiedMs
+          : lastReminderMs;
+
+        if (now - referenceMs < reminderIntervalMs) {
+          summary.skipped += 1;
+          continue;
+        }
+
+        await queueEmployerCapacityClaimReminderNotification({
+          claim,
+          requestContext,
+          strapi,
+        });
+        await documents(strapi, 'api::employer-capacity-claim.employer-capacity-claim').update({
+          documentId: capacityClaimDocumentId,
+          data: {
+            employerResponseReminderCount: reminderCount + 1,
+            lastEmployerResponseReminderSentAt: new Date(now).toISOString(),
+            metadata: {
+              ...objectValue(claim.metadata),
+              lastReminderRequestId: requestContext.requestId,
+              lastReminderSource: 'employer_capacity_claim_reconciliation',
+            },
+          },
+        });
+        summary.reminded += 1;
+      } catch (error) {
+        summary.errors.push({
+          capacityClaimDocumentId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    return summary;
+  },
+
+  async reconcileEmployerInterviewDetails(limit = 100, requestContext: RequestContext = {}) {
+    const now = Date.now();
+    const reminderIntervalMs = employerInterviewDetailsReminderIntervalMs();
+    const reminderMax = employerInterviewDetailsReminderMax();
+    const interviews = await documents(strapi, 'api::interview.interview').findMany({
+      filters: {
+        interviewState: 'awaiting_employer_details',
+      },
+      limit,
+      populate: ['candidate', 'employer', 'employerContact'],
+      sort: ['createdAt:asc'],
+    });
+    const summary = {
+      checked: interviews.length,
+      errors: [] as Array<{ error: string; interviewDocumentId?: string }>,
+      reminded: 0,
+      skipped: 0,
+    };
+
+    for (const interview of interviews) {
+      const interviewDocumentId = getDocumentId(interview);
+
+      try {
+        if (!interviewDocumentId || !documentRecordValue(interview.employerContact)?.email) {
+          summary.skipped += 1;
+          continue;
+        }
+
+        const reminderCount = integerValue(interview.employerDetailsReminderCount);
+
+        if (reminderCount >= reminderMax) {
+          summary.skipped += 1;
+          continue;
+        }
+
+        const lastReminderMs = interview.lastEmployerDetailsReminderSentAt
+          ? Date.parse(interview.lastEmployerDetailsReminderSentAt)
+          : Number.NaN;
+        const createdMs = interview.createdAt ? Date.parse(String(interview.createdAt)) : now;
+        const referenceMs = Number.isNaN(lastReminderMs) ? createdMs : lastReminderMs;
+
+        if (now - referenceMs < reminderIntervalMs) {
+          summary.skipped += 1;
+          continue;
+        }
+
+        await queueEmployerInterviewDetailsReminderNotification({
+          interview,
+          requestContext,
+          strapi,
+        });
+        await documents(strapi, 'api::interview.interview').update({
+          documentId: interviewDocumentId,
+          data: {
+            employerDetailsReminderCount: reminderCount + 1,
+            lastEmployerDetailsReminderSentAt: new Date(now).toISOString(),
+            metadata: {
+              ...objectValue(interview.metadata),
+              lastDetailsReminderRequestId: requestContext.requestId,
+              lastDetailsReminderSource: 'employer_interview_details_reconciliation',
+            },
+          },
+        });
+        summary.reminded += 1;
+      } catch (error) {
+        summary.errors.push({
+          error: error instanceof Error ? error.message : String(error),
+          interviewDocumentId,
+        });
+      }
+    }
+
+    return summary;
+  },
+
   async ensureForEnrollment(input: unknown, requestContext: RequestContext = {}) {
     const body = validateEnsureForEnrollment(input);
     const enrollment = await findEnrollment(strapi, body.enrollmentDocumentId);

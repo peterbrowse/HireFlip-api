@@ -58,8 +58,14 @@ type DocumentRecord = Record<string, unknown> & {
   attemptState?: string;
   authIdentityId?: string;
   candidate?: DocumentRecord;
+  candidateResponseDeadline?: string;
+  candidateNotifiedAt?: string;
+  candidateResponseReminderCount?: number;
+  candidateRespondedAt?: string;
   candidateState?: string;
   candidateEmail?: string;
+  candidateWarningSentAt?: string;
+  candidateWarningState?: string;
   capacity?: number;
   class?: DocumentRecord;
   classArea?: DocumentRecord;
@@ -104,6 +110,7 @@ type DocumentRecord = Record<string, unknown> & {
   invitedToJoinAt?: string;
   introCopy?: string;
   lastName?: string;
+  lastCandidateResponseReminderSentAt?: string;
   level?: string;
   lastMessageAt?: string;
   marketingConsentCapturedAt?: string;
@@ -339,6 +346,12 @@ type UploadedFile = {
 const getIntegerEnv = (name: string, fallback: number) => {
   const value = Number.parseInt(process.env[name] || '', 10);
   return Number.isFinite(value) && value > 0 ? value : fallback;
+};
+
+const positiveNumber = (value: unknown, fallback = 0) => {
+  const parsed = Number(value);
+
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
 };
 
 const getReservationWindowMs = () => getIntegerEnv('CLASS_RESERVATION_WINDOW_SECONDS', 10 * 60) * 1000;
@@ -2455,6 +2468,12 @@ const buildDashboardInterviewsUrl = () =>
 const buildEmployerDashboardInterviewsUrl = () =>
   `${trimTrailingSlash(process.env.EMPLOYER_DASHBOARD_BASE_URL || 'http://localhost:3004')}/interviews`;
 
+const candidateInterviewSlotReminderIntervalMs = () =>
+  getIntegerEnv('CANDIDATE_INTERVIEW_SLOT_REMINDER_INTERVAL_HOURS', 12) * 60 * 60 * 1000;
+
+const candidateInterviewSlotReminderMax = () =>
+  getIntegerEnv('CANDIDATE_INTERVIEW_SLOT_REMINDER_MAX', 4);
+
 const buildDashboardOrderProcessingUrl = (reservationDocumentId: string) => {
   const baseUrl = trimTrailingSlash(process.env.CANDIDATE_DASHBOARD_BASE_URL || 'http://localhost:3001');
   const url = new URL(`${baseUrl}/order-processing/${reservationDocumentId}`);
@@ -2782,6 +2801,118 @@ const queueCandidateSlotOutcomeNotification = async ({
   );
 };
 
+const queueCandidateSlotOfferReminderNotification = async ({
+  candidate,
+  offer,
+  requestContext,
+  strapi,
+}: {
+  candidate: DocumentRecord;
+  offer: DocumentRecord;
+  requestContext: RequestContext;
+  strapi: StrapiDocumentService;
+}) => {
+  const dashboardUrl = buildDashboardInterviewsUrl();
+  const candidateName = candidate.firstName || 'there';
+  const deadline = stringValue(offer.candidateResponseDeadline);
+  const notificationPreferences = objectValue(candidate.notificationPreferences);
+  const channelPreferences = objectValue(notificationPreferences.channels);
+  const emailAllowed = Boolean(candidate.email) && channelPreferences.email !== false;
+  const smsAllowed = Boolean(candidate.phone) && channelPreferences.sms === true;
+  const subject = 'Reminder: your interview slots need a response';
+  const bodyLines = [
+    `Hi ${candidateName},`,
+    'Your interview slot options are still waiting for your response.',
+    'Please review all available options in your HireFlip dashboard before the response window closes.',
+  ];
+  const emailQueueResult =
+    emailAllowed && typeof candidate.email === 'string'
+      ? await requestNotificationServiceEmail({
+          correlationId: offer.documentId,
+          subject,
+          template: {
+            key: 'generic_branded_message',
+            variables: {
+              bodyLines,
+              ctaLabel: 'Review interview slots',
+              ctaUrl: dashboardUrl,
+              heading: subject,
+              subject,
+            },
+          },
+          to: candidate.email,
+          type: 'candidate_interview_slot_response_reminder',
+        })
+      : undefined;
+  const smsQueueResult =
+    smsAllowed && typeof candidate.phone === 'string'
+      ? await requestNotificationServiceSms({
+          body: `HireFlip: reminder, your interview slots need a response. Review them here: ${dashboardUrl}`,
+          correlationId: offer.documentId,
+          to: candidate.phone,
+          type: 'candidate_interview_slot_response_reminder',
+        })
+      : undefined;
+  const channels = [
+    {
+      channel: 'in_app',
+      deliveryState: 'queued',
+      jobId: undefined,
+      recipientPhone: undefined,
+    },
+    ...(emailAllowed
+      ? [
+          {
+            channel: 'email',
+            deliveryState: emailQueueResult?.data?.queued === true ? 'queued' : 'failed',
+            jobId: emailQueueResult?.data?.jobId,
+            recipientPhone: undefined,
+          },
+        ]
+      : []),
+    ...(smsAllowed
+      ? [
+          {
+            channel: 'sms',
+            deliveryState: smsQueueResult?.data?.queued === true ? 'queued' : 'failed',
+            jobId: smsQueueResult?.data?.jobId,
+            recipientPhone: candidate.phone,
+          },
+        ]
+      : []),
+  ];
+
+  await Promise.all(
+    channels.map(({ channel, deliveryState, jobId, recipientPhone }) =>
+      documents(strapi, 'api::notification-event.notification-event').create({
+        data: {
+          candidate: relationConnect(candidate),
+          channel,
+          class: relationConnect(documentRecordValue(offer.enrollment)?.class),
+          deliveryState,
+          eventType: 'candidate.interview_slot_response_reminder',
+          metadata: {
+            candidateResponseDeadline: deadline,
+            dashboardUrl,
+            interviewSlotOfferDocumentId: offer.documentId,
+            notificationServiceJobId: typeof jobId === 'string' ? jobId : undefined,
+            reminderCount: positiveNumber(offer.candidateResponseReminderCount) + 1,
+            requestId: requestContext.requestId,
+          },
+          priority: 'urgent',
+          recipientEmail: candidate.email,
+          recipientId: candidate.documentId,
+          recipientPhone,
+          recipientType: 'candidate',
+          relatedId: offer.documentId,
+          relatedType: 'interview_slot_offer',
+          templateKey: channel === 'email' ? 'generic_branded_message' : undefined,
+        },
+      })
+    )
+  );
+};
+
 const queueEmployerInterviewSetupNotification = async ({
   candidate,
   employerContact,
@@ -2969,6 +3100,7 @@ const applyCandidateSlotOfferMissedOrDeclined = async ({
   declineReason,
   offer,
   outcome,
+  outcomeSource,
   requestContext,
   strapi,
 }: {
@@ -2977,6 +3109,7 @@ const applyCandidateSlotOfferMissedOrDeclined = async ({
   declineReason?: (typeof candidateInterviewDeclineReasons)[number];
   offer: DocumentRecord;
   outcome: 'candidate_declined' | 'expired';
+  outcomeSource?: string;
   requestContext: RequestContext;
   strapi: StrapiDocumentService;
 }) => {
@@ -2997,7 +3130,9 @@ const applyCandidateSlotOfferMissedOrDeclined = async ({
       metadata: {
         ...(objectValue(offer.metadata)),
         candidateOutcomeAt: now,
-        candidateOutcomeSource: outcome === 'expired' ? 'candidate_dashboard_expiry_check' : 'candidate_dashboard',
+        candidateOutcomeSource:
+          outcomeSource ||
+          (outcome === 'expired' ? 'candidate_dashboard_expiry_check' : 'candidate_dashboard'),
         requestId: requestContext.requestId,
       },
       offerState: outcome === 'expired' ? 'expired' : 'candidate_declined',
@@ -6117,6 +6252,110 @@ const updateCourseOutcomeIfPassed = async (
 };
 
 export default factories.createCoreService('api::candidate.candidate', ({ strapi }) => ({
+  async reconcileCandidateInterviewSlotOffers(limit = 100, requestContext: RequestContext = {}) {
+    const now = Date.now();
+    const reminderIntervalMs = candidateInterviewSlotReminderIntervalMs();
+    const reminderMax = candidateInterviewSlotReminderMax();
+    const offers = await documents(strapi, 'api::interview-slot-offer.interview-slot-offer').findMany({
+      filters: {
+        candidateResponseDeadline: {
+          $notNull: true,
+        },
+        offerState: {
+          $in: Array.from(openInterviewSlotOfferStates),
+        },
+      },
+      limit,
+      populate: candidateInterviewSlotOfferPopulate,
+      sort: ['candidateResponseDeadline:asc', 'createdAt:asc'],
+    });
+    const summary = {
+      checked: offers.length,
+      errors: [] as Array<{ error: string; offerDocumentId?: string }>,
+      expired: 0,
+      reminded: 0,
+      skipped: 0,
+    };
+
+    for (const offer of offers) {
+      try {
+        const candidate = documentRecordValue(offer.candidate);
+        const deadline = stringValue(offer.candidateResponseDeadline);
+        const deadlineMs = deadline ? Date.parse(deadline) : Number.NaN;
+
+        if (!candidate?.documentId || Number.isNaN(deadlineMs)) {
+          summary.skipped += 1;
+          continue;
+        }
+
+        if (deadlineMs <= now) {
+          await applyCandidateSlotOfferMissedOrDeclined({
+            candidate,
+            offer,
+            outcome: 'expired',
+            outcomeSource: 'candidate_interview_slot_reconciliation',
+            requestContext,
+            strapi,
+          });
+          summary.expired += 1;
+          continue;
+        }
+
+        const reminderCount = positiveNumber(offer.candidateResponseReminderCount);
+
+        if (reminderCount >= reminderMax) {
+          summary.skipped += 1;
+          continue;
+        }
+
+        const lastReminderMs = offer.lastCandidateResponseReminderSentAt
+          ? Date.parse(String(offer.lastCandidateResponseReminderSentAt))
+          : Number.NaN;
+        const firstNotificationMs = offer.candidateNotifiedAt
+          ? Date.parse(String(offer.candidateNotifiedAt))
+          : Number.NaN;
+        const createdMs = offer.createdAt ? Date.parse(String(offer.createdAt)) : now;
+        const referenceMs = Number.isNaN(lastReminderMs)
+          ? Number.isNaN(firstNotificationMs)
+            ? createdMs
+            : firstNotificationMs
+          : lastReminderMs;
+
+        if (now - referenceMs < reminderIntervalMs) {
+          summary.skipped += 1;
+          continue;
+        }
+
+        await queueCandidateSlotOfferReminderNotification({
+          candidate,
+          offer,
+          requestContext,
+          strapi,
+        });
+        await documents(strapi, 'api::interview-slot-offer.interview-slot-offer').update({
+          documentId: offer.documentId,
+          data: {
+            candidateResponseReminderCount: reminderCount + 1,
+            lastCandidateResponseReminderSentAt: new Date(now).toISOString(),
+            metadata: {
+              ...objectValue(offer.metadata),
+              lastReminderRequestId: requestContext.requestId,
+              lastReminderSource: 'candidate_interview_slot_reconciliation',
+            },
+          },
+        });
+        summary.reminded += 1;
+      } catch (error) {
+        summary.errors.push({
+          error: error instanceof Error ? error.message : String(error),
+          offerDocumentId: offer.documentId,
+        });
+      }
+    }
+
+    return summary;
+  },
+
   async getCurrentCandidateInterviewSlotOffers(
     auth: Auth0State | undefined,
     requestContext: RequestContext = {}

@@ -68,6 +68,15 @@
     "detailsUpdatedAt": {
       "type": "datetime"
     },
+    "employerDetailsReminderCount": {
+      "type": "integer",
+      "min": 0,
+      "default": 0,
+      "required": true
+    },
+    "lastEmployerDetailsReminderSentAt": {
+      "type": "datetime"
+    },
     "locationType": {
       "type": "enumeration",
       "enum": [

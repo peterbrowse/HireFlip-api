@@ -412,6 +412,12 @@ const getIntegerEnv = (key: string, fallback: number) => {
   return Number.isFinite(value) && value > 0 ? value : fallback;
 };
 
+const positiveIntegerValue = (value: unknown, fallback = 0) => {
+  const parsed = Number(value);
+
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+};
+
 const profileImageFormats = ['webp', 'avif'] as const;
 
 const getEmployerProfileImageFormat = () => {
@@ -639,6 +645,24 @@ const formatDateTime = (value?: string | null) => {
     day: '2-digit',
     hour: '2-digit',
     minute: '2-digit',
+    month: 'short',
+    year: 'numeric',
+  }).format(new Date(timestamp));
+};
+
+const formatDate = (value?: string | null) => {
+  if (!value) {
+    return 'Not recorded';
+  }
+
+  const timestamp = Date.parse(value);
+
+  if (Number.isNaN(timestamp)) {
+    return 'Not recorded';
+  }
+
+  return new Intl.DateTimeFormat('en-GB', {
+    day: 'numeric',
     month: 'short',
     year: 'numeric',
   }).format(new Date(timestamp));
@@ -1036,6 +1060,109 @@ const publicRegionCommitment = (commitment: DocumentRecord) => {
     region: region ? publicClassAreaOption(region) : null,
     state: commitment.commitmentState || 'active',
     volume: commitment.interviewCommitmentVolume || null,
+  };
+};
+
+const cadenceWindow = (cadence?: string | null, now = new Date()) => {
+  const cadenceValue = String(cadence || '').toLowerCase();
+  const months = cadenceValue === 'annually' ? 12 : cadenceValue === 'biannually' ? 6 : 3;
+  const currentMonth = now.getUTCMonth();
+  const startMonth = Math.floor(currentMonth / months) * months;
+  const start = new Date(Date.UTC(now.getUTCFullYear(), startMonth, 1, 0, 0, 0, 0));
+  const end = new Date(Date.UTC(now.getUTCFullYear(), startMonth + months, 0, 23, 59, 59, 999));
+  const startIso = start.toISOString();
+  const endIso = end.toISOString();
+
+  return {
+    end: endIso,
+    endLabel: formatDate(endIso),
+    label: `${formatDate(startIso)} - ${formatDate(endIso)}`,
+    start: startIso,
+    startLabel: formatDate(startIso),
+  };
+};
+
+const commitmentCapacity = (employer?: DocumentRecord | null) => {
+  const commitments = activeRegionCommitments(employer);
+
+  if (employer?.commitmentMode === 'per_region' && commitments.length > 0) {
+    return commitments.reduce(
+      (total, commitment) => total + positiveIntegerValue(commitment.interviewCommitmentVolume),
+      0
+    );
+  }
+
+  return positiveIntegerValue(employer?.interviewCommitmentVolume);
+};
+
+const buildCommitmentWindowSummary = ({
+  capacityClaims,
+  completedInterviews,
+  employer,
+  scheduledInterviews,
+}: {
+  capacityClaims: DocumentRecord[];
+  completedInterviews: DocumentRecord[];
+  employer?: DocumentRecord | null;
+  scheduledInterviews: DocumentRecord[];
+}) => {
+  const commitments = activeRegionCommitments(employer);
+  const committed = commitmentCapacity(employer);
+  const claimed = capacityClaims.reduce(
+    (total, claim) => total + positiveIntegerValue(claim.claimCount, 1),
+    0
+  );
+  const scheduled = scheduledInterviews.length;
+  const completed = completedInterviews.length;
+  const cadence =
+    employer?.interviewCommitmentCadence ||
+    commitments.find((commitment) => commitment.interviewCommitmentCadence)?.interviewCommitmentCadence ||
+    'not_set';
+  const window = cadenceWindow(String(cadence));
+  const claimsByRegion = capacityClaims.reduce((map, claim) => {
+    const regionDocumentId = getDocumentId(documentRecordValue(claim.region));
+
+    if (!regionDocumentId) {
+      return map;
+    }
+
+    map.set(regionDocumentId, (map.get(regionDocumentId) || 0) + positiveIntegerValue(claim.claimCount, 1));
+    return map;
+  }, new Map<string, number>());
+  const regionBreakdown =
+    employer?.commitmentMode === 'per_region'
+      ? commitments
+          .map((commitment) => {
+            const region = documentRecordValue(commitment.region);
+            const regionDocumentId = getDocumentId(region);
+            const regionCommitted = positiveIntegerValue(commitment.interviewCommitmentVolume);
+            const regionClaimed = regionDocumentId ? claimsByRegion.get(regionDocumentId) || 0 : 0;
+            const regionLabel =
+              (region ? publicClassAreaOption(region).label : null) || 'Region not recorded';
+
+            return {
+              claimed: regionClaimed,
+              committed: regionCommitted,
+              label: regionLabel,
+              remaining: Math.max(0, regionCommitted - regionClaimed),
+            };
+          })
+          .filter((region) => region.committed > 0 || region.claimed > 0)
+      : [];
+
+  return {
+    cadenceLabel: humanize(String(cadence || 'not_set')),
+    claimed,
+    committed,
+    completed,
+    regionBreakdown,
+    remaining: Math.max(0, committed - claimed - scheduled - completed),
+    scheduled,
+    windowEnd: window.end,
+    windowEndLabel: window.endLabel,
+    windowLabel: window.label,
+    windowStart: window.start,
+    windowStartLabel: window.startLabel,
   };
 };
 
@@ -3934,9 +4061,10 @@ export default ({ strapi }) => ({
     const feedbackDue = completedInterviews.filter(
       (interview) => !feedbackInterviewIds.has(getDocumentId(interview) || '')
     );
+    const account = await accountPayload(strapi, contact);
 
     return {
-      account: await accountPayload(strapi, contact),
+      account,
       availabilityRequests: capacityClaims.map(availabilityRequestPayload),
       feedbackRequests: feedbackDue.map(feedbackPayload),
       generatedAt: new Date().toISOString(),
@@ -3944,6 +4072,12 @@ export default ({ strapi }) => ({
       progressionRequests: progressionRequests.map(progressionPayload),
       summary: {
         availableSlots: availableSlots.length,
+        commitmentWindow: buildCommitmentWindowSummary({
+          capacityClaims,
+          completedInterviews,
+          employer: contact.employer,
+          scheduledInterviews,
+        }),
         feedbackDue: feedbackDue.length,
         interviewsScheduled: scheduledInterviews.length,
         progressionRequests: progressionRequests.length,
