@@ -58,6 +58,54 @@
     "nextStep": {
       "type": "text"
     },
+    "previousTakeawayAssessment": {
+      "type": "text"
+    },
+    "candidateReportState": {
+      "type": "enumeration",
+      "enum": [
+        "pending",
+        "generated",
+        "failed",
+        "approved",
+        "manually_edited"
+      ],
+      "default": "pending",
+      "required": true
+    },
+    "candidateReportIntro": {
+      "type": "text"
+    },
+    "candidateReportStrengths": {
+      "type": "text"
+    },
+    "candidateReportImprovements": {
+      "type": "text"
+    },
+    "candidateReportConclusion": {
+      "type": "text"
+    },
+    "candidateReportTakeaways": {
+      "type": "json"
+    },
+    "candidateReportGeneratedAt": {
+      "type": "datetime"
+    },
+    "candidateReportVisibleAt": {
+      "type": "datetime"
+    },
+    "aiProvider": {
+      "type": "string"
+    },
+    "aiModel": {
+      "type": "string"
+    },
+    "aiPromptVersion": {
+      "type": "string"
+    },
+    "aiMetadata": {
+      "type": "json"
+    },
     "submittedAt": {
       "type": "datetime"
     },

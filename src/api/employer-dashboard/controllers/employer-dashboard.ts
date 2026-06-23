@@ -13,6 +13,7 @@ type EmployerDashboardService = {
   createInterviewSlotOffer(input: unknown, context: RequestContext): Promise<unknown>;
   declineCapacityClaim(input: unknown, context: RequestContext): Promise<unknown>;
   getCapacityClaim(input: unknown, context: RequestContext): Promise<unknown>;
+  getInterviewFeedbackDetail(input: unknown, context: RequestContext): Promise<unknown>;
   getInterviewDetail(input: unknown, context: RequestContext): Promise<unknown>;
   getOnboarding(input: unknown, context: RequestContext): Promise<unknown>;
   getOverview(input: unknown, context: RequestContext): Promise<unknown>;
@@ -21,6 +22,7 @@ type EmployerDashboardService = {
   updateProfile(input: unknown, context: RequestContext): Promise<unknown>;
   updateProfileImage(input: unknown, file: unknown, context: RequestContext): Promise<unknown>;
   updateSettings(input: unknown, context: RequestContext): Promise<unknown>;
+  submitInterviewFeedback(input: unknown, context: RequestContext): Promise<unknown>;
   validateInvite(input: unknown, context: RequestContext): Promise<unknown>;
 };
 
@@ -77,6 +79,24 @@ export default ({ strapi }) => ({
 	  async updateInterviewSetup(ctx) {
     ctx.body = {
       data: await employerDashboardService(strapi).updateInterviewSetup(
+        ctx.request.body,
+        getRequestContext(ctx)
+      ),
+    };
+	  },
+
+	  async interviewFeedbackDetail(ctx) {
+    ctx.body = {
+      data: await employerDashboardService(strapi).getInterviewFeedbackDetail(
+        ctx.request.body,
+        getRequestContext(ctx)
+      ),
+    };
+	  },
+
+	  async submitInterviewFeedback(ctx) {
+    ctx.body = {
+      data: await employerDashboardService(strapi).submitInterviewFeedback(
         ctx.request.body,
         getRequestContext(ctx)
       ),

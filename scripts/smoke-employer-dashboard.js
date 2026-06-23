@@ -1486,21 +1486,32 @@ const main = async () => {
       'Expected one progression request.'
     );
 
-    const feedback = await documents(strapi, 'api::interview-feedback.interview-feedback').create({
-      data: {
-        interview: connect(interview),
-        nextStep: 'Progress internally.',
-        notes: 'Smoke employer feedback.',
-        outcome: 'progressing',
-        rating: 5,
-        submittedAt: new Date().toISOString(),
-        submittedById: slotEmployerContact.documentId,
-        submittedByType: 'employer_contact',
-      },
-      populate: ['interview'],
+    const feedbackDetail = await employerDashboardService.getInterviewFeedbackDetail({
+      email: slotEmployerContact.email,
+      interviewDocumentId: interview.documentId,
     });
 
-    created.feedback = feedback;
+    assert(feedbackDetail.feedback === null, 'Expected no feedback before submission.');
+    assert(feedbackDetail.rules.rawFeedbackCandidateVisible === false, 'Expected raw feedback to stay internal.');
+
+    const feedbackResult = await employerDashboardService.submitInterviewFeedback({
+      concerns: 'Needs to give more specific examples.',
+      email: slotEmployerContact.email,
+      interviewDocumentId: interview.documentId,
+      nextStep: 'Progress internally.',
+      notes: 'Smoke employer feedback.',
+      outcome: 'progressing',
+      rating: 5,
+      strengths: 'Clear communication and strong preparation.',
+    });
+
+    assert(feedbackResult.feedback?.candidateReport?.state === 'pending', 'Expected candidate report to be pending.');
+    assert(
+      feedbackResult.feedback?.candidateReport?.intro === null,
+      'Expected raw feedback not to be exposed as candidate report copy.'
+    );
+
+    created.feedback = feedbackResult.feedback;
 
     const overviewAfterFeedback = await employerDashboardService.getOverview({
       email: slotEmployerContact.email,

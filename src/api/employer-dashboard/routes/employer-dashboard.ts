@@ -151,5 +151,23 @@ export default {
         policies: [employerDashboardServicePolicy],
       },
     },
+    {
+      method: 'POST',
+      path: '/internal/employer-dashboard/feedback/detail',
+      handler: 'employer-dashboard.interviewFeedbackDetail',
+      config: {
+        auth: false,
+        policies: [employerDashboardServicePolicy],
+      },
+    },
+    {
+      method: 'POST',
+      path: '/internal/employer-dashboard/feedback/submit',
+      handler: 'employer-dashboard.submitInterviewFeedback',
+      config: {
+        auth: false,
+        policies: [employerDashboardServicePolicy],
+      },
+    },
   ],
 };

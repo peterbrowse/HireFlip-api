@@ -241,6 +241,35 @@ const interviewSetupSchema = identitySchema
   })
   .strict();
 
+const interviewFeedbackOutcomeSchema = z.enum([
+  'positive',
+  'neutral',
+  'negative',
+  'progressing',
+  'not_progressing',
+  'offer_expected',
+  'unknown',
+]);
+
+const interviewFeedbackDetailSchema = identitySchema
+  .extend({
+    interviewDocumentId: z.string().trim().min(1).max(120),
+  })
+  .strict();
+
+const submitInterviewFeedbackSchema = identitySchema
+  .extend({
+    concerns: z.string().trim().min(1).max(4000),
+    interviewDocumentId: z.string().trim().min(1).max(120),
+    nextStep: z.string().trim().min(1).max(4000),
+    notes: z.string().trim().min(1).max(4000),
+    outcome: interviewFeedbackOutcomeSchema,
+    previousTakeawayAssessment: z.string().trim().max(4000).optional().transform((value) => value || undefined),
+    rating: z.number().int().min(1).max(5),
+    strengths: z.string().trim().min(1).max(4000),
+  })
+  .strict();
+
 const capacityClaimDetailSchema = identitySchema
   .extend({
     capacityClaimDocumentId: z.string().trim().min(1).max(120),
@@ -339,8 +368,10 @@ const validateIdentity = validateZodSchema(identitySchema);
 const validateCompleteOnboarding = validateZodSchema(completeOnboardingSchema);
 const validateCapacityClaimDetail = validateZodSchema(capacityClaimDetailSchema);
 const validateCreateInterviewSlotOffer = validateZodSchema(createInterviewSlotOfferSchema);
+const validateInterviewFeedbackDetail = validateZodSchema(interviewFeedbackDetailSchema);
 const validateInterviewDetail = validateZodSchema(interviewDetailSchema);
 const validateInterviewSetup = validateZodSchema(interviewSetupSchema);
+const validateSubmitInterviewFeedback = validateZodSchema(submitInterviewFeedbackSchema);
 const validateDeclineCapacityClaim = validateZodSchema(declineCapacityClaimSchema);
 const validateInviteTeamContact = validateZodSchema(inviteTeamContactSchema);
 const validateInviteToken = validateZodSchema(inviteTokenSchema);
@@ -2410,6 +2441,134 @@ const feedbackPayload = (interview: DocumentRecord) => ({
   statusLabel: 'Awaiting employer feedback',
 });
 
+const candidateReportVisibleStates = new Set(['generated', 'approved', 'manually_edited']);
+
+const normalizeTakeaways = (value: unknown) =>
+  (Array.isArray(value) ? value : [])
+    .map((item) => (typeof item === 'string' ? item.trim() : ''))
+    .filter(Boolean)
+    .slice(0, 3);
+
+const employerFeedbackPayload = (feedback?: DocumentRecord | null) => {
+  if (!feedback) {
+    return null;
+  }
+
+  const reportState = String(feedback.candidateReportState || 'pending');
+  const reportVisible = candidateReportVisibleStates.has(reportState);
+
+  return {
+    candidateReport: {
+      conclusion: reportVisible ? feedback.candidateReportConclusion || null : null,
+      generatedAt: reportVisible ? feedback.candidateReportGeneratedAt || null : null,
+      improvements: reportVisible ? feedback.candidateReportImprovements || null : null,
+      intro: reportVisible ? feedback.candidateReportIntro || null : null,
+      state: reportState,
+      strengths: reportVisible ? feedback.candidateReportStrengths || null : null,
+      takeaways: reportVisible ? normalizeTakeaways(feedback.candidateReportTakeaways) : [],
+      visibleAt: reportVisible ? feedback.candidateReportVisibleAt || null : null,
+    },
+    concerns: feedback.concerns || null,
+    documentId: getDocumentId(feedback) || String(feedback.id || ''),
+    nextStep: feedback.nextStep || null,
+    notes: feedback.notes || null,
+    outcome: feedback.outcome || 'unknown',
+    previousTakeawayAssessment: feedback.previousTakeawayAssessment || null,
+    rating: typeof feedback.rating === 'number' ? feedback.rating : null,
+    strengths: feedback.strengths || null,
+    submittedAt: feedback.submittedAt || feedback.createdAt || null,
+    submittedById: feedback.submittedById || null,
+    submittedByType: feedback.submittedByType || null,
+  };
+};
+
+const findEmployerFeedbackForInterview = async (
+  strapi: StrapiDocumentService,
+  interviewDocumentId: string
+) => {
+  const feedbackRecords = await documents(strapi, 'api::interview-feedback.interview-feedback').findMany({
+    filters: {
+      interview: {
+        documentId: interviewDocumentId,
+      },
+      submittedByType: 'employer_contact',
+    },
+    limit: 1,
+    populate: ['interview'],
+    sort: ['submittedAt:desc', 'createdAt:desc'],
+  });
+
+  return feedbackRecords[0] || null;
+};
+
+const findPreviousCandidateReportTakeaways = async (
+  strapi: StrapiDocumentService,
+  interview: DocumentRecord
+) => {
+  const candidateDocumentId = getDocumentId(interview.candidate);
+  const enrollmentDocumentId = getDocumentId(interview.enrollment);
+
+  if (!candidateDocumentId || !enrollmentDocumentId) {
+    return [];
+  }
+
+  const currentStartTime = String(interview.scheduledStartTime || interview.completedAt || '');
+  const previousInterviews = await documents(strapi, 'api::interview.interview').findMany({
+    filters: {
+      candidate: {
+        documentId: candidateDocumentId,
+      },
+      enrollment: {
+        documentId: enrollmentDocumentId,
+      },
+      interviewState: 'completed',
+      ...(currentStartTime
+        ? {
+            scheduledStartTime: {
+              $lt: currentStartTime,
+            },
+          }
+        : {}),
+    },
+    limit: 10,
+    sort: ['scheduledStartTime:desc', 'completedAt:desc', 'createdAt:desc'],
+  });
+  const previousInterviewIds = previousInterviews
+    .map((record) => getDocumentId(record))
+    .filter((documentId): documentId is string => Boolean(documentId));
+
+  if (!previousInterviewIds.length) {
+    return [];
+  }
+
+  const feedbackRecords = await documents(strapi, 'api::interview-feedback.interview-feedback').findMany({
+    filters: {
+      candidateReportState: {
+        $in: Array.from(candidateReportVisibleStates),
+      },
+      interview: {
+        documentId: {
+          $in: previousInterviewIds,
+        },
+      },
+      submittedByType: 'employer_contact',
+    },
+    limit: 10,
+    populate: ['interview'],
+    sort: ['candidateReportVisibleAt:desc', 'candidateReportGeneratedAt:desc', 'submittedAt:desc'],
+  });
+
+  for (const feedback of feedbackRecords) {
+    const takeaways = normalizeTakeaways(feedback.candidateReportTakeaways);
+
+    if (takeaways.length) {
+      return takeaways;
+    }
+  }
+
+  return [];
+};
+
 const progressionPayload = (offer: DocumentRecord) => ({
   candidateName: candidateDisplayName(offer.candidate),
   documentId: getDocumentId(offer) || String(offer.id || ''),
@@ -2823,6 +2982,48 @@ const interviewDetailPayload = async (
       statusLabel: humanize(String(interview.interviewState || 'awaiting_employer_details')),
     },
     generatedAt: new Date().toISOString(),
+  };
+};
+
+const interviewFeedbackDetailPayload = async (
+  strapi: StrapiDocumentService,
+  interview: DocumentRecord,
+  contact: DocumentRecord,
+  feedback?: DocumentRecord | null
+) => {
+  const slot = documentRecordValue(interview.interviewSlot);
+  const previousTakeaways = await findPreviousCandidateReportTakeaways(strapi, interview);
+
+  return {
+    account: await accountPayload(strapi, contact),
+    feedback: employerFeedbackPayload(feedback),
+    generatedAt: new Date().toISOString(),
+    interview: {
+      candidateEmail: interview.candidate?.email || null,
+      candidateName: candidateDisplayName(interview.candidate),
+      completedAt: interview.completedAt || null,
+      completedAtLabel: formatDateTime(interview.completedAt),
+      documentId: getDocumentId(interview) || String(interview.id || ''),
+      employerContactName: interview.employerContact
+        ? contactDisplayName(documentRecordValue(interview.employerContact) || {})
+        : null,
+      locationLabel: locationLabel({
+        locationDetails: interview.locationDetails || slot?.locationDetails,
+        locationType: interview.locationType || slot?.locationType || 'to_be_confirmed',
+        meetingUrl: interview.meetingUrl || slot?.meetingUrl,
+      } as DocumentRecord),
+      scheduledEndTime: interview.scheduledEndTime || slot?.endTime || null,
+      scheduledEndTimeLabel: formatDateTime(interview.scheduledEndTime || slot?.endTime),
+      scheduledStartTime: interview.scheduledStartTime || slot?.startTime || null,
+      scheduledStartTimeLabel: formatDateTime(interview.scheduledStartTime || slot?.startTime),
+      state: interview.interviewState || 'completed',
+      statusLabel: humanize(String(interview.interviewState || 'completed')),
+    },
+    previousTakeaways,
+    rules: {
+      previousTakeawayAssessmentRequired: previousTakeaways.length > 0,
+      rawFeedbackCandidateVisible: false,
+    },
   };
 };
 
@@ -4083,6 +4284,104 @@ export default ({ strapi }) => ({
         progressionRequests: progressionRequests.length,
       },
     };
+  },
+
+  async getInterviewFeedbackDetail(input: unknown) {
+    const body = validateInterviewFeedbackDetail(input);
+    const contact = await findEmployerContact(strapi, body);
+    const interview = await findScopedInterview(strapi, contact, body.interviewDocumentId);
+    const interviewDocumentId = getDocumentId(interview);
+
+    if (String(interview.interviewState || '') !== 'completed') {
+      throw new ValidationError('Feedback can only be submitted after the interview is completed.');
+    }
+
+    if (!interviewDocumentId) {
+      throw new ValidationError('Interview could not be found.');
+    }
+
+    const feedback = await findEmployerFeedbackForInterview(strapi, interviewDocumentId);
+
+    return interviewFeedbackDetailPayload(strapi, interview, contact, feedback);
+  },
+
+  async submitInterviewFeedback(input: unknown, requestContext: RequestContext = {}) {
+    const body = validateSubmitInterviewFeedback(input);
+    const contact = await findEmployerContact(strapi, body);
+    const interview = await findScopedInterview(strapi, contact, body.interviewDocumentId);
+    const interviewDocumentId = getDocumentId(interview);
+    const contactDocumentId = getDocumentId(contact);
+
+    if (String(interview.interviewState || '') !== 'completed') {
+      throw new ValidationError('Feedback can only be submitted after the interview is completed.');
+    }
+
+    if (!interviewDocumentId || !contactDocumentId) {
+      throw new ValidationError('Interview feedback could not be submitted.');
+    }
+
+    const previousTakeaways = await findPreviousCandidateReportTakeaways(strapi, interview);
+
+    if (previousTakeaways.length && !body.previousTakeawayAssessment) {
+      throw new ValidationError('Review how the candidate performed against the previous feedback points.');
+    }
+
+    const existingFeedback = await findEmployerFeedbackForInterview(strapi, interviewDocumentId);
+
+    if (existingFeedback) {
+      throw new ValidationError('Employer feedback has already been submitted for this interview.');
+    }
+
+    const now = new Date().toISOString();
+    const feedback = await documents(strapi, 'api::interview-feedback.interview-feedback').create({
+      data: {
+        candidateReportState: 'pending',
+        concerns: body.concerns,
+        interview: relationConnect(interview),
+        metadata: {
+          previousTakeawaysReviewed: previousTakeaways,
+          rawFeedbackCandidateVisible: false,
+          requestId: requestContext.requestId,
+          source: 'employer_dashboard',
+        },
+        nextStep: body.nextStep,
+        notes: body.notes,
+        outcome: body.outcome,
+        previousTakeawayAssessment: body.previousTakeawayAssessment || null,
+        rating: body.rating,
+        strengths: body.strengths,
+        submittedAt: now,
+        submittedById: contactDocumentId,
+        submittedByType: 'employer_contact',
+      },
+      populate: ['interview'],
+    });
+
+    await auditEvents(strapi).record({
+      actorDisplayName: contactDisplayName(contact),
+      actorId: contactDocumentId,
+      actorType: 'employer_contact',
+      eventCategory: 'interview',
+      eventType: 'employer.interview_feedback_submitted',
+      ipAddress: requestContext.ipAddress,
+      metadata: {
+        candidateReportState: 'pending',
+        interviewDocumentId,
+        previousTakeawayAssessmentProvided: Boolean(body.previousTakeawayAssessment),
+        previousTakeawaysCount: previousTakeaways.length,
+        requestId: requestContext.requestId,
+      },
+      requestId: requestContext.requestId,
+      serviceName: requestContext.serviceName,
+      severity: 'info',
+      source: 'employer_dashboard',
+      subjectDisplayName: candidateDisplayName(interview.candidate),
+      subjectId: interviewDocumentId,
+      subjectType: 'interview',
+      userAgent: requestContext.userAgent,
+    });
+
+    return interviewFeedbackDetailPayload(strapi, interview, contact, feedback);
   },
 
   async getInterviewDetail(input: unknown) {

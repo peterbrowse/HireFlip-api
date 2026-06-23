@@ -64,6 +64,14 @@ type DocumentRecord = Record<string, unknown> & {
   candidateRespondedAt?: string;
   candidateState?: string;
   candidateEmail?: string;
+  candidateReportConclusion?: string;
+  candidateReportGeneratedAt?: string;
+  candidateReportImprovements?: string;
+  candidateReportIntro?: string;
+  candidateReportState?: string;
+  candidateReportStrengths?: string;
+  candidateReportTakeaways?: unknown;
+  candidateReportVisibleAt?: string;
   candidateWarningSentAt?: string;
   candidateWarningState?: string;
   capacity?: number;
@@ -2550,6 +2558,35 @@ const employerContactDisplayName = (contact?: DocumentRecord | null) =>
   contact?.email ||
   null;
 
+const candidateReportVisibleStates = new Set(['generated', 'approved', 'manually_edited']);
+
+const normalizeCandidateReportTakeaways = (value: unknown) =>
+  (Array.isArray(value) ? value : [])
+    .map((item) => (typeof item === 'string' ? item.trim() : ''))
+    .filter(Boolean)
+    .slice(0, 3);
+
+const sanitizeCandidateFeedbackReport = (feedback?: DocumentRecord | null) => {
+  if (!feedback) {
+    return null;
+  }
+
+  const state = String(feedback.candidateReportState || 'pending');
+  const visible = candidateReportVisibleStates.has(state);
+
+  return {
+    conclusion: visible ? feedback.candidateReportConclusion || null : null,
+    generatedAt: visible ? feedback.candidateReportGeneratedAt || null : null,
+    improvements: visible ? feedback.candidateReportImprovements || null : null,
+    intro: visible ? feedback.candidateReportIntro || null : null,
+    state,
+    strengths: visible ? feedback.candidateReportStrengths || null : null,
+    submittedAt: feedback.submittedAt || feedback.createdAt || null,
+    takeaways: visible ? normalizeCandidateReportTakeaways(feedback.candidateReportTakeaways) : [],
+    visibleAt: visible ? feedback.candidateReportVisibleAt || null : null,
+  };
+};
+
 const sanitizeCandidateInterviewSlot = (slot?: DocumentRecord | null, revealDetails = false) => {
   if (!slot) {
     return null;
@@ -2567,12 +2604,15 @@ const sanitizeCandidateInterviewSlot = (slot?: DocumentRecord | null, revealDeta
   };
 };
 
-const sanitizeCandidateInterviewRecord = (interview?: DocumentRecord | null) => {
+const sanitizeCandidateInterviewRecord = (
+  interview?: DocumentRecord | null,
+  feedback?: DocumentRecord | null
+) => {
   if (!interview) {
     return null;
   }
 
-  const detailsVisible = String(interview.interviewState || '') === 'confirmed';
+  const detailsVisible = ['confirmed', 'completed'].includes(String(interview.interviewState || ''));
   const employerContact = documentRecordValue(interview.employerContact);
 
   return {
@@ -2591,15 +2631,25 @@ const sanitizeCandidateInterviewRecord = (interview?: DocumentRecord | null) => 
     scheduledEndTime: interview.scheduledEndTime,
     scheduledStartTime: interview.scheduledStartTime,
     state: interview.interviewState || 'awaiting_employer_details',
+    feedbackReport: sanitizeCandidateFeedbackReport(feedback),
   };
 };
 
-const sanitizeCandidateInterviewSlotOffer = (offer?: DocumentRecord | null) => {
+const sanitizeCandidateInterviewSlotOffer = (
+  offer?: DocumentRecord | null,
+  feedbackByInterviewId = new Map<string, DocumentRecord>()
+) => {
   if (!offer) {
     return null;
   }
 
-  const selectedInterview = sanitizeCandidateInterviewRecord(documentRecordValue(offer.selectedInterview));
+  const selectedInterviewRecord = documentRecordValue(offer.selectedInterview);
+  const selectedInterviewDocumentId =
+    typeof selectedInterviewRecord?.documentId === 'string' ? selectedInterviewRecord.documentId : null;
+  const selectedInterview = sanitizeCandidateInterviewRecord(
+    selectedInterviewRecord,
+    selectedInterviewDocumentId ? feedbackByInterviewId.get(selectedInterviewDocumentId) : null
+  );
   const detailsVisible = selectedInterview?.detailsPending === false;
   const employer = documentRecordValue(offer.employer);
   const selectedSlot = documentRecordValue(offer.selectedSlot);
@@ -2664,6 +2714,41 @@ const findCandidateInterviewSlotOffers = async (
     populate: candidateInterviewSlotOfferPopulate,
     sort: ['candidateResponseDeadline:asc', 'createdAt:desc'],
   });
+
+const findCandidateFeedbackReportsByInterviewId = async (
+  strapi: StrapiDocumentService,
+  interviewDocumentIds: string[]
+) => {
+  if (!interviewDocumentIds.length) {
+    return new Map<string, DocumentRecord>();
+  }
+
+  const feedbackRecords = await documents(strapi, 'api::interview-feedback.interview-feedback').findMany({
+    filters: {
+      interview: {
+        documentId: {
+          $in: interviewDocumentIds,
+        },
+      },
+      submittedByType: 'employer_contact',
+    },
+    limit: 100,
+    populate: ['interview'],
+    sort: ['candidateReportVisibleAt:desc', 'candidateReportGeneratedAt:desc', 'submittedAt:desc'],
+  });
+  const feedbackByInterviewId = new Map<string, DocumentRecord>();
+
+  feedbackRecords.forEach((feedback) => {
+    const interview = documentRecordValue(feedback.interview);
+    const interviewDocumentId = typeof interview?.documentId === 'string' ? interview.documentId : null;
+
+    if (interviewDocumentId && !feedbackByInterviewId.has(interviewDocumentId)) {
+      feedbackByInterviewId.set(interviewDocumentId, feedback);
+    }
+  });
+
+  return feedbackByInterviewId;
+};
 
 const hasPriorCandidateSlotWarning = async (
   strapi: StrapiDocumentService,
@@ -6392,15 +6477,25 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       }
     }
 
+    const selectedInterviewDocumentIds = resolvedOffers
+      .map((offer) => documentRecordValue(offer.selectedInterview)?.documentId)
+      .filter((documentId): documentId is string => Boolean(documentId));
+    const feedbackByInterviewId = await findCandidateFeedbackReportsByInterviewId(
+      strapi,
+      selectedInterviewDocumentIds
+    );
     const sanitizedOffers = resolvedOffers
-      .map(sanitizeCandidateInterviewSlotOffer)
+      .map((offer) => sanitizeCandidateInterviewSlotOffer(offer, feedbackByInterviewId))
       .filter((offer): offer is NonNullable<typeof offer> => Boolean(offer));
     const activeOffer =
       sanitizedOffers.find((offer) => openInterviewSlotOfferStates.has(String(offer.offerState || ''))) ||
       sanitizedOffers.find(
         (offer) =>
           offer.offerState === 'candidate_selected' &&
-          Boolean(offer.selectedInterview)
+          Boolean(offer.selectedInterview) &&
+          !['completed', 'candidate_no_show', 'candidate_declined', 'employer_cancelled', 'cancelled'].includes(
+            String(offer.selectedInterview?.state || '')
+          )
       ) ||
       null;
 
