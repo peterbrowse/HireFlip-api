@@ -21,10 +21,16 @@
       "enum": [
         "candidate",
         "employer_contact",
+        "external_interviewer",
         "admin",
         "system"
       ],
       "required": true
+    },
+    "feedbackInvite": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::interview-feedback-invite.interview-feedback-invite"
     },
     "submittedById": {
       "type": "string"

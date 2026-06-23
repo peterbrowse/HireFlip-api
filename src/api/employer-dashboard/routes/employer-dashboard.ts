@@ -169,5 +169,41 @@ export default {
         policies: [employerDashboardServicePolicy],
       },
     },
+    {
+      method: 'POST',
+      path: '/internal/employer-dashboard/feedback/invites/create',
+      handler: 'employer-dashboard.inviteInterviewFeedbackContributor',
+      config: {
+        auth: false,
+        policies: [employerDashboardServicePolicy],
+      },
+    },
+    {
+      method: 'POST',
+      path: '/internal/employer-dashboard/feedback/invites/revoke',
+      handler: 'employer-dashboard.revokeInterviewFeedbackInvite',
+      config: {
+        auth: false,
+        policies: [employerDashboardServicePolicy],
+      },
+    },
+    {
+      method: 'POST',
+      path: '/internal/employer-dashboard/feedback/invites/validate',
+      handler: 'employer-dashboard.validateInterviewFeedbackInvite',
+      config: {
+        auth: false,
+        policies: [employerDashboardServicePolicy],
+      },
+    },
+    {
+      method: 'POST',
+      path: '/internal/employer-dashboard/feedback/invites/submit',
+      handler: 'employer-dashboard.submitInvitedInterviewFeedback',
+      config: {
+        auth: false,
+        policies: [employerDashboardServicePolicy],
+      },
+    },
   ],
 };

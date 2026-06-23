@@ -10,6 +10,7 @@ type EmployerDashboardService = {
   acceptPendingInvite(input: unknown, context: RequestContext): Promise<unknown>;
   completeOnboarding(input: unknown, context: RequestContext): Promise<unknown>;
   createInviteSetupTicket(input: unknown, context: RequestContext): Promise<unknown>;
+  inviteInterviewFeedbackContributor(input: unknown, context: RequestContext): Promise<unknown>;
   createInterviewSlotOffer(input: unknown, context: RequestContext): Promise<unknown>;
   declineCapacityClaim(input: unknown, context: RequestContext): Promise<unknown>;
   getCapacityClaim(input: unknown, context: RequestContext): Promise<unknown>;
@@ -18,11 +19,14 @@ type EmployerDashboardService = {
   getOnboarding(input: unknown, context: RequestContext): Promise<unknown>;
   getOverview(input: unknown, context: RequestContext): Promise<unknown>;
   inviteTeamContact(input: unknown, context: RequestContext): Promise<unknown>;
+  revokeInterviewFeedbackInvite(input: unknown, context: RequestContext): Promise<unknown>;
   updateInterviewSetup(input: unknown, context: RequestContext): Promise<unknown>;
   updateProfile(input: unknown, context: RequestContext): Promise<unknown>;
   updateProfileImage(input: unknown, file: unknown, context: RequestContext): Promise<unknown>;
   updateSettings(input: unknown, context: RequestContext): Promise<unknown>;
   submitInterviewFeedback(input: unknown, context: RequestContext): Promise<unknown>;
+  submitInvitedInterviewFeedback(input: unknown, context: RequestContext): Promise<unknown>;
+  validateInterviewFeedbackInvite(input: unknown, context: RequestContext): Promise<unknown>;
   validateInvite(input: unknown, context: RequestContext): Promise<unknown>;
 };
 
@@ -97,6 +101,42 @@ export default ({ strapi }) => ({
 	  async submitInterviewFeedback(ctx) {
     ctx.body = {
       data: await employerDashboardService(strapi).submitInterviewFeedback(
+        ctx.request.body,
+        getRequestContext(ctx)
+      ),
+    };
+	  },
+
+	  async inviteInterviewFeedbackContributor(ctx) {
+    ctx.body = {
+      data: await employerDashboardService(strapi).inviteInterviewFeedbackContributor(
+        ctx.request.body,
+        getRequestContext(ctx)
+      ),
+    };
+	  },
+
+	  async revokeInterviewFeedbackInvite(ctx) {
+    ctx.body = {
+      data: await employerDashboardService(strapi).revokeInterviewFeedbackInvite(
+        ctx.request.body,
+        getRequestContext(ctx)
+      ),
+    };
+	  },
+
+	  async validateInterviewFeedbackInvite(ctx) {
+    ctx.body = {
+      data: await employerDashboardService(strapi).validateInterviewFeedbackInvite(
+        ctx.request.body,
+        getRequestContext(ctx)
+      ),
+    };
+	  },
+
+	  async submitInvitedInterviewFeedback(ctx) {
+    ctx.body = {
+      data: await employerDashboardService(strapi).submitInvitedInterviewFeedback(
         ctx.request.body,
         getRequestContext(ctx)
       ),

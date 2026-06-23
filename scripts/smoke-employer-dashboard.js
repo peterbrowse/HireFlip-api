@@ -392,8 +392,11 @@ const main = async () => {
 	    employerInvite: null,
 	    enrollment: null,
 	    feedback: null,
+	    feedbackInvite: null,
 	    invitedEmployer: null,
 	    invitedEmployerContact: null,
+	    invitedFeedback: null,
+	    publicFeedbackInvite: null,
 	    interview: null,
 	    interviewRequest: null,
 	    onboardingPolicyDocument: null,
@@ -1493,6 +1496,89 @@ const main = async () => {
 
     assert(feedbackDetail.feedback === null, 'Expected no feedback before submission.');
     assert(feedbackDetail.rules.rawFeedbackCandidateVisible === false, 'Expected raw feedback to stay internal.');
+    assert(
+      feedbackDetail.additionalFeedbackInvites.length === 0,
+      'Expected no additional feedback invites before creation.'
+    );
+
+    const feedbackInviteResult = await employerDashboardService.inviteInterviewFeedbackContributor({
+      email: slotEmployerContact.email,
+      interviewDocumentId: interview.documentId,
+      inviteEmail: `feedback-attendee-${runId}@example.test`,
+      inviteeName: 'Smoke Attendee',
+      inviteeRoleTitle: 'Panel interviewer',
+    });
+
+    assert(
+      feedbackInviteResult.additionalFeedbackInvites.length === 1,
+      'Expected feedback invite to be listed after creation.'
+    );
+    assert(
+      feedbackInviteResult.reportReadiness.state === 'waiting_for_primary_feedback',
+      'Expected report readiness to wait for primary feedback before primary submit.'
+    );
+
+    created.feedbackInvite = feedbackInviteResult.additionalFeedbackInvites[0];
+
+    const publicFeedbackToken = randomBytes(32).toString('base64url');
+    const publicFeedbackInvite = await documents(
+      strapi,
+      'api::interview-feedback-invite.interview-feedback-invite'
+    ).create({
+      data: {
+        createdByEmployerContact: connect(slotEmployerContact),
+        deliveryState: 'not_required',
+        employer: connect(slotEmployer),
+        expiresAt: addDays(6, 10),
+        interview: connect(interview),
+        inviteEmail: `feedback-public-${runId}@example.test`,
+        inviteState: 'pending',
+        inviteeName: 'Public Smoke',
+        inviteeRoleTitle: 'Interview observer',
+        tokenHash: createHash('sha256').update(publicFeedbackToken).digest('hex'),
+      },
+      populate: ['interview', 'employer', 'createdByEmployerContact'],
+    });
+
+    created.publicFeedbackInvite = publicFeedbackInvite;
+
+    const publicInviteValidation = await employerDashboardService.validateInterviewFeedbackInvite({
+      inviteToken: publicFeedbackToken,
+    });
+
+    assert(publicInviteValidation.invite.valid === true, 'Expected public feedback invite to validate.');
+    assert(
+      publicInviteValidation.invite.interview.candidateName,
+      'Expected public feedback invite to return interview context.'
+    );
+
+    const publicFeedbackSubmit = await employerDashboardService.submitInvitedInterviewFeedback({
+      concerns: 'Could give a shorter example before adding detail.',
+      inviteToken: publicFeedbackToken,
+      nextStep: 'Share notes with the main interviewer.',
+      notes: 'Additional panel feedback from the smoke test.',
+      outcome: 'positive',
+      rating: 4,
+      strengths: 'Prepared, engaged, and asked relevant questions.',
+      submitterName: 'Public Smoke',
+      submitterRoleTitle: 'Interview observer',
+    });
+
+    assert(publicFeedbackSubmit.submitted === true, 'Expected public feedback invite submission to succeed.');
+
+    const invitedFeedbackRecords = await documents(
+      strapi,
+      'api::interview-feedback.interview-feedback'
+    ).findMany({
+      filters: {
+        submittedById: publicFeedbackInvite.documentId,
+        submittedByType: 'external_interviewer',
+      },
+      limit: 1,
+    });
+
+    created.invitedFeedback = invitedFeedbackRecords[0];
+    assert(created.invitedFeedback, 'Expected public feedback submission to create a feedback record.');
 
     const feedbackResult = await employerDashboardService.submitInterviewFeedback({
       concerns: 'Needs to give more specific examples.',
@@ -1510,8 +1596,24 @@ const main = async () => {
       feedbackResult.feedback?.candidateReport?.intro === null,
       'Expected raw feedback not to be exposed as candidate report copy.'
     );
+    assert(
+      feedbackResult.reportReadiness.state === 'waiting_for_additional_feedback',
+      'Expected report readiness to wait for pending feedback invites.'
+    );
 
     created.feedback = feedbackResult.feedback;
+
+    const revokedInviteResult = await employerDashboardService.revokeInterviewFeedbackInvite({
+      email: slotEmployerContact.email,
+      feedbackInviteDocumentId: created.feedbackInvite.documentId,
+      interviewDocumentId: interview.documentId,
+      reason: 'Smoke cleanup.',
+    });
+
+    assert(
+      revokedInviteResult.reportReadiness.state === 'ready_for_ai',
+      'Expected report readiness to be ready after pending invite is revoked.'
+    );
 
     const overviewAfterFeedback = await employerDashboardService.getOverview({
       email: slotEmployerContact.email,
@@ -1521,7 +1623,20 @@ const main = async () => {
 
     console.log('Employer dashboard smoke passed.');
   } finally {
+    await deleteNotificationEventsForEmail(strapi, created.feedbackInvite?.inviteEmail);
+    await deleteNotificationEventsForEmail(strapi, created.publicFeedbackInvite?.inviteEmail);
+    await deleteDocument(strapi, 'api::interview-feedback.interview-feedback', created.invitedFeedback?.documentId);
     await deleteDocument(strapi, 'api::interview-feedback.interview-feedback', created.feedback?.documentId);
+    await deleteDocument(
+      strapi,
+      'api::interview-feedback-invite.interview-feedback-invite',
+      created.feedbackInvite?.documentId
+    );
+    await deleteDocument(
+      strapi,
+      'api::interview-feedback-invite.interview-feedback-invite',
+      created.publicFeedbackInvite?.documentId
+    );
     await deleteDocument(strapi, 'api::offer.offer', created.progressionRequest?.documentId);
     await deleteDocument(strapi, 'api::interview.interview', created.interview?.documentId);
 

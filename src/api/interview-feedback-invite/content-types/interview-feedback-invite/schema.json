@@ -1,0 +1,101 @@
+{
+  "kind": "collectionType",
+  "collectionName": "interview_feedback_invites",
+  "info": {
+    "singularName": "interview-feedback-invite",
+    "pluralName": "interview-feedback-invites",
+    "displayName": "Interview Feedback Invite",
+    "description": "One-time token-guarded invite for additional interview attendees to submit feedback."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "interview": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::interview.interview"
+    },
+    "employer": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::employer.employer"
+    },
+    "createdByEmployerContact": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::employer-contact.employer-contact"
+    },
+    "feedback": {
+      "type": "relation",
+      "relation": "oneToOne",
+      "target": "api::interview-feedback.interview-feedback"
+    },
+    "inviteEmail": {
+      "type": "email",
+      "maxLength": 254,
+      "required": true
+    },
+    "inviteeName": {
+      "type": "string",
+      "maxLength": 160
+    },
+    "inviteeRoleTitle": {
+      "type": "string",
+      "maxLength": 160
+    },
+    "tokenHash": {
+      "type": "string",
+      "maxLength": 128,
+      "required": true,
+      "unique": true
+    },
+    "inviteState": {
+      "type": "enumeration",
+      "enum": [
+        "pending",
+        "submitted",
+        "revoked",
+        "expired"
+      ],
+      "default": "pending",
+      "required": true
+    },
+    "deliveryState": {
+      "type": "enumeration",
+      "enum": [
+        "not_required",
+        "queued",
+        "failed"
+      ],
+      "default": "not_required",
+      "required": true
+    },
+    "deliveryFailureMessage": {
+      "type": "text"
+    },
+    "notificationServiceJobId": {
+      "type": "string",
+      "maxLength": 160
+    },
+    "expiresAt": {
+      "type": "datetime",
+      "required": true
+    },
+    "lastSentAt": {
+      "type": "datetime"
+    },
+    "submittedAt": {
+      "type": "datetime"
+    },
+    "revokedAt": {
+      "type": "datetime"
+    },
+    "revocationReason": {
+      "type": "text"
+    },
+    "metadata": {
+      "type": "json"
+    }
+  }
+}

@@ -84,11 +84,17 @@ type DocumentRecord = Record<string, unknown> & {
   interviewCoverageOverrideReason?: string;
   interviewSlot?: DocumentRecord;
   interviewState?: string;
+  inviteeName?: string;
+  inviteeRoleTitle?: string;
   lastName?: string;
+  lastSentAt?: string;
   locationDetails?: string;
   locationType?: string;
   meetingUrl?: string;
   candidateInstructions?: string;
+  deliveryFailureMessage?: string;
+  deliveryState?: string;
+  feedback?: DocumentRecord;
   offerState?: string;
   requestState?: string;
   inviteEmail?: string;
@@ -103,6 +109,8 @@ type DocumentRecord = Record<string, unknown> & {
   requestedDetailsAt?: string;
   releaseNote?: string;
   releaseReason?: string;
+  revocationReason?: string;
+  revokedAt?: string;
   roleTitle?: string;
   slug?: string;
   phone?: string;
@@ -114,6 +122,7 @@ type DocumentRecord = Record<string, unknown> & {
   slots?: DocumentRecord[];
   startTime?: string;
   submittedAt?: string;
+  notificationServiceJobId?: string;
   title?: string;
   updatedAt?: string;
   version?: string;
@@ -270,6 +279,43 @@ const submitInterviewFeedbackSchema = identitySchema
   })
   .strict();
 
+const inviteInterviewFeedbackContributorSchema = identitySchema
+  .extend({
+    interviewDocumentId: z.string().trim().min(1).max(120),
+    inviteEmail: z.string().trim().email().max(254).transform((value) => value.toLowerCase()),
+    inviteeName: z.string().trim().max(160).optional().transform((value) => value || undefined),
+    inviteeRoleTitle: z.string().trim().max(160).optional().transform((value) => value || undefined),
+  })
+  .strict();
+
+const revokeInterviewFeedbackInviteSchema = identitySchema
+  .extend({
+    feedbackInviteDocumentId: z.string().trim().min(1).max(120),
+    interviewDocumentId: z.string().trim().min(1).max(120),
+    reason: z.string().trim().max(1000).optional().transform((value) => value || undefined),
+  })
+  .strict();
+
+const feedbackInviteTokenSchema = z
+  .object({
+    inviteToken: z.string().trim().min(24).max(256),
+  })
+  .strict();
+
+const submitInvitedInterviewFeedbackSchema = feedbackInviteTokenSchema
+  .extend({
+    concerns: z.string().trim().min(1).max(4000),
+    nextStep: z.string().trim().min(1).max(4000),
+    notes: z.string().trim().min(1).max(4000),
+    outcome: interviewFeedbackOutcomeSchema,
+    previousTakeawayAssessment: z.string().trim().max(4000).optional().transform((value) => value || undefined),
+    rating: z.number().int().min(1).max(5),
+    strengths: z.string().trim().min(1).max(4000),
+    submitterName: z.string().trim().max(160).optional().transform((value) => value || undefined),
+    submitterRoleTitle: z.string().trim().max(160).optional().transform((value) => value || undefined),
+  })
+  .strict();
+
 const capacityClaimDetailSchema = identitySchema
   .extend({
     capacityClaimDocumentId: z.string().trim().min(1).max(120),
@@ -371,7 +417,11 @@ const validateCreateInterviewSlotOffer = validateZodSchema(createInterviewSlotOf
 const validateInterviewFeedbackDetail = validateZodSchema(interviewFeedbackDetailSchema);
 const validateInterviewDetail = validateZodSchema(interviewDetailSchema);
 const validateInterviewSetup = validateZodSchema(interviewSetupSchema);
+const validateInviteInterviewFeedbackContributor = validateZodSchema(inviteInterviewFeedbackContributorSchema);
+const validateFeedbackInviteToken = validateZodSchema(feedbackInviteTokenSchema);
+const validateRevokeInterviewFeedbackInvite = validateZodSchema(revokeInterviewFeedbackInviteSchema);
 const validateSubmitInterviewFeedback = validateZodSchema(submitInterviewFeedbackSchema);
+const validateSubmitInvitedInterviewFeedback = validateZodSchema(submitInvitedInterviewFeedbackSchema);
 const validateDeclineCapacityClaim = validateZodSchema(declineCapacityClaimSchema);
 const validateInviteTeamContact = validateZodSchema(inviteTeamContactSchema);
 const validateInviteToken = validateZodSchema(inviteTokenSchema);
@@ -408,6 +458,9 @@ const employerInviteUrl = (token: string) =>
 
 const employerInviteSetupUrl = (token: string) =>
   `${employerInviteUrl(token)}/setup`;
+
+const interviewFeedbackInviteUrl = (token: string) =>
+  `${employerDashboardBaseUrl()}/feedback/invite/${encodeURIComponent(token)}`;
 
 const compact = <T>(items: Array<T | false | null | undefined>) =>
   items.filter((item): item is T => Boolean(item));
@@ -794,6 +847,9 @@ const addDays = (date: Date, days: number) => {
   next.setUTCDate(next.getUTCDate() + days);
   return next;
 };
+
+const interviewFeedbackDeadline = (interview: DocumentRecord) =>
+  addDays(interview.completedAt ? new Date(interview.completedAt) : new Date(), 7).toISOString();
 
 const isWeekend = (date: Date) => {
   const day = date.getUTCDay();
@@ -1568,6 +1624,148 @@ const queueEmployerInviteEmail = async (
         notificationServiceJobId: null,
       },
       populate: invitePopulate,
+    });
+  }
+};
+
+const createInterviewFeedbackInviteNotificationEvent = async (
+  strapi: StrapiDocumentService,
+  {
+    deliveryState,
+    errorMessage,
+    eventType,
+    invite,
+    jobId,
+  }: {
+    deliveryState: 'queued' | 'failed';
+    errorMessage?: string;
+    eventType: string;
+    invite: DocumentRecord;
+    jobId?: string | number;
+  }
+) => {
+  const employerDocumentId = getDocumentId(invite.employer);
+  const inviteDocumentId = getDocumentId(invite);
+  const interviewDocumentId = getDocumentId(invite.interview);
+  const now = new Date().toISOString();
+
+  return documents(strapi, 'api::notification-event.notification-event').create({
+    data: {
+      channel: 'email',
+      deliveryState,
+      ...(deliveryState === 'failed' ? { failedAt: now } : {}),
+      errorMessage: errorMessage || null,
+      eventType,
+      ...(employerDocumentId
+        ? {
+            employer: {
+              connect: [{ documentId: employerDocumentId }],
+            },
+          }
+        : {}),
+      ...(interviewDocumentId
+        ? {
+            interview: {
+              connect: [{ documentId: interviewDocumentId }],
+            },
+          }
+        : {}),
+      metadata: {
+        notificationServiceJobId: typeof jobId === 'undefined' ? null : String(jobId),
+      },
+      priority: deliveryState === 'failed' ? 'high' : 'normal',
+      recipientEmail: invite.inviteEmail || null,
+      recipientId: inviteDocumentId || undefined,
+      recipientType: 'other',
+      relatedId: inviteDocumentId || undefined,
+      relatedType: 'interview_feedback_invite',
+      templateKey: 'employer_interview_feedback_invite',
+    },
+  });
+};
+
+const queueInterviewFeedbackInviteEmail = async (
+  strapi: StrapiDocumentService,
+  {
+    invite,
+    rawToken,
+  }: {
+    invite: DocumentRecord;
+    rawToken: string;
+  }
+) => {
+  const inviteDocumentId = getDocumentId(invite);
+  const email = String(invite.inviteEmail || '').trim().toLowerCase();
+  const now = new Date().toISOString();
+  const interview = documentRecordValue(invite.interview) || {};
+  const employer = documentRecordValue(invite.employer || interview.employer) || {};
+  const createdBy = documentRecordValue(invite.createdByEmployerContact) || {};
+
+  if (!inviteDocumentId) {
+    throw new ValidationError('Feedback invite could not be updated.');
+  }
+
+  if (!email) {
+    throw new ValidationError('Feedback invite is missing an email address.');
+  }
+
+  try {
+    const response = await requestNotificationServiceEmail({
+      correlationId: `interview-feedback-invite:${inviteDocumentId}:${Date.now()}`,
+      template: {
+        key: 'employer_interview_feedback_invite',
+        variables: {
+          candidateName: candidateDisplayName(interview.candidate),
+          companyName: employer.companyName || 'the employer',
+          createdByName: contactDisplayName(createdBy),
+          expiresAt: invite.expiresAt || undefined,
+          feedbackUrl: interviewFeedbackInviteUrl(rawToken),
+          inviteeName: invite.inviteeName || undefined,
+          interviewLabel: formatDateTime(interview.scheduledStartTime || interview.completedAt),
+        },
+      },
+      to: email,
+      type: 'employer_interview_feedback_invite',
+    });
+    const jobId = response.data?.jobId;
+
+    await createInterviewFeedbackInviteNotificationEvent(strapi, {
+      deliveryState: 'queued',
+      eventType: 'employer_interview_feedback_invite',
+      invite,
+      jobId,
+    });
+
+    return documents(strapi, 'api::interview-feedback-invite.interview-feedback-invite').update({
+      documentId: inviteDocumentId,
+      data: {
+        deliveryFailureMessage: null,
+        deliveryState: 'queued',
+        lastSentAt: now,
+        notificationServiceJobId: typeof jobId === 'undefined' ? null : String(jobId),
+      },
+      populate: feedbackInvitePopulate,
+    });
+  } catch (error) {
+    const errorMessage =
+      error instanceof Error ? error.message : 'Feedback invite notification could not be queued.';
+
+    await createInterviewFeedbackInviteNotificationEvent(strapi, {
+      deliveryState: 'failed',
+      errorMessage,
+      eventType: 'employer_interview_feedback_invite',
+      invite,
+    });
+
+    return documents(strapi, 'api::interview-feedback-invite.interview-feedback-invite').update({
+      documentId: inviteDocumentId,
+      data: {
+        deliveryFailureMessage: errorMessage,
+        deliveryState: 'failed',
+        lastSentAt: null,
+        notificationServiceJobId: null,
+      },
+      populate: feedbackInvitePopulate,
     });
   }
 };
@@ -2569,6 +2767,165 @@ const findPreviousCandidateReportTakeaways = async (
   return [];
 };
 
+const feedbackInvitePopulate = {
+  createdByEmployerContact: true,
+  employer: true,
+  feedback: true,
+  interview: {
+    populate: ['candidate', 'employer', 'employerContact', 'interviewSlot'],
+  },
+};
+
+const feedbackInvitePayload = (invite: DocumentRecord) => {
+  const expiresAt = invite.expiresAt || null;
+  const isExpired =
+    invite.inviteState === 'pending' && expiresAt ? Date.parse(expiresAt) <= Date.now() : false;
+  const state = isExpired ? 'expired' : invite.inviteState || 'pending';
+
+  return {
+    canRevoke: state === 'pending',
+    deliveryFailureMessage: invite.deliveryFailureMessage || null,
+    deliveryState: invite.deliveryState || 'not_required',
+    documentId: getDocumentId(invite) || String(invite.id || ''),
+    expiresAt,
+    expiresAtLabel: formatDateTime(expiresAt),
+    inviteEmail: invite.inviteEmail || null,
+    inviteeName: invite.inviteeName || null,
+    inviteeRoleTitle: invite.inviteeRoleTitle || null,
+    inviteState: state,
+    lastSentAt: invite.lastSentAt || null,
+    revokedAt: invite.revokedAt || null,
+    submittedAt: invite.submittedAt || null,
+  };
+};
+
+const feedbackInvitePublicPayload = (invite: DocumentRecord) => {
+  const interview = documentRecordValue(invite.interview) || {};
+  const employer = documentRecordValue(invite.employer || interview.employer) || {};
+  const createdBy = documentRecordValue(invite.createdByEmployerContact) || {};
+  const slot = documentRecordValue(interview.interviewSlot);
+
+  return {
+    companyName: employer.companyName || 'the employer',
+    createdByName: contactDisplayName(createdBy),
+    expiresAt: invite.expiresAt || null,
+    expiresAtLabel: formatDateTime(invite.expiresAt),
+    interview: {
+      candidateName: candidateDisplayName(interview.candidate),
+      completedAt: interview.completedAt || null,
+      completedAtLabel: formatDateTime(interview.completedAt),
+      scheduledStartTime: interview.scheduledStartTime || slot?.startTime || null,
+      scheduledStartTimeLabel: formatDateTime(interview.scheduledStartTime || slot?.startTime),
+    },
+    inviteEmail: invite.inviteEmail || null,
+    inviteeName: invite.inviteeName || null,
+    inviteeRoleTitle: invite.inviteeRoleTitle || null,
+    valid: true,
+  };
+};
+
+const findFeedbackInvitesForInterview = async (
+  strapi: StrapiDocumentService,
+  interviewDocumentId: string
+) =>
+  documents(strapi, 'api::interview-feedback-invite.interview-feedback-invite').findMany({
+    filters: {
+      interview: {
+        documentId: interviewDocumentId,
+      },
+    },
+    limit: 50,
+    populate: ['feedback'],
+    sort: ['createdAt:asc'],
+  });
+
+const feedbackReportReadinessPayload = (
+  primaryFeedback: DocumentRecord | null | undefined,
+  invites: DocumentRecord[]
+) => {
+  const pendingInvites = invites.filter((invite) => {
+    if (invite.inviteState !== 'pending') {
+      return false;
+    }
+
+    return !invite.expiresAt || Date.parse(invite.expiresAt) > Date.now();
+  });
+  const submittedInvites = invites.filter((invite) => invite.inviteState === 'submitted');
+
+  return {
+    pendingInviteCount: pendingInvites.length,
+    primaryFeedbackSubmitted: Boolean(primaryFeedback),
+    state: !primaryFeedback
+      ? 'waiting_for_primary_feedback'
+      : pendingInvites.length
+        ? 'waiting_for_additional_feedback'
+        : 'ready_for_ai',
+    submittedInviteCount: submittedInvites.length,
+    totalInviteCount: invites.length,
+    waitingUntil:
+      pendingInvites
+        .map((invite) => invite.expiresAt)
+        .filter((value): value is string => Boolean(value))
+        .sort()[0] || null,
+    waitingUntilLabel: formatDateTime(
+      pendingInvites
+        .map((invite) => invite.expiresAt)
+        .filter((value): value is string => Boolean(value))
+        .sort()[0] || null
+    ),
+  };
+};
+
+const findFeedbackInviteByToken = async (strapi: StrapiDocumentService, inviteToken: string) => {
+  const invites = await documents(strapi, 'api::interview-feedback-invite.interview-feedback-invite').findMany({
+    filters: {
+      tokenHash: hashInviteToken(inviteToken),
+    },
+    limit: 1,
+    populate: feedbackInvitePopulate,
+  });
+
+  return invites[0] || null;
+};
+
+const expireFeedbackInvite = async (strapi: StrapiDocumentService, invite: DocumentRecord) => {
+  const inviteDocumentId = getDocumentId(invite);
+
+  if (!inviteDocumentId || invite.inviteState !== 'pending') {
+    return;
+  }
+
+  await documents(strapi, 'api::interview-feedback-invite.interview-feedback-invite').update({
+    documentId: inviteDocumentId,
+    data: {
+      inviteState: 'expired',
+    },
+  });
+};
+
+const assertValidFeedbackInvite = async (strapi: StrapiDocumentService, inviteToken: string) => {
+  const invite = await findFeedbackInviteByToken(strapi, inviteToken);
+
+  if (!invite) {
+    throw new ValidationError('Feedback invite could not be found.');
+  }
+
+  if (invite.inviteState !== 'pending') {
+    throw new ValidationError('Feedback invite is no longer active.');
+  }
+
+  if (invite.expiresAt && Date.parse(invite.expiresAt) <= Date.now()) {
+    await expireFeedbackInvite(strapi, invite);
+    throw new ValidationError('Feedback invite has expired.');
+  }
+
+  if (!invite.interview || !invite.employer) {
+    throw new ValidationError('Feedback invite is missing linked interview records.');
+  }
+
+  return invite;
+};
+
 const progressionPayload = (offer: DocumentRecord) => ({
   candidateName: candidateDisplayName(offer.candidate),
   documentId: getDocumentId(offer) || String(offer.id || ''),
@@ -2993,9 +3350,14 @@ const interviewFeedbackDetailPayload = async (
 ) => {
   const slot = documentRecordValue(interview.interviewSlot);
   const previousTakeaways = await findPreviousCandidateReportTakeaways(strapi, interview);
+  const interviewDocumentId = getDocumentId(interview) || String(interview.id || '');
+  const additionalFeedbackInvites = interviewDocumentId
+    ? await findFeedbackInvitesForInterview(strapi, interviewDocumentId)
+    : [];
 
   return {
     account: await accountPayload(strapi, contact),
+    additionalFeedbackInvites: additionalFeedbackInvites.map(feedbackInvitePayload),
     feedback: employerFeedbackPayload(feedback),
     generatedAt: new Date().toISOString(),
     interview: {
@@ -3003,7 +3365,7 @@ const interviewFeedbackDetailPayload = async (
       candidateName: candidateDisplayName(interview.candidate),
       completedAt: interview.completedAt || null,
       completedAtLabel: formatDateTime(interview.completedAt),
-      documentId: getDocumentId(interview) || String(interview.id || ''),
+      documentId: interviewDocumentId,
       employerContactName: interview.employerContact
         ? contactDisplayName(documentRecordValue(interview.employerContact) || {})
         : null,
@@ -3020,6 +3382,7 @@ const interviewFeedbackDetailPayload = async (
       statusLabel: humanize(String(interview.interviewState || 'completed')),
     },
     previousTakeaways,
+    reportReadiness: feedbackReportReadinessPayload(feedback, additionalFeedbackInvites),
     rules: {
       previousTakeawayAssessmentRequired: previousTakeaways.length > 0,
       rawFeedbackCandidateVisible: false,
@@ -4382,6 +4745,276 @@ export default ({ strapi }) => ({
     });
 
     return interviewFeedbackDetailPayload(strapi, interview, contact, feedback);
+  },
+
+  async inviteInterviewFeedbackContributor(input: unknown, requestContext: RequestContext = {}) {
+    const body = validateInviteInterviewFeedbackContributor(input);
+    const contact = await findEmployerContact(strapi, body);
+    const interview = await findScopedInterview(strapi, contact, body.interviewDocumentId);
+    const interviewDocumentId = getDocumentId(interview);
+    const contactDocumentId = getDocumentId(contact);
+    const employerDocumentId = getDocumentId(contact.employer);
+
+    if (String(interview.interviewState || '') !== 'completed') {
+      throw new ValidationError('Additional feedback can only be requested after the interview is completed.');
+    }
+
+    if (!interviewDocumentId || !contactDocumentId || !employerDocumentId) {
+      throw new ValidationError('Feedback invite could not be created.');
+    }
+
+    const expiresAt = interviewFeedbackDeadline(interview);
+
+    if (Date.parse(expiresAt) <= Date.now()) {
+      throw new ValidationError('The feedback invite deadline has passed.');
+    }
+
+    const existingInvites = await documents(strapi, 'api::interview-feedback-invite.interview-feedback-invite').findMany({
+      filters: {
+        interview: {
+          documentId: interviewDocumentId,
+        },
+        inviteEmail: body.inviteEmail,
+        inviteState: {
+          $in: ['pending', 'submitted'],
+        },
+      },
+      limit: 1,
+    });
+
+    if (existingInvites.length) {
+      throw new ValidationError('A feedback invite already exists for that email address.');
+    }
+
+    const rawToken = generateInviteToken();
+    const invite = await documents(strapi, 'api::interview-feedback-invite.interview-feedback-invite').create({
+      data: {
+        createdByEmployerContact: {
+          connect: [{ documentId: contactDocumentId }],
+        },
+        deliveryState: 'not_required',
+        employer: {
+          connect: [{ documentId: employerDocumentId }],
+        },
+        expiresAt,
+        interview: {
+          connect: [{ documentId: interviewDocumentId }],
+        },
+        inviteEmail: body.inviteEmail,
+        inviteState: 'pending',
+        inviteeName: body.inviteeName || null,
+        inviteeRoleTitle: body.inviteeRoleTitle || null,
+        metadata: {
+          requestId: requestContext.requestId,
+          source: 'employer_dashboard_feedback_invite',
+        },
+        tokenHash: hashInviteToken(rawToken),
+      },
+      populate: feedbackInvitePopulate,
+    });
+    const deliveredInvite = await queueInterviewFeedbackInviteEmail(strapi, {
+      invite,
+      rawToken,
+    });
+
+    await auditEvents(strapi).record({
+      actorDisplayName: contactDisplayName(contact),
+      actorEmail: contact.email || undefined,
+      actorId: contactDocumentId,
+      actorType: 'employer_contact',
+      eventCategory: 'interview',
+      eventType: 'employer.interview_feedback_invite_created',
+      ipAddress: requestContext.ipAddress,
+      metadata: {
+        deliveryState: deliveredInvite.deliveryState,
+        feedbackInviteDocumentId: getDocumentId(deliveredInvite),
+        inviteEmail: body.inviteEmail,
+        inviteeName: body.inviteeName || null,
+        requestId: requestContext.requestId,
+      },
+      requestId: requestContext.requestId,
+      serviceName: requestContext.serviceName,
+      severity: deliveredInvite.deliveryState === 'queued' ? 'info' : 'error',
+      source: 'employer_dashboard',
+      subjectDisplayName: candidateDisplayName(interview.candidate),
+      subjectId: interviewDocumentId,
+      subjectType: 'interview',
+      userAgent: requestContext.userAgent,
+    });
+
+    const feedback = await findEmployerFeedbackForInterview(strapi, interviewDocumentId);
+
+    return interviewFeedbackDetailPayload(strapi, interview, contact, feedback);
+  },
+
+  async revokeInterviewFeedbackInvite(input: unknown, requestContext: RequestContext = {}) {
+    const body = validateRevokeInterviewFeedbackInvite(input);
+    const contact = await findEmployerContact(strapi, body);
+    const interview = await findScopedInterview(strapi, contact, body.interviewDocumentId);
+    const interviewDocumentId = getDocumentId(interview);
+    const contactDocumentId = getDocumentId(contact);
+
+    if (!interviewDocumentId || !contactDocumentId) {
+      throw new ValidationError('Feedback invite could not be revoked.');
+    }
+
+    const invites = await documents(strapi, 'api::interview-feedback-invite.interview-feedback-invite').findMany({
+      filters: {
+        documentId: body.feedbackInviteDocumentId,
+        interview: {
+          documentId: interviewDocumentId,
+        },
+      },
+      limit: 1,
+      populate: feedbackInvitePopulate,
+    });
+    const invite = invites[0];
+
+    if (!invite) {
+      throw new ValidationError('Feedback invite could not be found.');
+    }
+
+    if (invite.inviteState !== 'pending') {
+      throw new ValidationError('Only pending feedback invites can be revoked.');
+    }
+
+    await documents(strapi, 'api::interview-feedback-invite.interview-feedback-invite').update({
+      documentId: body.feedbackInviteDocumentId,
+      data: {
+        inviteState: 'revoked',
+        revocationReason: body.reason || null,
+        revokedAt: new Date().toISOString(),
+      },
+    });
+
+    await auditEvents(strapi).record({
+      actorDisplayName: contactDisplayName(contact),
+      actorEmail: contact.email || undefined,
+      actorId: contactDocumentId,
+      actorType: 'employer_contact',
+      eventCategory: 'interview',
+      eventType: 'employer.interview_feedback_invite_revoked',
+      ipAddress: requestContext.ipAddress,
+      metadata: {
+        feedbackInviteDocumentId: body.feedbackInviteDocumentId,
+        inviteEmail: invite.inviteEmail || null,
+        reason: body.reason || null,
+        requestId: requestContext.requestId,
+      },
+      requestId: requestContext.requestId,
+      serviceName: requestContext.serviceName,
+      severity: 'info',
+      source: 'employer_dashboard',
+      subjectDisplayName: candidateDisplayName(interview.candidate),
+      subjectId: interviewDocumentId,
+      subjectType: 'interview',
+      userAgent: requestContext.userAgent,
+    });
+
+    const feedback = await findEmployerFeedbackForInterview(strapi, interviewDocumentId);
+
+    return interviewFeedbackDetailPayload(strapi, interview, contact, feedback);
+  },
+
+  async validateInterviewFeedbackInvite(input: unknown) {
+    const body = validateFeedbackInviteToken(input);
+    const invite = await assertValidFeedbackInvite(strapi, body.inviteToken);
+
+    return {
+      invite: feedbackInvitePublicPayload(invite),
+    };
+  },
+
+  async submitInvitedInterviewFeedback(input: unknown, requestContext: RequestContext = {}) {
+    const body = validateSubmitInvitedInterviewFeedback(input);
+    const invite = await assertValidFeedbackInvite(strapi, body.inviteToken);
+    const inviteDocumentId = getDocumentId(invite);
+    const interview = documentRecordValue(invite.interview);
+    const interviewDocumentId = getDocumentId(interview);
+
+    if (!inviteDocumentId || !interview || !interviewDocumentId) {
+      throw new ValidationError('Feedback invite could not be submitted.');
+    }
+
+    if (String(interview.interviewState || '') !== 'completed') {
+      throw new ValidationError('Feedback can only be submitted after the interview is completed.');
+    }
+
+    const now = new Date().toISOString();
+    const feedback = await documents(strapi, 'api::interview-feedback.interview-feedback').create({
+      data: {
+        candidateReportState: 'pending',
+        concerns: body.concerns,
+        feedbackInvite: {
+          connect: [{ documentId: inviteDocumentId }],
+        },
+        interview: relationConnect(interview),
+        metadata: {
+          invitedEmail: invite.inviteEmail || null,
+          inviteeName: invite.inviteeName || null,
+          inviteeRoleTitle: invite.inviteeRoleTitle || null,
+          previousTakeawayAssessmentProvided: Boolean(body.previousTakeawayAssessment),
+          rawFeedbackCandidateVisible: false,
+          requestId: requestContext.requestId,
+          source: 'feedback_invite',
+          submitterName: body.submitterName || null,
+          submitterRoleTitle: body.submitterRoleTitle || null,
+        },
+        nextStep: body.nextStep,
+        notes: body.notes,
+        outcome: body.outcome,
+        previousTakeawayAssessment: body.previousTakeawayAssessment || null,
+        rating: body.rating,
+        strengths: body.strengths,
+        submittedAt: now,
+        submittedById: inviteDocumentId,
+        submittedByType: 'external_interviewer',
+      },
+      populate: ['interview'],
+    });
+
+    await documents(strapi, 'api::interview-feedback-invite.interview-feedback-invite').update({
+      documentId: inviteDocumentId,
+      data: {
+        feedback: relationConnect(feedback),
+        inviteState: 'submitted',
+        submittedAt: now,
+      },
+    });
+
+    await auditEvents(strapi).record({
+      actorDisplayName: body.submitterName || invite.inviteeName || invite.inviteEmail || 'Interview attendee',
+      actorEmail: invite.inviteEmail || undefined,
+      actorId: inviteDocumentId,
+      actorType: 'anonymous',
+      eventCategory: 'interview',
+      eventType: 'employer.interview_feedback_invite_submitted',
+      ipAddress: requestContext.ipAddress,
+      metadata: {
+        feedbackDocumentId: getDocumentId(feedback),
+        feedbackInviteDocumentId: inviteDocumentId,
+        inviteEmail: invite.inviteEmail || null,
+        requestId: requestContext.requestId,
+      },
+      requestId: requestContext.requestId,
+      serviceName: requestContext.serviceName,
+      severity: 'info',
+      source: 'employer_dashboard',
+      subjectDisplayName: candidateDisplayName(interview.candidate),
+      subjectId: interviewDocumentId,
+      subjectType: 'interview',
+      userAgent: requestContext.userAgent,
+    });
+
+    return {
+      invite: feedbackInvitePublicPayload({
+        ...invite,
+        feedback,
+        inviteState: 'submitted',
+        submittedAt: now,
+      }),
+      submitted: true,
+    };
   },
 
   async getInterviewDetail(input: unknown) {
