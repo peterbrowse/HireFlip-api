@@ -195,9 +195,10 @@ const jsonResponse = (body, status = 200) =>
     status,
   });
 
-const createSmokeFetch = ({ authDomain, connectionId, connectionName, notificationUrl, runId }) => {
+const createSmokeFetch = ({ aiServiceUrl, authDomain, connectionId, connectionName, notificationUrl, runId }) => {
   const usersByEmail = new Map();
   const usersById = new Map();
+  const aiReports = [];
   const notifications = [];
   const blockedUsers = new Set();
   const passwordTicketRequests = [];
@@ -225,6 +226,34 @@ const createSmokeFetch = ({ authDomain, connectionId, connectionName, notificati
         },
         202
       );
+    }
+
+    if (aiServiceUrl && url.origin === aiServiceUrl) {
+      const body = JSON.parse(String(init.body || '{}'));
+      aiReports.push(body);
+
+      return jsonResponse({
+        data: {
+          metadata: {
+            feedbackSourceCount: Array.isArray(body.feedback) ? body.feedback.length : 0,
+            smoke: true,
+          },
+          model: 'gpt-smoke',
+          promptVersion: 'interview-feedback-report-v1',
+          provider: 'openai',
+          report: {
+            conclusion: 'Keep building on the preparation shown in this interview.',
+            improvements: 'Give more specific examples and keep answers focused on the role requirements.',
+            intro: 'The interview went positively overall, with clear preparation and useful discussion.',
+            strengths: 'The candidate communicated clearly and showed strong engagement with the opportunity.',
+            takeaways: [
+              'Prepare two concise examples before the next interview.',
+              'Link each answer back to the role requirements.',
+              'Ask one follow-up question about the team or day-to-day work.',
+            ],
+          },
+        },
+      });
     }
 
     if (url.hostname !== authDomain) {
@@ -339,6 +368,7 @@ const createSmokeFetch = ({ authDomain, connectionId, connectionName, notificati
   };
 
   return {
+    aiReports,
     blockedUsers,
     fetch,
     notifications,
@@ -362,8 +392,11 @@ const main = async () => {
   process.env.EMPLOYER_DASHBOARD_BASE_URL = 'http://localhost:3004';
   process.env.NOTIFICATION_SERVICE_URL = `https://notification-smoke-${runId}.example.test`;
   process.env.NOTIFICATION_SERVICE_TOKEN = 'smoke-notification-token';
+  process.env.AI_SERVICE_URL = `https://ai-smoke-${runId}.example.test`;
+  process.env.AI_SERVICE_TOKEN = 'smoke-ai-token';
 
   const smokeFetch = createSmokeFetch({
+    aiServiceUrl: process.env.AI_SERVICE_URL,
     authDomain: process.env.AUTH0_MANAGEMENT_DOMAIN,
     connectionId: process.env.AUTH0_EMPLOYER_CONNECTION_ID,
     connectionName: process.env.AUTH0_EMPLOYER_CONNECTION_NAME,
@@ -1600,6 +1633,7 @@ const main = async () => {
       feedbackResult.reportReadiness.state === 'waiting_for_additional_feedback',
       'Expected report readiness to wait for pending feedback invites.'
     );
+    assert(smokeFetch.aiReports.length === 0, 'Expected AI report generation to wait for pending invites.');
 
     created.feedback = feedbackResult.feedback;
 
@@ -1613,6 +1647,15 @@ const main = async () => {
     assert(
       revokedInviteResult.reportReadiness.state === 'ready_for_ai',
       'Expected report readiness to be ready after pending invite is revoked.'
+    );
+    assert(smokeFetch.aiReports.length === 1, 'Expected one AI report generation request after revocation.');
+    assert(
+      revokedInviteResult.feedback?.candidateReport?.state === 'generated',
+      'Expected candidate report to be generated after all feedback is ready.'
+    );
+    assert(
+      revokedInviteResult.feedback?.candidateReport?.takeaways?.length === 3,
+      'Expected generated candidate report to include three takeaways.'
     );
 
     const overviewAfterFeedback = await employerDashboardService.getOverview({
