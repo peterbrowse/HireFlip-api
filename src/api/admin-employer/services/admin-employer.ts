@@ -1078,7 +1078,7 @@ export default ({ strapi }) => ({
       employers: filteredEmployers,
       filteredEmployers: filteredEmployers.length,
       generatedAt: new Date().toISOString(),
-      totalEmployers: stateFilteredEmployers.length,
+      totalEmployers: employerSummaries.length,
       user: session.user,
     };
   },
