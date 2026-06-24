@@ -169,6 +169,19 @@ const ensureRefundCaseSchema = z
   })
   .strict();
 
+const ensureFeedbackReportConcernCaseSchema = z
+  .object({
+    candidate: z.unknown(),
+    feedbackDocumentId: z.string().trim().min(1).max(160),
+    flaggedAt: z.string().datetime(),
+    interviewDocumentId: z.string().trim().min(1).max(160),
+    reason: z.string().trim().min(10).max(4000),
+    source: sourceSchema.default('candidate_dashboard'),
+    summary: z.string().trim().max(1000).optional(),
+    title: z.string().trim().min(1).max(180).optional(),
+  })
+  .strict();
+
 const addMessageSchema = z
   .object({
     body: z.string().trim().min(1).max(12000),
@@ -216,6 +229,9 @@ const assignCaseSchema = z
   .strict();
 
 const validateEnsureRefundCase = validateZodSchema(ensureRefundCaseSchema);
+const validateEnsureFeedbackReportConcernCase = validateZodSchema(
+  ensureFeedbackReportConcernCaseSchema
+);
 const validateAddMessage = validateZodSchema(addMessageSchema);
 const validateUpdateCaseState = validateZodSchema(updateCaseStateSchema);
 const validateAssignCase = validateZodSchema(assignCaseSchema);
@@ -542,6 +558,9 @@ const candidateSupportCase = (supportCase: DocumentRecord, messages: DocumentRec
 const supportCaseKeyForRefund = (refund: DocumentRecord) =>
   `refund:${getDocumentId(refund) || 'unknown'}:support`;
 
+const supportCaseKeyForFeedbackReportConcern = (feedbackDocumentId: string) =>
+  `interview-feedback-report:${feedbackDocumentId}:candidate-concern`;
+
 const relationConnect = (record?: DocumentRecord | null) =>
   getDocumentId(record) ? { connect: [{ documentId: getDocumentId(record) }] } : undefined;
 
@@ -653,6 +672,78 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
     return {
       created: true,
       supportCase: createdCase,
+    };
+  },
+
+  async ensureFeedbackReportConcernCase(input: unknown) {
+    const body = validateEnsureFeedbackReportConcernCase(input);
+    const candidate = body.candidate as DocumentRecord;
+    const caseKey = supportCaseKeyForFeedbackReportConcern(body.feedbackDocumentId);
+    const existingCase = await findCaseByKey(strapi, caseKey);
+    const candidateName = candidateDisplayName(candidate);
+    const title = body.title || (candidateName
+      ? `AI feedback report review for ${candidateName}`
+      : 'AI feedback report review');
+    const summary =
+      body.summary ||
+      'Candidate has flagged their AI-generated interview feedback report for staff review.';
+    const metadata = {
+      feedbackDocumentId: body.feedbackDocumentId,
+      flaggedAt: body.flaggedAt,
+      interviewDocumentId: body.interviewDocumentId,
+      kind: 'ai_feedback_report_concern',
+      reason: body.reason,
+    };
+
+    if (existingCase) {
+      const shouldReopen = ['closed', 'resolved'].includes(String(existingCase.caseState || ''));
+      const supportCase = shouldReopen && existingCase.documentId
+        ? await documents(strapi, 'api::support-case.support-case').update({
+            documentId: existingCase.documentId,
+            data: {
+              caseState: 'awaiting_staff',
+              closedAt: null,
+              lastMessageAt: body.flaggedAt,
+              metadata: {
+                ...objectValue(existingCase.metadata),
+                ...metadata,
+                reopenedAt: body.flaggedAt,
+              },
+              resolvedAt: null,
+            },
+            populate: ['candidate', 'refund', 'payment', 'enrollment'],
+          })
+        : existingCase;
+
+      return {
+        created: false,
+        supportCase,
+      };
+    }
+
+    const supportCase = await documents(strapi, 'api::support-case.support-case').create({
+      data: {
+        candidate: relationConnect(candidate),
+        caseKey,
+        caseState: 'awaiting_staff',
+        caseType: 'interview',
+        lastMessageAt: body.flaggedAt,
+        metadata,
+        openedAt: body.flaggedAt,
+        openedByDisplayName: candidateName,
+        openedByEmail: candidate.email,
+        openedByType: 'candidate',
+        priority: 'high',
+        source: body.source,
+        summary,
+        title,
+      },
+      populate: ['candidate', 'refund', 'payment', 'enrollment'],
+    });
+
+    return {
+      created: true,
+      supportCase,
     };
   },
 

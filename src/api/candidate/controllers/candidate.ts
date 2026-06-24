@@ -58,6 +58,12 @@ type CandidateService = {
     reservationDocumentId: string,
     context: RequestContext
   ): Promise<unknown>;
+  flagCurrentCandidateInterviewFeedbackReport(
+    auth: unknown,
+    interviewDocumentId: string,
+    input: unknown,
+    context: RequestContext
+  ): Promise<unknown>;
   getCandidatePreferenceOptions(auth: unknown): Promise<unknown>;
   getCurrentCandidateClassInterest(auth: unknown): Promise<unknown>;
   getCurrentCandidateCourse(auth: unknown): Promise<unknown>;
@@ -372,6 +378,23 @@ export default factories.createCoreController('api::candidate.candidate', ({ str
     const result = await candidateService(strapi).declineCurrentCandidateInterviewSlotOffer(
       ctx.state?.hireflipAuth,
       ctx.params?.offerDocumentId,
+      ctx.request.body,
+      {
+        ipAddress: getForwardedClientIp(ctx),
+        requestId: ctx.state?.requestId,
+        userAgent: ctx.request.get('x-hireflip-client-user-agent') || ctx.request.get('user-agent'),
+      }
+    );
+
+    ctx.body = {
+      data: result,
+    };
+  },
+
+  async flagInterviewFeedbackReport(ctx) {
+    const result = await candidateService(strapi).flagCurrentCandidateInterviewFeedbackReport(
+      ctx.state?.hireflipAuth,
+      ctx.params?.interviewDocumentId,
       ctx.request.body,
       {
         ipAddress: getForwardedClientIp(ctx),

@@ -100,6 +100,42 @@
     "candidateReportVisibleAt": {
       "type": "datetime"
     },
+    "candidateReportConcernState": {
+      "type": "enumeration",
+      "enum": [
+        "none",
+        "open",
+        "dismissed",
+        "resolved",
+        "regenerated"
+      ],
+      "default": "none",
+      "required": true
+    },
+    "candidateReportConcernReason": {
+      "type": "text"
+    },
+    "candidateReportConcernFlaggedAt": {
+      "type": "datetime"
+    },
+    "candidateReportConcernReviewedAt": {
+      "type": "datetime"
+    },
+    "candidateReportConcernResolvedAt": {
+      "type": "datetime"
+    },
+    "candidateReportConcernResolution": {
+      "type": "text"
+    },
+    "candidateReportConcernResolvedByStaffEmail": {
+      "type": "email",
+      "maxLength": 254
+    },
+    "candidateReportConcernSupportCase": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::support-case.support-case"
+    },
     "aiProvider": {
       "type": "string"
     },

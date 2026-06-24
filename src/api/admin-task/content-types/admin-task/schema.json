@@ -24,6 +24,7 @@
         "assessment_appeal",
         "payment_review",
         "refund_review",
+        "support_case",
         "notification_failure",
         "system_alert"
       ],
@@ -68,6 +69,7 @@
         "refund",
         "reservation",
         "enrollment",
+        "support_case",
         "notification_event",
         "audit_event"
       ],

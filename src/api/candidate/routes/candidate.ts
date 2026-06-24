@@ -183,6 +183,19 @@ export default {
       },
     },
     {
+      method: 'POST',
+      path: '/candidates/me/interviews/:interviewDocumentId/feedback-report/flag',
+      handler: 'candidate.flagInterviewFeedbackReport',
+      config: {
+        auth: false,
+        middlewares: [
+          {
+            name: 'global::auth0-jwt',
+          },
+        ],
+      },
+    },
+    {
       method: 'GET',
       path: '/candidates/me/support-cases',
       handler: 'candidate.supportCases',

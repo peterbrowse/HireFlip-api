@@ -61,5 +61,14 @@ export default {
         policies: [adminDashboardServicePolicy],
       },
     },
+    {
+      method: 'POST',
+      path: '/internal/admin/support/cases/feedback-report-concern',
+      handler: 'admin-support.feedbackReportConcern',
+      config: {
+        auth: false,
+        policies: [adminDashboardServicePolicy],
+      },
+    },
   ],
 };

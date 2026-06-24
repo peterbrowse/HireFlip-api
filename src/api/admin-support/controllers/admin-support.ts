@@ -12,6 +12,7 @@ type AdminSupportService = {
   listAssignableStaff(input: unknown, context: RequestContext): Promise<unknown>;
   listCases(input: unknown, context: RequestContext): Promise<unknown>;
   replyToCase(input: unknown, context: RequestContext): Promise<unknown>;
+  resolveFeedbackReportConcern(input: unknown, context: RequestContext): Promise<unknown>;
 };
 
 const adminSupportService = (strapi: { service(uid: string): unknown }): AdminSupportService =>
@@ -104,6 +105,12 @@ export default ({ strapi }) => ({
   async note(ctx) {
     await writeResult(ctx, () =>
       adminSupportService(strapi).addInternalNote(ctx.request.body, getRequestContext(ctx))
+    );
+  },
+
+  async feedbackReportConcern(ctx) {
+    await writeResult(ctx, () =>
+      adminSupportService(strapi).resolveFeedbackReportConcern(ctx.request.body, getRequestContext(ctx))
     );
   },
 });

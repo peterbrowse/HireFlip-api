@@ -107,13 +107,15 @@ type AdminTaskSourceType =
   | 'notification_event'
   | 'payment'
   | 'refund'
-  | 'reservation';
+  | 'reservation'
+  | 'support_case';
 type AdminTaskState = 'acknowledged' | 'dismissed' | 'open' | 'resolved';
 type AdminTaskType =
   | 'assessment_appeal'
   | 'notification_failure'
   | 'payment_review'
   | 'refund_review'
+  | 'support_case'
   | 'system_alert';
 
 type AdminTaskDraft = {
@@ -180,6 +182,8 @@ const taskRouteSegment = (taskKey: string) => encodeURIComponent(taskKey);
 const assessmentAppealTaskPath = (taskKey: string) => `/classes/appeals/${taskRouteSegment(taskKey)}`;
 const taskDetailPath = (taskKey: string) => `/tasks/${taskRouteSegment(taskKey)}`;
 const refundTaskPath = (taskKey: string) => `/refunds/${taskRouteSegment(taskKey)}`;
+const supportCasePath = (supportCaseDocumentId: string) =>
+  `/support/${encodeURIComponent(supportCaseDocumentId)}`;
 
 const candidateDisplayName = (candidate?: DocumentRecord) => {
   if (!candidate) {
@@ -212,6 +216,7 @@ const taskTypeLabels: Record<AdminTaskType, string> = {
   notification_failure: 'Notification failure',
   payment_review: 'Payment review',
   refund_review: 'Refund review',
+  support_case: 'Support case',
   system_alert: 'System alert',
 };
 const assessmentAppealResponseWorkingDays = 14;
@@ -227,6 +232,7 @@ const monitoredTaskTypes: AdminTaskType[] = [
   'assessment_appeal',
   'payment_review',
   'refund_review',
+  'support_case',
   'notification_failure',
   'system_alert',
 ];
@@ -250,11 +256,11 @@ const assertOperationsSession = async (
 ) => {
   const session = await adminAuthService(strapi).getSession({ sessionToken }, context);
   const canViewOperationalTasks = session.user.roleKeys.some((roleKey) =>
-    ['admin', 'sales', 'super_admin'].includes(roleKey)
+    ['admin', 'sales', 'super_admin', 'support'].includes(roleKey)
   );
 
   if (!canViewOperationalTasks) {
-    throw new ForbiddenError('Admin, Sales, or Super Admin access is required.');
+    throw new ForbiddenError('Admin, Sales, Support, or Super Admin access is required.');
   }
 
   return session;
@@ -682,6 +688,45 @@ const auditTask = (event: DocumentRecord): AdminTaskDraft | null => {
   };
 };
 
+const supportCaseTask = (supportCase: DocumentRecord): AdminTaskDraft | null => {
+  const documentId = getDocumentId(supportCase);
+
+  if (!documentId) {
+    return null;
+  }
+
+  const metadata = objectValue(supportCase.metadata);
+  const candidateName = candidateDisplayName(supportCase.candidate);
+  const flaggedAt = typeof metadata.flaggedAt === 'string' ? metadata.flaggedAt : undefined;
+
+  return {
+    actionLabel: 'Review case',
+    actionPath: supportCasePath(documentId),
+    metadata: {
+      feedbackDocumentId: metadata.feedbackDocumentId,
+      interviewDocumentId: metadata.interviewDocumentId,
+      kind: metadata.kind,
+      sourceCreatedAt: supportCase.createdAt,
+      sourceDetectedAt: flaggedAt || sourceTimestamp(supportCase),
+    },
+    priority: supportCase.priority || 'high',
+    relatedDocumentId: documentId,
+    relatedType: 'support_case',
+    sourceDocumentId: documentId,
+    sourceType: 'support_case',
+    summary: trimToLength(
+      [
+        supportCase.summary || 'AI feedback report concern needs support review.',
+        candidateName ? `Candidate: ${candidateName}.` : '',
+      ].filter(Boolean).join(' '),
+      500
+    ),
+    taskKey: `support-case:${documentId}:ai-feedback-report-concern`,
+    taskType: 'support_case',
+    title: supportCase.title || 'AI feedback report concern',
+  };
+};
+
 const collectPaymentTasks = async (strapi: StrapiDocumentService) => {
   const payments = await documents(strapi, 'api::payment.payment').findMany({
     filters: {
@@ -817,6 +862,25 @@ const collectAuditTasks = async (strapi: StrapiDocumentService) => {
   return events.map(auditTask).filter((task): task is AdminTaskDraft => Boolean(task));
 };
 
+const collectSupportCaseTasks = async (strapi: StrapiDocumentService) => {
+  const cases = await documents(strapi, 'api::support-case.support-case').findMany({
+    filters: {
+      caseState: {
+        $in: ['open', 'awaiting_staff', 'in_progress'],
+      },
+      caseType: 'interview',
+    },
+    limit: 100,
+    populate: ['candidate'],
+    sort: ['lastMessageAt:desc', 'createdAt:desc'],
+  });
+
+  return cases
+    .filter((supportCase) => objectValue(supportCase.metadata).kind === 'ai_feedback_report_concern')
+    .map(supportCaseTask)
+    .filter((task): task is AdminTaskDraft => Boolean(task));
+};
+
 const collectTaskDrafts = async (strapi: StrapiDocumentService) => {
   const [
     assessmentAppeals,
@@ -826,6 +890,7 @@ const collectTaskDrafts = async (strapi: StrapiDocumentService) => {
     refunds,
     notifications,
     auditEvents,
+    supportCases,
   ] = await Promise.all([
     collectAssessmentAppealTasks(strapi),
     collectPaymentTasks(strapi),
@@ -834,6 +899,7 @@ const collectTaskDrafts = async (strapi: StrapiDocumentService) => {
     collectRefundTasks(strapi),
     collectNotificationTasks(strapi),
     collectAuditTasks(strapi),
+    collectSupportCaseTasks(strapi),
   ]);
 
   return [
@@ -844,6 +910,7 @@ const collectTaskDrafts = async (strapi: StrapiDocumentService) => {
     ...refunds,
     ...notifications,
     ...auditEvents,
+    ...supportCases,
   ];
 };
 
@@ -913,6 +980,7 @@ const taskCounts = (tasks: ReturnType<typeof publicTask>[]) => {
     paymentChecks: tasks.filter((task) =>
       ['payment_review', 'refund_review'].includes(task.taskType)
     ).length,
+    supportCases: tasks.filter((task) => task.taskType === 'support_case').length,
     totalActiveTasks,
     totalOpenTasks: totalActiveTasks,
   };

@@ -213,6 +213,10 @@ type InterviewRequestService = {
 type SupportCaseService = {
   addMessage(input: unknown): Promise<DocumentRecord>;
   casesForCandidate(candidateDocumentId: string): Promise<unknown[]>;
+  ensureFeedbackReportConcernCase(input: unknown): Promise<{
+    created: boolean;
+    supportCase: DocumentRecord;
+  }>;
   getCaseForCandidate(input: {
     candidateDocumentId: string;
     supportCaseDocumentId: string;
@@ -595,6 +599,14 @@ const supportCaseReplySchema = z
   .strict();
 
 const validateSupportCaseReply = validateZodSchema(supportCaseReplySchema);
+
+const feedbackReportConcernSchema = z
+  .object({
+    reason: z.string().trim().min(10).max(4000),
+  })
+  .strict();
+
+const validateFeedbackReportConcern = validateZodSchema(feedbackReportConcernSchema);
 
 const materialProgressSchema = z
   .object({
@@ -2573,9 +2585,18 @@ const sanitizeCandidateFeedbackReport = (feedback?: DocumentRecord | null) => {
 
   const state = String(feedback.candidateReportState || 'pending');
   const visible = candidateReportVisibleStates.has(state);
+  const concernState = String(feedback.candidateReportConcernState || 'none');
+  const supportCase = documentRecordValue(feedback.candidateReportConcernSupportCase);
 
   return {
     conclusion: visible ? feedback.candidateReportConclusion || null : null,
+    concern: {
+      flaggedAt: feedback.candidateReportConcernFlaggedAt || null,
+      reason: feedback.candidateReportConcernReason || null,
+      resolvedAt: feedback.candidateReportConcernResolvedAt || null,
+      state: concernState,
+      supportCaseDocumentId: supportCase?.documentId || null,
+    },
     generatedAt: visible ? feedback.candidateReportGeneratedAt || null : null,
     improvements: visible ? feedback.candidateReportImprovements || null : null,
     intro: visible ? feedback.candidateReportIntro || null : null,
@@ -2733,7 +2754,7 @@ const findCandidateFeedbackReportsByInterviewId = async (
       submittedByType: 'employer_contact',
     },
     limit: 100,
-    populate: ['interview'],
+    populate: ['candidateReportConcernSupportCase', 'interview'],
     sort: ['candidateReportVisibleAt:desc', 'candidateReportGeneratedAt:desc', 'submittedAt:desc'],
   });
   const feedbackByInterviewId = new Map<string, DocumentRecord>();
@@ -2748,6 +2769,47 @@ const findCandidateFeedbackReportsByInterviewId = async (
   });
 
   return feedbackByInterviewId;
+};
+
+const findCandidateFeedbackReportForInterview = async ({
+  candidate,
+  interviewDocumentId,
+  strapi,
+}: {
+  candidate: DocumentRecord;
+  interviewDocumentId: string;
+  strapi: StrapiDocumentService;
+}) => {
+  const interviews = await documents(strapi, 'api::interview.interview').findMany({
+    filters: {
+      candidate: {
+        documentId: candidate.documentId,
+      },
+      documentId: interviewDocumentId,
+    },
+    limit: 1,
+  });
+
+  if (!interviews[0]) {
+    return null;
+  }
+
+  const feedbackRecords = await documents(strapi, 'api::interview-feedback.interview-feedback').findMany({
+    filters: {
+      candidateReportState: {
+        $in: Array.from(candidateReportVisibleStates),
+      },
+      interview: {
+        documentId: interviewDocumentId,
+      },
+      submittedByType: 'employer_contact',
+    },
+    limit: 1,
+    populate: ['candidateReportConcernSupportCase', 'interview'],
+    sort: ['candidateReportVisibleAt:desc', 'candidateReportGeneratedAt:desc', 'submittedAt:desc'],
+  });
+
+  return feedbackRecords[0] || null;
 };
 
 const hasPriorCandidateSlotWarning = async (
@@ -7417,6 +7479,156 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
     return {
       classAreas,
       workSectors,
+    };
+  },
+
+  async flagCurrentCandidateInterviewFeedbackReport(
+    auth: Auth0State | undefined,
+    interviewDocumentId: string,
+    input: unknown,
+    requestContext: RequestContext = {}
+  ) {
+    if (!auth || auth.type !== 'auth0' || !auth.subject) {
+      throw new UnauthorizedError('Auth0 authentication is required.');
+    }
+
+    const existingCandidate = await findCandidateByAuthIdentity(strapi, auth.subject);
+
+    if (!existingCandidate?.documentId) {
+      throw new ValidationError('Candidate account must be synced before feedback reports can be flagged.');
+    }
+
+    const payload = validateFeedbackReportConcern(input ?? {});
+    const feedback = await findCandidateFeedbackReportForInterview({
+      candidate: existingCandidate,
+      interviewDocumentId,
+      strapi,
+    });
+
+    if (!feedback?.documentId) {
+      throw new ValidationError('Feedback report could not be found.');
+    }
+
+    const existingSupportCase = documentRecordValue(feedback.candidateReportConcernSupportCase);
+    const alreadyOpen = String(feedback.candidateReportConcernState || 'none') === 'open';
+
+    if (alreadyOpen && existingSupportCase?.documentId) {
+      const supportCase = await supportCaseService(strapi).getCaseForCandidate({
+        candidateDocumentId: existingCandidate.documentId,
+        supportCaseDocumentId: existingSupportCase.documentId,
+      });
+
+      return {
+        feedbackReport: sanitizeCandidateFeedbackReport(feedback),
+        flagged: false,
+        supportCase,
+      };
+    }
+
+    const now = new Date().toISOString();
+    const concernCaseResult = await supportCaseService(strapi).ensureFeedbackReportConcernCase({
+      candidate: existingCandidate,
+      feedbackDocumentId: feedback.documentId,
+      flaggedAt: now,
+      interviewDocumentId,
+      reason: payload.reason,
+    });
+    const supportCase = concernCaseResult.supportCase;
+
+    await supportCaseService(strapi).addMessage({
+      body: payload.reason,
+      candidate: existingCandidate,
+      direction: 'inbound',
+      messageType: 'candidate_message',
+      metadata: {
+        feedbackDocumentId: feedback.documentId,
+        interviewDocumentId,
+        kind: 'ai_feedback_report_concern',
+      },
+      sender: {
+        displayName: candidateMessageDisplayName(existingCandidate),
+        email: existingCandidate.email,
+        id: existingCandidate.documentId,
+        type: 'candidate',
+      },
+      subject: 'Candidate concern about AI feedback report',
+      supportCase,
+      visibility: 'public',
+    });
+
+    const updatedFeedback = await documents(strapi, 'api::interview-feedback.interview-feedback').update({
+      documentId: feedback.documentId,
+      data: {
+        candidateReportConcernFlaggedAt: now,
+        candidateReportConcernReason: payload.reason,
+        candidateReportConcernResolution: null,
+        candidateReportConcernResolvedAt: null,
+        candidateReportConcernResolvedByStaffEmail: null,
+        candidateReportConcernReviewedAt: null,
+        candidateReportConcernState: 'open',
+        candidateReportConcernSupportCase: relationConnect(supportCase),
+        metadata: {
+          ...objectValue(feedback.metadata),
+          lastCandidateReportConcernRequestId: requestContext.requestId,
+        },
+      },
+      populate: ['candidateReportConcernSupportCase', 'interview'],
+    });
+
+    await auditEvents(strapi).record({
+      actorEmail: existingCandidate.email,
+      actorId: auth.subject,
+      actorType: 'candidate',
+      eventCategory: 'interview',
+      eventType: 'candidate.interview_feedback_report_flagged',
+      ipAddress: requestContext.ipAddress,
+      metadata: {
+        feedbackDocumentId: feedback.documentId,
+        interviewDocumentId,
+        supportCaseCreated: concernCaseResult.created,
+        supportCaseDocumentId: supportCase.documentId,
+      },
+      occurredAt: now,
+      requestId: requestContext.requestId,
+      source: 'candidate_dashboard',
+      subjectDisplayName: candidateMessageDisplayName(existingCandidate),
+      subjectId: feedback.documentId,
+      subjectType: 'interview_feedback',
+      userAgent: requestContext.userAgent,
+    });
+
+    await Promise.all([
+      publishAdminRealtimeEvent(
+        {
+          channels: ['support'],
+          resourceKey: supportCase.documentId,
+          resourceType: 'support_case',
+          type: 'support_cases_changed',
+        },
+        strapi.log
+      ),
+      publishAdminRealtimeEvent(
+        {
+          channels: ['operations'],
+          resourceKey: supportCase.documentId,
+          resourceType: 'support_case',
+          type: 'admin_tasks_changed',
+        },
+        strapi.log
+      ),
+    ]);
+
+    const candidateSupportCase = supportCase.documentId
+      ? await supportCaseService(strapi).getCaseForCandidate({
+          candidateDocumentId: existingCandidate.documentId,
+          supportCaseDocumentId: supportCase.documentId,
+        })
+      : null;
+
+    return {
+      feedbackReport: sanitizeCandidateFeedbackReport(updatedFeedback),
+      flagged: true,
+      supportCase: candidateSupportCase,
     };
   },
 
