@@ -23,6 +23,10 @@ type AdminAuthService = {
   getSession(input: unknown, context: RequestContext): Promise<AdminSession>;
 };
 
+type EmployerReliabilityEventService = {
+  action(input: Record<string, unknown>, context?: RequestContext): Promise<unknown>;
+};
+
 type DocumentRecord = Record<string, unknown> & {
   candidate?: DocumentRecord;
   class?: DocumentRecord;
@@ -48,11 +52,16 @@ type DocumentRecord = Record<string, unknown> & {
   lastName?: string;
   metadata?: unknown;
   name?: string;
+  outcome?: string;
   region?: DocumentRecord;
   requestState?: string;
   scheduledEndTime?: string;
   scheduledStartTime?: string;
+  sourceDocumentId?: string;
+  sourceType?: string;
+  strikeNumber?: number;
   title?: string;
+  summary?: string;
   updatedAt?: string;
 };
 
@@ -78,6 +87,7 @@ type OperationRow = {
   actionPath: string;
   candidateName: string | null;
   dueAt: string | null;
+  employerDocumentId: string | null;
   employerName: string | null;
   issue: Exclude<OperationIssue, 'all'>;
   issueLabel: string;
@@ -88,6 +98,17 @@ type OperationRow = {
   sourceType: 'interview' | 'interview_request';
   statusLabel: string;
   summary: string;
+  reliabilityEvent: {
+    documentId: string;
+    eventAt: string | null;
+    eventState: string | null;
+    eventType: string | null;
+    eventTypeLabel: string;
+    outcome: string | null;
+    strikeNumber: number;
+    summary: string | null;
+    title: string | null;
+  } | null;
 };
 
 const operationsSchema = z
@@ -112,11 +133,32 @@ const operationsSchema = z
 
 const validateOperations = validateZodSchema(operationsSchema);
 
+const actionSchema = z
+  .object({
+    action: z.enum(['acknowledge', 'apply_strike', 'apply_warning', 'clear', 'reset_employer']),
+    employerDocumentId: z.string().trim().min(1).max(120).optional(),
+    internalNote: z.string().trim().max(1000).optional().transform((value) => value || undefined),
+    reliabilityEventDocumentId: z.string().trim().min(1).max(120).optional(),
+    sessionToken: z.string().trim().min(32).max(512),
+    sourceDocumentId: z.string().trim().min(1).max(160).optional(),
+    sourceType: z.enum(['admin', 'employer_capacity_claim', 'interview', 'interview_request', 'system']).optional(),
+    summary: z.string().trim().max(1000).optional().transform((value) => value || undefined),
+    title: z.string().trim().max(180).optional().transform((value) => value || undefined),
+  })
+  .strict();
+
+const validateAction = validateZodSchema(actionSchema);
+
 const documents = (strapi: StrapiDocumentService, uid: string) =>
   strapi.documents(uid) as unknown as DocumentCollection;
 
 const adminAuthService = (strapi: StrapiDocumentService): AdminAuthService =>
   strapi.service('api::admin-auth.admin-auth') as unknown as AdminAuthService;
+
+const employerReliabilityEventService = (strapi: StrapiDocumentService): EmployerReliabilityEventService =>
+  strapi.service(
+    'api::employer-reliability-event.employer-reliability-event'
+  ) as unknown as EmployerReliabilityEventService;
 
 const getDocumentId = (record?: DocumentRecord | null) =>
   typeof record?.documentId === 'string'
@@ -143,6 +185,8 @@ const employerName = (interview: DocumentRecord) => {
   const employer = documentRecordValue(interview.employer);
   return typeof employer?.companyName === 'string' ? employer.companyName : displayName(employer);
 };
+
+const employerDocumentId = (record: DocumentRecord) => getDocumentId(documentRecordValue(record.employer)) || null;
 
 const regionName = (record: DocumentRecord) => {
   const region =
@@ -185,6 +229,12 @@ const issueLabels: Record<Exclude<OperationIssue, 'all'>, string> = {
   feedback_overdue: 'Feedback overdue',
 };
 
+const reliabilityEventTypeByIssue: Partial<Record<Exclude<OperationIssue, 'all'>, string>> = {
+  details_overdue: 'interview_details_overdue',
+  details_released: 'interview_details_released',
+  feedback_overdue: 'feedback_overdue',
+};
+
 const priorityRank = {
   urgent: 0,
   high: 1,
@@ -223,6 +273,7 @@ const interviewRow = (
     actionPath: actionPath(issue, documentId),
     candidateName,
     dueAt: due,
+    employerDocumentId: employerDocumentId(interview),
     employerName: employer,
     issue,
     issueLabel: issueLabels[issue],
@@ -239,6 +290,7 @@ const interviewRow = (
       candidateName ? `Candidate: ${candidateName}` : null,
       employer ? `Employer: ${employer}` : null,
     ].filter(Boolean).join(' / '),
+    reliabilityEvent: null,
   };
 };
 
@@ -257,6 +309,7 @@ const requestRow = (request: DocumentRecord): OperationRow | null => {
     actionPath: `/interviews?issue=capacity_shortfall&request=${encodeURIComponent(documentId)}`,
     candidateName,
     dueAt: detectedAt,
+    employerDocumentId: null,
     employerName: null,
     issue: 'capacity_shortfall',
     issueLabel: issueLabels.capacity_shortfall,
@@ -271,6 +324,7 @@ const requestRow = (request: DocumentRecord): OperationRow | null => {
       candidateName ? `Candidate: ${candidateName}` : null,
       typeof classRecord?.displayTitle === 'string' ? `Class: ${classRecord.displayTitle}` : null,
     ].filter(Boolean).join(' / '),
+    reliabilityEvent: null,
   };
 };
 
@@ -311,6 +365,34 @@ const includesSearch = (row: OperationRow, search?: string) => {
 
   return haystack.includes(search.toLowerCase());
 };
+
+const humanize = (value?: string | null) =>
+  String(value || '')
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (character) => character.toUpperCase());
+
+const reliabilityEventPayload = (event: DocumentRecord): OperationRow['reliabilityEvent'] => {
+  const documentId = getDocumentId(event);
+
+  if (!documentId) {
+    return null;
+  }
+
+  return {
+    documentId,
+    eventAt: typeof event.eventAt === 'string' ? event.eventAt : null,
+    eventState: typeof event.eventState === 'string' ? event.eventState : null,
+    eventType: typeof event.eventType === 'string' ? event.eventType : null,
+    eventTypeLabel: humanize(typeof event.eventType === 'string' ? event.eventType : null),
+    outcome: typeof event.outcome === 'string' ? event.outcome : null,
+    strikeNumber: Number(event.strikeNumber || 0),
+    summary: typeof event.summary === 'string' ? event.summary : null,
+    title: typeof event.title === 'string' ? event.title : null,
+  };
+};
+
+const reliabilityLookupKey = (sourceType?: string, sourceDocumentId?: string, eventType?: string) =>
+  sourceType && sourceDocumentId && eventType ? `${sourceType}:${sourceDocumentId}:${eventType}` : null;
 
 const compareRows = (
   sortBy: 'candidate' | 'dueAt' | 'employer' | 'issue' | 'priority' | 'updatedAt',
@@ -425,27 +507,116 @@ export default ({ strapi }) => ({
 
     rows.push(...requests.map(requestRow));
 
-    const filteredRows = rows
-      .filter((row): row is OperationRow => Boolean(row))
+    const compactRows = rows.filter((row): row is OperationRow => Boolean(row));
+    const reliabilitySourceDocumentIds = compactRows
+      .map((row) => row.sourceDocumentId)
+      .filter((documentId): documentId is string => Boolean(documentId));
+    const reliabilityEventTypes = Object.values(reliabilityEventTypeByIssue);
+    const reliabilityEvents =
+      reliabilitySourceDocumentIds.length > 0
+        ? await documents(strapi, 'api::employer-reliability-event.employer-reliability-event').findMany({
+            filters: {
+              eventState: {
+                $in: ['active', 'acknowledged'],
+              },
+              eventType: {
+                $in: reliabilityEventTypes,
+              },
+              sourceDocumentId: {
+                $in: reliabilitySourceDocumentIds,
+              },
+              sourceType: 'interview',
+            },
+            limit: Math.max(reliabilitySourceDocumentIds.length, 100),
+            sort: ['eventAt:desc', 'createdAt:desc'],
+          })
+        : [];
+    const reliabilityEventsByKey = new Map<string, OperationRow['reliabilityEvent']>();
+
+    for (const event of reliabilityEvents) {
+      const key = reliabilityLookupKey(
+        typeof event.sourceType === 'string' ? event.sourceType : undefined,
+        typeof event.sourceDocumentId === 'string' ? event.sourceDocumentId : undefined,
+        typeof event.eventType === 'string' ? event.eventType : undefined
+      );
+
+      if (key && !reliabilityEventsByKey.has(key)) {
+        reliabilityEventsByKey.set(key, reliabilityEventPayload(event));
+      }
+    }
+
+    const rowsWithReliability = compactRows.map((row) => {
+      const eventType = reliabilityEventTypeByIssue[row.issue];
+      const key = reliabilityLookupKey(row.sourceType, row.sourceDocumentId, eventType);
+
+      return {
+        ...row,
+        reliabilityEvent: key ? reliabilityEventsByKey.get(key) || null : null,
+      };
+    });
+
+    const filteredRows = rowsWithReliability
       .filter((row) => body.issue === 'all' || row.issue === body.issue)
       .filter((row) => includesSearch(row, body.search))
       .sort(compareRows(body.sortBy, body.sortDirection));
 
     return {
       counts: {
-        capacityShortfall: rows.filter((row) => row.issue === 'capacity_shortfall').length,
-        detailsOverdue: rows.filter((row) => row.issue === 'details_overdue').length,
-        detailsPending: rows.filter((row) => row.issue === 'details_pending').length,
-        detailsReleased: rows.filter((row) => row.issue === 'details_released').length,
-        feedbackDue: rows.filter((row) => row.issue === 'feedback_due').length,
-        feedbackOverdue: rows.filter((row) => row.issue === 'feedback_overdue').length,
-        total: rows.length,
+        capacityShortfall: rowsWithReliability.filter((row) => row.issue === 'capacity_shortfall').length,
+        detailsOverdue: rowsWithReliability.filter((row) => row.issue === 'details_overdue').length,
+        detailsPending: rowsWithReliability.filter((row) => row.issue === 'details_pending').length,
+        detailsReleased: rowsWithReliability.filter((row) => row.issue === 'details_released').length,
+        feedbackDue: rowsWithReliability.filter((row) => row.issue === 'feedback_due').length,
+        feedbackOverdue: rowsWithReliability.filter((row) => row.issue === 'feedback_overdue').length,
+        total: rowsWithReliability.length,
       },
       filteredOperations: filteredRows.length,
       generatedAt: new Date().toISOString(),
       operations: filteredRows.slice(0, 200),
-      totalOperations: rows.length,
+      totalOperations: rowsWithReliability.length,
       user: session.user,
     };
+  },
+
+  async action(input: unknown, requestContext: RequestContext = {}) {
+    const body = validateAction(input);
+    const session = await assertSession(strapi, body.sessionToken, requestContext);
+
+    if (
+      ['apply_strike', 'clear', 'reset_employer'].includes(body.action) &&
+      !body.internalNote?.trim()
+    ) {
+      throw new errors.ValidationError('An audit note is required for this reliability action.');
+    }
+
+    if (['acknowledge', 'clear'].includes(body.action) && !body.reliabilityEventDocumentId) {
+      throw new errors.ValidationError('Reliability event ID is required.');
+    }
+
+    if (
+      ['apply_strike', 'apply_warning', 'reset_employer'].includes(body.action) &&
+      !body.employerDocumentId
+    ) {
+      throw new errors.ValidationError('Employer ID is required.');
+    }
+
+    return employerReliabilityEventService(strapi).action(
+      {
+        action: body.action,
+        actor: {
+          displayName: session.user.displayName,
+          email: session.user.email,
+          id: session.user.id,
+        },
+        employerDocumentId: body.employerDocumentId,
+        eventDocumentId: body.reliabilityEventDocumentId,
+        internalNote: body.internalNote,
+        sourceDocumentId: body.sourceDocumentId,
+        sourceType: body.sourceType,
+        summary: body.summary,
+        title: body.title,
+      },
+      requestContext
+    );
   },
 });

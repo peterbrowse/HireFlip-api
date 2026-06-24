@@ -153,6 +153,10 @@ type InterviewRequestService = {
   releaseCapacityClaim(input: unknown, context: RequestContext): Promise<unknown>;
 };
 
+type EmployerReliabilityEventService = {
+  summaryForEmployer(employerDocumentId: string): Promise<unknown>;
+};
+
 type UploadedFile = {
   filepath?: string;
   mimetype?: string;
@@ -439,6 +443,10 @@ const auditEvents = (strapi: StrapiDocumentService) =>
   strapi.service('api::audit-event.audit-event') as AuditEventService;
 const interviewRequestService = (strapi: StrapiDocumentService) =>
   strapi.service('api::interview-request.interview-request') as InterviewRequestService;
+const employerReliabilityEventService = (strapi: StrapiDocumentService) =>
+  strapi.service(
+    'api::employer-reliability-event.employer-reliability-event'
+  ) as EmployerReliabilityEventService;
 
 const getDocumentId = (record?: DocumentRecord | null) =>
   typeof record?.documentId === 'string' ? record.documentId : null;
@@ -1163,6 +1171,29 @@ const publicRegionCommitment = (commitment: DocumentRecord) => {
   };
 };
 
+const clearReliabilitySummary = {
+  latestEventAt: null,
+  recentEvents: [],
+  state: 'clear',
+  strikeCount: 0,
+  warningCount: 0,
+};
+
+const employerReliabilitySummary = async (
+  strapi: StrapiDocumentService,
+  employerDocumentId?: string | null
+) => {
+  if (!employerDocumentId) {
+    return clearReliabilitySummary;
+  }
+
+  try {
+    return await employerReliabilityEventService(strapi).summaryForEmployer(employerDocumentId);
+  } catch {
+    return clearReliabilitySummary;
+  }
+};
+
 const cadenceWindow = (cadence?: string | null, now = new Date()) => {
   const cadenceValue = String(cadence || '').toLowerCase();
   const months = cadenceValue === 'annually' ? 12 : cadenceValue === 'biannually' ? 6 : 3;
@@ -1387,6 +1418,7 @@ const accountPayload = async (strapi: StrapiDocumentService, contact: DocumentRe
   const regions = employerRegions(employer);
   const regionsLabel = regionLabel(regions);
   const contacts = Array.isArray(employer?.contacts) ? employer.contacts : [];
+  const employerDocumentId = getDocumentId(employer);
   const publicContacts = await Promise.all(
     contacts
       .filter((teamContact) => !['archived', 'disabled'].includes(String(teamContact.contactState || '')))
@@ -1416,6 +1448,7 @@ const accountPayload = async (strapi: StrapiDocumentService, contact: DocumentRe
     coverage: coverageStatus(employer),
     leadContact: await publicContactPayload(strapi, contact),
     onboarding: await onboardingPayload(strapi, contact),
+    reliability: await employerReliabilitySummary(strapi, employerDocumentId),
     region: regionsLabel,
     regionNames: regionNames(regions),
     regions,

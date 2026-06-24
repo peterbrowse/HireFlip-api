@@ -103,6 +103,10 @@ type AuditEventService = {
   record(input: Record<string, unknown>): Promise<unknown>;
 };
 
+type EmployerReliabilityEventService = {
+  recordEvent(input: Record<string, unknown>, context?: RequestContext): Promise<unknown>;
+};
+
 type NotificationServiceQueueResponse = {
   data?: {
     jobId?: unknown;
@@ -196,6 +200,11 @@ const documents = (strapi: StrapiDocumentService, uid: string) =>
 const auditEvents = (strapi: StrapiDocumentService) =>
   strapi.service('api::audit-event.audit-event') as unknown as AuditEventService;
 
+const employerReliabilityEvents = (strapi: StrapiDocumentService) =>
+  strapi.service(
+    'api::employer-reliability-event.employer-reliability-event'
+  ) as unknown as EmployerReliabilityEventService;
+
 const getDocumentId = (record?: DocumentRecord | null) =>
   typeof record?.documentId === 'string' ? record.documentId : undefined;
 
@@ -273,6 +282,19 @@ const displayName = (record?: DocumentRecord | null) =>
   [record?.firstName, record?.lastName].filter(Boolean).join(' ').trim() ||
   String(record?.name || record?.email || record?.documentId || '').trim();
 
+const recordEmployerReliabilityEvent = async (
+  strapi: StrapiDocumentService,
+  input: Record<string, unknown>,
+  requestContext: RequestContext
+) => {
+  try {
+    return await employerReliabilityEvents(strapi).recordEvent(input, requestContext);
+  } catch (error) {
+    strapi.log?.error?.('Employer reliability event could not be recorded.', error);
+    return undefined;
+  }
+};
+
 const validDate = (value?: string | Date | null) => {
   if (!value) {
     return null;
@@ -341,12 +363,14 @@ const interviewFeedbackDueAt = (interview: DocumentRecord) => {
 };
 
 const requestNotificationServiceEmail = async ({
+  cc,
   correlationId,
   subject,
   template,
   to,
   type,
 }: {
+  cc?: string[];
   correlationId?: string;
   subject?: string;
   template?: NotificationTemplatePayload;
@@ -369,6 +393,7 @@ const requestNotificationServiceEmail = async ({
   try {
     const response = await fetch(`${trimTrailingSlash(baseUrl)}/api/internal/notifications/email`, {
       body: JSON.stringify({
+        ...(cc?.length ? { cc } : {}),
         correlationId,
         priority: 'critical',
         source: 'core-api',
@@ -2221,6 +2246,29 @@ const releaseInterviewForMissingDetails = async ({
     userAgent: requestContext.userAgent,
   });
 
+  await recordEmployerReliabilityEvent(
+    strapi,
+    {
+      candidate: documentRecordValue(interview.candidate),
+      employer: documentRecordValue(interview.employer),
+      employerContact: documentRecordValue(interview.employerContact),
+      eventAt: now,
+      eventType: 'interview_details_released',
+      interview,
+      metadata: {
+        interviewSlotOfferDocumentId: getDocumentId(offer) || null,
+        reusableSlot,
+        selectedSlotDocumentId: selectedSlot?.documentId || null,
+      },
+      sourceDocumentId: interviewDocumentId,
+      sourceType: 'interview',
+      summary:
+        'HireFlip released and rerouted an interview because the employer did not confirm final interview details in time.',
+      title: 'Interview released after missing details',
+    },
+    requestContext
+  );
+
   if (request?.documentId) {
     await routeInterviewRequest(
       strapi,
@@ -2545,6 +2593,27 @@ export default factories.createCoreService('api::interview-request.interview-req
               employerDetailsEscalatedAt: new Date(now).toISOString(),
             },
           });
+          await recordEmployerReliabilityEvent(
+            strapi,
+            {
+              candidate: documentRecordValue(interview.candidate),
+              employer: documentRecordValue(interview.employer),
+              employerContact: documentRecordValue(interview.employerContact),
+              eventAt: new Date(now).toISOString(),
+              eventType: 'interview_details_overdue',
+              interview,
+              metadata: {
+                dueAt,
+                releaseEligibleAt,
+              },
+              sourceDocumentId: interviewDocumentId,
+              sourceType: 'interview',
+              summary:
+                'Final interview details were not confirmed by the deadline, so HireFlip escalated the issue to the employer lead contact.',
+              title: 'Interview details overdue',
+            },
+            requestContext
+          );
           summary.escalated += 1;
         }
 
@@ -2691,6 +2760,26 @@ export default factories.createCoreService('api::interview-request.interview-req
                 feedbackOverdueDetectedAt: new Date(now).toISOString(),
               },
             });
+            await recordEmployerReliabilityEvent(
+              strapi,
+              {
+                candidate: documentRecordValue(interview.candidate),
+                employer: documentRecordValue(interview.employer),
+                employerContact: documentRecordValue(interview.employerContact),
+                eventAt: new Date(now).toISOString(),
+                eventType: 'feedback_overdue',
+                interview,
+                metadata: {
+                  dueAt,
+                },
+                sourceDocumentId: interviewDocumentId,
+                sourceType: 'interview',
+                summary:
+                  'Employer interview feedback was not submitted inside the agreed feedback window.',
+                title: 'Interview feedback overdue',
+              },
+              requestContext
+            );
           }
           summary.overdue += 1;
           continue;
@@ -3003,6 +3092,38 @@ export default factories.createCoreService('api::interview-request.interview-req
       subjectType: requestDocumentId ? 'interview_request' : 'employer_capacity_claim',
       userAgent: requestContext.userAgent,
     });
+
+    if (['contact_reschedule_requested', 'expired'].includes(body.releaseReason)) {
+      await recordEmployerReliabilityEvent(
+        strapi,
+        {
+          capacityClaim: releasedClaim,
+          candidate: documentRecordValue(request?.candidate),
+          employer: documentRecordValue(claim.employer),
+          employerContact: documentRecordValue(claim.employerContact),
+          eventType:
+            body.releaseReason === 'expired'
+              ? 'capacity_claim_expired'
+              : 'reschedule_requested',
+          metadata: {
+            releaseNote: body.releaseNote || null,
+            releaseReason: body.releaseReason,
+            requestDocumentId,
+          },
+          sourceDocumentId: body.capacityClaimDocumentId,
+          sourceType: 'employer_capacity_claim',
+          summary:
+            body.releaseReason === 'expired'
+              ? 'An interview availability request expired before slot options were submitted. HireFlip released the claim and rerouted the candidate.'
+              : 'An employer contact requested a reschedule instead of submitting slot options. HireFlip released the capacity and rerouted the candidate.',
+          title:
+            body.releaseReason === 'expired'
+              ? 'Interview availability request expired'
+              : 'Contact reschedule requested',
+        },
+        requestContext
+      );
+    }
 
     return {
       claim: {

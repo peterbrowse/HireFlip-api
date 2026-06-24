@@ -1,0 +1,146 @@
+{
+  "kind": "collectionType",
+  "collectionName": "employer_reliability_events",
+  "info": {
+    "singularName": "employer-reliability-event",
+    "pluralName": "employer-reliability-events",
+    "displayName": "Employer Reliability Event",
+    "description": "Operational warning and strike records for employer SLA reliability."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "employer": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::employer.employer",
+      "inversedBy": "reliabilityEvents"
+    },
+    "candidate": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::candidate.candidate"
+    },
+    "interview": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::interview.interview"
+    },
+    "capacityClaim": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::employer-capacity-claim.employer-capacity-claim"
+    },
+    "employerContact": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::employer-contact.employer-contact"
+    },
+    "eventType": {
+      "type": "enumeration",
+      "enum": [
+        "capacity_claim_expired",
+        "interview_details_overdue",
+        "interview_details_released",
+        "feedback_overdue",
+        "employer_no_show",
+        "employer_cancelled",
+        "reschedule_requested",
+        "manual_warning",
+        "manual_strike",
+        "reliability_reset"
+      ],
+      "required": true
+    },
+    "outcome": {
+      "type": "enumeration",
+      "enum": [
+        "warning",
+        "strike",
+        "note",
+        "reset"
+      ],
+      "required": true
+    },
+    "eventState": {
+      "type": "enumeration",
+      "enum": [
+        "active",
+        "acknowledged",
+        "cleared",
+        "reset"
+      ],
+      "default": "active",
+      "required": true
+    },
+    "strikeNumber": {
+      "type": "integer",
+      "min": 0,
+      "default": 0
+    },
+    "title": {
+      "type": "string",
+      "maxLength": 180,
+      "required": true
+    },
+    "summary": {
+      "type": "text"
+    },
+    "sourceType": {
+      "type": "enumeration",
+      "enum": [
+        "interview",
+        "employer_capacity_claim",
+        "interview_request",
+        "admin",
+        "system"
+      ],
+      "required": true
+    },
+    "sourceDocumentId": {
+      "type": "string",
+      "maxLength": 160
+    },
+    "eventAt": {
+      "type": "datetime",
+      "required": true
+    },
+    "acknowledgedAt": {
+      "type": "datetime"
+    },
+    "clearedAt": {
+      "type": "datetime"
+    },
+    "resetAt": {
+      "type": "datetime"
+    },
+    "actionedByEmail": {
+      "type": "email",
+      "maxLength": 254
+    },
+    "actionedByName": {
+      "type": "string",
+      "maxLength": 180
+    },
+    "internalNote": {
+      "type": "text"
+    },
+    "candidateNote": {
+      "type": "text"
+    },
+    "candidateNoteSentAt": {
+      "type": "datetime"
+    },
+    "employerNotificationSentAt": {
+      "type": "datetime"
+    },
+    "leadCcEmail": {
+      "type": "email",
+      "maxLength": 254
+    },
+    "metadata": {
+      "type": "json"
+    }
+  }
+}

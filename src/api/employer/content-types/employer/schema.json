@@ -166,6 +166,12 @@
       "target": "api::employer-capacity-change-request.employer-capacity-change-request",
       "mappedBy": "employer"
     },
+    "reliabilityEvents": {
+      "type": "relation",
+      "relation": "oneToMany",
+      "target": "api::employer-reliability-event.employer-reliability-event",
+      "mappedBy": "employer"
+    },
     "regionCommitments": {
       "type": "relation",
       "relation": "oneToMany",

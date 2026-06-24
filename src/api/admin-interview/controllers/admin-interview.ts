@@ -6,6 +6,7 @@ type RequestContext = {
 };
 
 type AdminInterviewService = {
+  action(input: unknown, context: RequestContext): Promise<unknown>;
   getOperations(input: unknown, context: RequestContext): Promise<unknown>;
 };
 
@@ -29,6 +30,15 @@ export default ({ strapi }) => ({
   async operations(ctx) {
     ctx.body = {
       data: await adminInterviewService(strapi).getOperations(
+        ctx.request.body,
+        getRequestContext(ctx)
+      ),
+    };
+  },
+
+  async action(ctx) {
+    ctx.body = {
+      data: await adminInterviewService(strapi).action(
         ctx.request.body,
         getRequestContext(ctx)
       ),
