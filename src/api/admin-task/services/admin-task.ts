@@ -50,6 +50,8 @@ type DocumentRecord = Record<string, unknown> & {
   candidateReportRetryCount?: number;
   candidateReportState?: string;
   class?: DocumentRecord;
+  companyName?: string;
+  completedAt?: string;
   courseTestAttempt?: DocumentRecord;
   createdAt?: string;
   currency?: string;
@@ -65,8 +67,17 @@ type DocumentRecord = Record<string, unknown> & {
   firstName?: string;
   id?: number | string;
   interview?: DocumentRecord;
+  interviewState?: string;
   lastDetectedAt?: string;
   lastName?: string;
+  employer?: DocumentRecord;
+  employerContact?: DocumentRecord;
+  employerDetailsDueAt?: string;
+  employerDetailsReleaseEligibleAt?: string;
+  employerDetailsReleaseReason?: string;
+  employerDetailsReleasedAt?: string;
+  feedbackDueAt?: string;
+  feedbackOverdueDetectedAt?: string;
   metadata?: unknown;
   occurredAt?: string;
   payment?: DocumentRecord;
@@ -81,6 +92,8 @@ type DocumentRecord = Record<string, unknown> & {
   reservation?: DocumentRecord;
   reservationState?: string;
   resolvedAt?: string | null;
+  scheduledEndTime?: string;
+  scheduledStartTime?: string;
   severity?: string;
   sourceDocumentId?: string;
   sourceType?: AdminTaskSourceType;
@@ -113,6 +126,7 @@ type AdminTaskSourceType =
   | 'assessment_appeal'
   | 'audit_event'
   | 'enrollment'
+  | 'interview'
   | 'interview_feedback'
   | 'notification_event'
   | 'payment'
@@ -123,6 +137,7 @@ type AdminTaskState = 'acknowledged' | 'dismissed' | 'open' | 'resolved';
 type AdminTaskType =
   | 'assessment_appeal'
   | 'ai_feedback_review'
+  | 'interview_operation'
   | 'notification_failure'
   | 'payment_review'
   | 'refund_review'
@@ -197,6 +212,18 @@ const supportCasePath = (supportCaseDocumentId: string) =>
   `/support/${encodeURIComponent(supportCaseDocumentId)}`;
 const aiFeedbackReviewPath = (feedbackDocumentId: string) =>
   `/support/ai-feedback/${encodeURIComponent(feedbackDocumentId)}`;
+const interviewOperationsPath = (params?: Record<string, string | undefined>) => {
+  const searchParams = new URLSearchParams();
+
+  for (const [key, value] of Object.entries(params || {})) {
+    if (value) {
+      searchParams.set(key, value);
+    }
+  }
+
+  const query = searchParams.toString();
+  return `/interviews${query ? `?${query}` : ''}`;
+};
 
 const candidateDisplayName = (candidate?: DocumentRecord) => {
   if (!candidate) {
@@ -227,6 +254,7 @@ const sourceTimestamp = (record: DocumentRecord) =>
 const taskTypeLabels: Record<AdminTaskType, string> = {
   assessment_appeal: 'Assessment appeal',
   ai_feedback_review: 'AI feedback review',
+  interview_operation: 'Interview operation',
   notification_failure: 'Notification failure',
   payment_review: 'Payment review',
   refund_review: 'Refund review',
@@ -245,6 +273,7 @@ const priorityRank: Record<AdminTaskPriority, number> = {
 const monitoredTaskTypes: AdminTaskType[] = [
   'assessment_appeal',
   'ai_feedback_review',
+  'interview_operation',
   'payment_review',
   'refund_review',
   'support_case',
@@ -341,6 +370,15 @@ const assertOperationsSession = async (
 };
 
 const canViewTaskRecordForSession = (task: DocumentRecord, session: AdminSession) => {
+  const visibleRoleKeys = objectValue(task.metadata).visibleRoleKeys;
+
+  if (
+    Array.isArray(visibleRoleKeys) &&
+    visibleRoleKeys.every((roleKey) => typeof roleKey === 'string')
+  ) {
+    return session.user.roleKeys.some((roleKey) => visibleRoleKeys.includes(roleKey));
+  }
+
   if (task.taskType !== 'ai_feedback_review') {
     return true;
   }
@@ -879,6 +917,175 @@ const aiFeedbackFailureTask = (feedback: DocumentRecord): AdminTaskDraft | null 
   };
 };
 
+const addCalendarDays = (value?: string | Date | null, days = 7) => {
+  const parsed = value ? new Date(value) : undefined;
+
+  if (!parsed || !Number.isFinite(parsed.getTime())) {
+    return null;
+  }
+
+  const result = new Date(parsed.getTime());
+  result.setUTCDate(result.getUTCDate() + Math.max(0, Math.floor(days)));
+  return result.toISOString();
+};
+
+const interviewCandidateName = (interview: DocumentRecord) =>
+  candidateDisplayName(documentRecordValue(interview.candidate));
+
+const interviewEmployerName = (interview: DocumentRecord) =>
+  typeof documentRecordValue(interview.employer)?.companyName === 'string'
+    ? String(documentRecordValue(interview.employer)?.companyName)
+    : undefined;
+
+const interviewDetailsOverdueTask = (interview: DocumentRecord): AdminTaskDraft | null => {
+  const documentId = getDocumentId(interview);
+  const dueAt = interview.employerDetailsDueAt || interview.createdAt;
+
+  if (!documentId || !dueAt || Date.parse(dueAt) > Date.now()) {
+    return null;
+  }
+
+  const releaseEligibleAt = interview.employerDetailsReleaseEligibleAt || null;
+  const releaseEligible = Boolean(releaseEligibleAt && Date.parse(releaseEligibleAt) <= Date.now());
+  const candidateName = interviewCandidateName(interview);
+  const employerName = interviewEmployerName(interview);
+
+  return {
+    actionLabel: 'Review interview',
+    actionPath: interviewOperationsPath({
+      issue: 'details_overdue',
+      interview: documentId,
+    }),
+    metadata: {
+      candidateName,
+      dueAt,
+      employerName,
+      interviewDocumentId: documentId,
+      releaseEligibleAt,
+      sourceCreatedAt: interview.createdAt,
+      sourceDetectedAt: dueAt,
+      visibleRoleKeys: ['sales', 'admin', 'super_admin'],
+    },
+    priority: releaseEligible ? 'urgent' : 'high',
+    relatedDocumentId: documentId,
+    relatedType: 'interview',
+    sourceDocumentId: documentId,
+    sourceType: 'interview',
+    summary: trimToLength(
+      [
+        'Employer interview details are overdue.',
+        candidateName ? `Candidate: ${candidateName}.` : '',
+        employerName ? `Employer: ${employerName}.` : '',
+      ].filter(Boolean).join(' '),
+      500
+    ),
+    taskKey: `interview:${documentId}:details_overdue`,
+    taskType: 'interview_operation',
+    title: releaseEligible ? 'Interview details release due' : 'Interview details overdue',
+  };
+};
+
+const interviewDetailsReleasedTask = (interview: DocumentRecord): AdminTaskDraft | null => {
+  const documentId = getDocumentId(interview);
+
+  if (
+    !documentId ||
+    interview.interviewState !== 'employer_cancelled' ||
+    interview.employerDetailsReleaseReason !== 'employer_did_not_confirm'
+  ) {
+    return null;
+  }
+
+  const releasedAt = interview.employerDetailsReleasedAt || interview.updatedAt || interview.createdAt;
+  const candidateName = interviewCandidateName(interview);
+  const employerName = interviewEmployerName(interview);
+
+  return {
+    actionLabel: 'Review release',
+    actionPath: interviewOperationsPath({
+      issue: 'details_released',
+      interview: documentId,
+    }),
+    metadata: {
+      candidateName,
+      employerName,
+      interviewDocumentId: documentId,
+      releasedAt,
+      sourceCreatedAt: interview.createdAt,
+      sourceDetectedAt: releasedAt || sourceTimestamp(interview),
+      visibleRoleKeys: ['sales', 'admin', 'super_admin'],
+    },
+    priority: 'high',
+    relatedDocumentId: documentId,
+    relatedType: 'interview',
+    sourceDocumentId: documentId,
+    sourceType: 'interview',
+    summary: trimToLength(
+      [
+        'Interview was released because the employer did not confirm final details.',
+        candidateName ? `Candidate: ${candidateName}.` : '',
+        employerName ? `Employer: ${employerName}.` : '',
+      ].filter(Boolean).join(' '),
+      500
+    ),
+    taskKey: `interview:${documentId}:details_released`,
+    taskType: 'interview_operation',
+    title: 'Interview released',
+  };
+};
+
+const interviewFeedbackOverdueTask = (interview: DocumentRecord): AdminTaskDraft | null => {
+  const documentId = getDocumentId(interview);
+  const referenceAt =
+    interview.scheduledEndTime || interview.completedAt || interview.scheduledStartTime || interview.createdAt;
+  const dueAt = interview.feedbackDueAt || addCalendarDays(referenceAt || null, 7);
+
+  if (!documentId || !dueAt || Date.parse(dueAt) > Date.now()) {
+    return null;
+  }
+
+  const escalatedToAdminAt = addBusinessHours(dueAt, 4);
+  const isEscalated = Boolean(escalatedToAdminAt && Date.parse(escalatedToAdminAt) <= Date.now());
+  const candidateName = interviewCandidateName(interview);
+  const employerName = interviewEmployerName(interview);
+
+  return {
+    actionLabel: 'Review feedback',
+    actionPath: interviewOperationsPath({
+      issue: 'feedback_overdue',
+      interview: documentId,
+    }),
+    metadata: {
+      candidateName,
+      dueAt,
+      employerName,
+      escalatedToAdminAt,
+      interviewDocumentId: documentId,
+      sourceCreatedAt: interview.createdAt,
+      sourceDetectedAt: interview.feedbackOverdueDetectedAt || dueAt,
+      visibleRoleKeys: isEscalated
+        ? ['support', 'sales', 'admin', 'super_admin']
+        : ['support', 'sales'],
+    },
+    priority: isEscalated ? 'urgent' : 'high',
+    relatedDocumentId: documentId,
+    relatedType: 'interview',
+    sourceDocumentId: documentId,
+    sourceType: 'interview',
+    summary: trimToLength(
+      [
+        'Employer feedback is overdue.',
+        candidateName ? `Candidate: ${candidateName}.` : '',
+        employerName ? `Employer: ${employerName}.` : '',
+      ].filter(Boolean).join(' '),
+      500
+    ),
+    taskKey: `interview:${documentId}:feedback_overdue`,
+    taskType: 'interview_operation',
+    title: 'Interview feedback overdue',
+  };
+};
+
 const collectPaymentTasks = async (strapi: StrapiDocumentService) => {
   const payments = await documents(strapi, 'api::payment.payment').findMany({
     filters: {
@@ -1052,9 +1259,78 @@ const collectAiFeedbackFailureTasks = async (strapi: StrapiDocumentService) => {
     .filter((task): task is AdminTaskDraft => Boolean(task));
 };
 
+const collectInterviewDetailTasks = async (strapi: StrapiDocumentService) => {
+  const interviews = await documents(strapi, 'api::interview.interview').findMany({
+    filters: {
+      $or: [
+        {
+          interviewState: 'awaiting_employer_details',
+        },
+        {
+          employerDetailsReleaseReason: 'employer_did_not_confirm',
+          interviewState: 'employer_cancelled',
+        },
+      ],
+    },
+    limit: 100,
+    populate: ['candidate', 'employer', 'employerContact'],
+    sort: ['employerDetailsDueAt:asc', 'createdAt:asc'],
+  });
+
+  return interviews
+    .flatMap((interview) => [
+      interviewDetailsOverdueTask(interview),
+      interviewDetailsReleasedTask(interview),
+    ])
+    .filter((task): task is AdminTaskDraft => Boolean(task));
+};
+
+const collectInterviewFeedbackTasks = async (strapi: StrapiDocumentService) => {
+  const interviews = await documents(strapi, 'api::interview.interview').findMany({
+    filters: {
+      interviewState: 'completed',
+    },
+    limit: 100,
+    populate: ['candidate', 'employer', 'employerContact'],
+    sort: ['feedbackDueAt:asc', 'completedAt:asc', 'createdAt:asc'],
+  });
+  const interviewDocumentIds = interviews
+    .map(getDocumentId)
+    .filter((documentId): documentId is string => Boolean(documentId));
+  const feedbackRecords = interviewDocumentIds.length
+    ? await documents(strapi, 'api::interview-feedback.interview-feedback').findMany({
+        filters: {
+          interview: {
+            documentId: {
+              $in: interviewDocumentIds,
+            },
+          },
+          submittedByType: 'employer_contact',
+        },
+        limit: 100,
+        populate: ['interview'],
+      })
+    : [];
+  const feedbackInterviewIds = new Set(
+    feedbackRecords
+      .map((feedback) => getDocumentId(feedback.interview))
+      .filter((documentId): documentId is string => Boolean(documentId))
+  );
+
+  return interviews
+    .filter((interview) => {
+      const interviewDocumentId = getDocumentId(interview);
+      return Boolean(interviewDocumentId && !feedbackInterviewIds.has(interviewDocumentId));
+    })
+    .map(interviewFeedbackOverdueTask)
+    .filter((task): task is AdminTaskDraft => Boolean(task));
+};
+
 const collectTaskDrafts = async (strapi: StrapiDocumentService) => {
   const [
     assessmentAppeals,
+    interviewDetails,
+    interviewFeedback,
     payments,
     reservations,
     enrollments,
@@ -1065,6 +1341,8 @@ const collectTaskDrafts = async (strapi: StrapiDocumentService) => {
     supportCases,
   ] = await Promise.all([
     collectAssessmentAppealTasks(strapi),
+    collectInterviewDetailTasks(strapi),
+    collectInterviewFeedbackTasks(strapi),
     collectPaymentTasks(strapi),
     collectReservationTasks(strapi),
     collectEnrollmentTasks(strapi),
@@ -1077,6 +1355,8 @@ const collectTaskDrafts = async (strapi: StrapiDocumentService) => {
 
   return [
     ...assessmentAppeals,
+    ...interviewDetails,
+    ...interviewFeedback,
     ...payments,
     ...reservations,
     ...enrollments,
@@ -1150,6 +1430,7 @@ const taskCounts = (tasks: ReturnType<typeof publicTask>[]) => {
   return {
     assessmentAppeals: tasks.filter((task) => task.taskType === 'assessment_appeal').length,
     criticalEvents: tasks.filter((task) => task.taskType === 'system_alert').length,
+    interviewOperations: tasks.filter((task) => task.taskType === 'interview_operation').length,
     notificationFailures: tasks.filter((task) => task.taskType === 'notification_failure').length,
     paymentChecks: tasks.filter((task) =>
       ['payment_review', 'refund_review'].includes(task.taskType)

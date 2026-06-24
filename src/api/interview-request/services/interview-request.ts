@@ -1,6 +1,6 @@
 import { factories } from '@strapi/strapi';
 import { errors, validateZodSchema, z } from '@strapi/utils';
-import { addWorkingDays } from '../../../utils/working-days';
+import { addWorkingDays, subtractWorkingDays } from '../../../utils/working-days';
 
 const { ValidationError } = errors;
 
@@ -28,6 +28,11 @@ type DocumentRecord = Record<string, unknown> & {
   employer?: DocumentRecord;
   employerContact?: DocumentRecord;
   employerDetailsReminderCount?: number;
+  employerDetailsDueAt?: string;
+  employerDetailsEscalatedAt?: string;
+  employerDetailsReleaseEligibleAt?: string;
+  employerDetailsReleasedAt?: string;
+  employerFeedbackReminderCount?: number;
   employerResponseReminderCount?: number;
   employerState?: string;
   endTime?: string;
@@ -51,6 +56,7 @@ type DocumentRecord = Record<string, unknown> & {
   lastName?: string;
   lastEmployerResponseReminderSentAt?: string;
   lastEmployerDetailsReminderSentAt?: string;
+  lastEmployerFeedbackReminderSentAt?: string;
   metadata?: unknown;
   name?: string;
   operatingRegions?: DocumentRecord[];
@@ -63,6 +69,7 @@ type DocumentRecord = Record<string, unknown> & {
   releaseNote?: string;
   releaseReason?: string;
   scheduledStartTime?: string;
+  scheduledEndTime?: string;
   slug?: string;
   slotOffer?: DocumentRecord;
   slotOffers?: DocumentRecord[];
@@ -73,6 +80,8 @@ type DocumentRecord = Record<string, unknown> & {
   updatedAt?: string;
   availability?: string;
   completedAt?: string;
+  feedbackDueAt?: string;
+  feedbackOverdueDetectedAt?: string;
   workSector?: DocumentRecord;
 };
 
@@ -247,6 +256,11 @@ const employerInterviewDetailsReminderIntervalMs = () =>
 const employerInterviewDetailsReminderMax = () =>
   getIntegerEnv('EMPLOYER_INTERVIEW_DETAILS_REMINDER_MAX', 4);
 
+const employerFeedbackReminderIntervalMs = () =>
+  getIntegerEnv('EMPLOYER_INTERVIEW_FEEDBACK_REMINDER_INTERVAL_HOURS', 48) * 60 * 60 * 1000;
+
+const employerFeedbackDueDays = () => getIntegerEnv('EMPLOYER_INTERVIEW_FEEDBACK_DUE_DAYS', 7);
+
 const integerValue = (value: unknown, fallback = 0) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : fallback;
@@ -258,6 +272,73 @@ const boundedInteger = (value: unknown, fallback: number, min: number, max: numb
 const displayName = (record?: DocumentRecord | null) =>
   [record?.firstName, record?.lastName].filter(Boolean).join(' ').trim() ||
   String(record?.name || record?.email || record?.documentId || '').trim();
+
+const validDate = (value?: string | Date | null) => {
+  if (!value) {
+    return null;
+  }
+
+  const date = value instanceof Date ? new Date(value.getTime()) : new Date(value);
+
+  return Number.isFinite(date.getTime()) ? date : null;
+};
+
+const addCalendarDays = (value: string | Date, days: number) => {
+  const date = validDate(value) || new Date();
+  const next = new Date(date.getTime());
+  next.setUTCDate(next.getUTCDate() + Math.max(0, Math.floor(days)));
+  return next;
+};
+
+const detailDueWindowForInterview = (interview: DocumentRecord, from: string | Date = new Date()) => {
+  const fromDate = validDate(from) || new Date();
+  const scheduledStart = validDate(interview.scheduledStartTime);
+  const twoWorkingDays = addWorkingDays(fromDate, 2) || fromDate;
+  let dueDays = 2;
+
+  if (scheduledStart) {
+    const minimumNoticeCutoff = subtractWorkingDays(scheduledStart, 4);
+
+    if (minimumNoticeCutoff && twoWorkingDays.getTime() > minimumNoticeCutoff.getTime()) {
+      dueDays = 1;
+    }
+  }
+
+  const dueAt = addWorkingDays(fromDate, dueDays) || fromDate;
+  const extraDay = addWorkingDays(dueAt, 1) || dueAt;
+  let releaseEligibleAt = extraDay;
+
+  if (scheduledStart) {
+    const minimumNoticeCutoff = subtractWorkingDays(scheduledStart, 4);
+
+    if (minimumNoticeCutoff && extraDay.getTime() > minimumNoticeCutoff.getTime()) {
+      releaseEligibleAt = dueAt;
+    }
+  }
+
+  return {
+    dueAt: dueAt.toISOString(),
+    dueDays,
+    releaseEligibleAt: releaseEligibleAt.toISOString(),
+  };
+};
+
+const interviewFeedbackDueAt = (interview: DocumentRecord) => {
+  const existingDueAt = validDate(interview.feedbackDueAt);
+
+  if (existingDueAt) {
+    return existingDueAt.toISOString();
+  }
+
+  const reference =
+    validDate(interview.scheduledEndTime) ||
+    validDate(interview.completedAt) ||
+    validDate(interview.scheduledStartTime) ||
+    validDate(interview.createdAt) ||
+    new Date();
+
+  return addCalendarDays(reference, employerFeedbackDueDays()).toISOString();
+};
 
 const requestNotificationServiceEmail = async ({
   correlationId,
@@ -1200,6 +1281,235 @@ const queueEmployerInterviewDetailsReminderNotification = async ({
   };
 };
 
+const createInterviewNotificationEvent = async ({
+  eventType,
+  interview,
+  recipient,
+  requestContext,
+  result,
+  strapi,
+  templateKey = 'generic_branded_message',
+  type,
+}: {
+  eventType: string;
+  interview: DocumentRecord;
+  recipient: DocumentRecord;
+  requestContext: RequestContext;
+  result?: NotificationServiceQueueResponse;
+  strapi: StrapiDocumentService;
+  templateKey?: string;
+  type: string;
+}) => {
+  const interviewDocumentId = getDocumentId(interview);
+
+  await documents(strapi, 'api::notification-event.notification-event').create({
+    data: {
+      channel: 'email',
+      deliveryState: result?.data?.queued === true ? 'queued' : 'failed',
+      employer: relationConnect(interview.employer),
+      eventType,
+      interview: relationConnect(interview),
+      metadata: {
+        interviewDocumentId,
+        notificationServiceJobId:
+          typeof result?.data?.jobId === 'string' ? result.data.jobId : undefined,
+        requestId: requestContext.requestId,
+        type,
+      },
+      priority: 'urgent',
+      recipientEmail: String(recipient.email),
+      recipientId: getDocumentId(recipient),
+      recipientType: 'employer_contact',
+      relatedId: interviewDocumentId,
+      relatedType: 'interview',
+      templateKey,
+    },
+  });
+};
+
+const queueEmployerInterviewDetailsLeadEscalationNotification = async ({
+  interview,
+  requestContext,
+  strapi,
+}: {
+  interview: DocumentRecord;
+  requestContext: RequestContext;
+  strapi: StrapiDocumentService;
+}) => {
+  const employer = documentRecordValue(interview.employer);
+  const leadContact = leadEmployerContact(employer);
+
+  if (!leadContact?.email) {
+    return {
+      emailQueued: false,
+    };
+  }
+
+  const interviewDocumentId = getDocumentId(interview);
+  const dashboardUrl = employerDashboardInterviewUrl(interviewDocumentId);
+  const candidate = documentRecordValue(interview.candidate);
+  const candidateName = candidate ? displayName(candidate) || 'the candidate' : 'the candidate';
+  const subject = 'Interview details are overdue';
+  const bodyLines = [
+    `Hi ${leadContact.firstName || 'there'},`,
+    `${candidateName} selected an interview slot, but the final details have not been confirmed yet.`,
+    'Please make sure the assigned interviewer confirms the details in the employer dashboard. If this is not completed in time, HireFlip may release and reroute the interview to protect the candidate.',
+  ];
+  const emailQueueResult = await requestNotificationServiceEmail({
+    correlationId: interviewDocumentId,
+    subject,
+    template: {
+      key: 'generic_branded_message',
+      variables: {
+        bodyLines,
+        ctaLabel: 'Review interview',
+        ctaUrl: dashboardUrl,
+        heading: subject,
+        subject,
+      },
+    },
+    to: String(leadContact.email),
+    type: 'employer_interview_details_overdue_lead_warning',
+  });
+
+  await createInterviewNotificationEvent({
+    eventType: 'employer.interview_details_overdue_lead_warning',
+    interview,
+    recipient: leadContact,
+    requestContext,
+    result: emailQueueResult,
+    strapi,
+    type: 'employer_interview_details_overdue_lead_warning',
+  });
+
+  return {
+    emailQueued: emailQueueResult?.data?.queued === true,
+  };
+};
+
+const queueEmployerInterviewReleasedNotification = async ({
+  interview,
+  requestContext,
+  strapi,
+}: {
+  interview: DocumentRecord;
+  requestContext: RequestContext;
+  strapi: StrapiDocumentService;
+}) => {
+  const assignedContact = documentRecordValue(interview.employerContact);
+  const leadContact = leadEmployerContact(documentRecordValue(interview.employer));
+  const recipients = [assignedContact, leadContact].filter(
+    (contact, index, contacts): contact is DocumentRecord =>
+      Boolean(contact?.email) &&
+      contacts.findIndex((candidate) => candidate?.email === contact?.email) === index
+  );
+  const interviewDocumentId = getDocumentId(interview);
+  const candidate = documentRecordValue(interview.candidate);
+  const candidateName = candidate ? displayName(candidate) || 'the candidate' : 'the candidate';
+  const subject = 'Interview released due to missing details';
+  const results: NotificationServiceQueueResponse[] = [];
+
+  for (const recipient of recipients) {
+    const bodyLines = [
+      `Hi ${recipient.firstName || 'there'},`,
+      `${candidateName}'s interview has been released because the final interview details were not confirmed in time.`,
+      'HireFlip will reroute the candidate to protect their interview guarantee. Please review your dashboard and respond promptly to future interview requests.',
+    ];
+    const emailQueueResult = await requestNotificationServiceEmail({
+      correlationId: interviewDocumentId,
+      subject,
+      template: {
+        key: 'generic_branded_message',
+        variables: {
+          bodyLines,
+          ctaLabel: 'Open dashboard',
+          ctaUrl: employerDashboardInterviewUrl(),
+          heading: subject,
+          subject,
+        },
+      },
+      to: String(recipient.email),
+      type: 'employer_interview_released_missing_details',
+    });
+
+    results.push(emailQueueResult || {});
+    await createInterviewNotificationEvent({
+      eventType: 'employer.interview_released_missing_details',
+      interview,
+      recipient,
+      requestContext,
+      result: emailQueueResult,
+      strapi,
+      type: 'employer_interview_released_missing_details',
+    });
+  }
+
+  return {
+    emailQueued: results.some((result) => result?.data?.queued === true),
+  };
+};
+
+const queueEmployerFeedbackReminderNotification = async ({
+  interview,
+  requestContext,
+  strapi,
+}: {
+  interview: DocumentRecord;
+  requestContext: RequestContext;
+  strapi: StrapiDocumentService;
+}) => {
+  const employerContact = documentRecordValue(interview.employerContact);
+
+  if (!employerContact?.email) {
+    return {
+      emailQueued: false,
+    };
+  }
+
+  const interviewDocumentId = getDocumentId(interview);
+  const dashboardUrl = `${trimTrailingSlash(
+    process.env.EMPLOYER_DASHBOARD_BASE_URL || 'http://localhost:3004'
+  )}/feedback/${interviewDocumentId}`;
+  const candidate = documentRecordValue(interview.candidate);
+  const candidateName = candidate ? displayName(candidate) || 'the candidate' : 'the candidate';
+  const subject = 'Reminder: interview feedback is due';
+  const bodyLines = [
+    `Hi ${employerContact.firstName || 'there'},`,
+    `Please complete feedback for ${candidateName}'s interview.`,
+    'Feedback helps HireFlip support the candidate and keeps the interview process moving.',
+  ];
+  const emailQueueResult = await requestNotificationServiceEmail({
+    correlationId: interviewDocumentId,
+    subject,
+    template: {
+      key: 'generic_branded_message',
+      variables: {
+        bodyLines,
+        ctaLabel: 'Complete feedback',
+        ctaUrl: dashboardUrl,
+        heading: subject,
+        subject,
+      },
+    },
+    to: String(employerContact.email),
+    type: 'employer_interview_feedback_reminder',
+  });
+
+  await createInterviewNotificationEvent({
+    eventType: 'employer.interview_feedback_reminder',
+    interview,
+    recipient: employerContact,
+    requestContext,
+    result: emailQueueResult,
+    strapi,
+    type: 'employer_interview_feedback_reminder',
+  });
+
+  return {
+    emailQueued: emailQueueResult?.data?.queued === true,
+  };
+};
+
 const consumedClaimsForEmployer = async ({
   cadence,
   employerDocumentId,
@@ -1749,6 +2059,183 @@ const routeInterviewRequest = async (
   });
 };
 
+const findSelectedOfferForInterview = async (
+  strapi: StrapiDocumentService,
+  interview: DocumentRecord
+) => {
+  const metadata = objectValue(interview.metadata);
+  const metadataOfferDocumentId =
+    typeof metadata.interviewSlotOfferDocumentId === 'string'
+      ? metadata.interviewSlotOfferDocumentId
+      : undefined;
+  const interviewDocumentId = getDocumentId(interview);
+  const filters = metadataOfferDocumentId
+    ? { documentId: metadataOfferDocumentId }
+    : {
+        selectedInterview: {
+          documentId: interviewDocumentId,
+        },
+      };
+  const offers = await documents(strapi, 'api::interview-slot-offer.interview-slot-offer').findMany({
+    filters,
+    limit: 1,
+    populate: {
+      capacityClaim: true,
+      candidate: true,
+      employer: true,
+      employerContact: true,
+      enrollment: true,
+      interviewRequest: {
+        populate: ['candidate', 'class', 'enrollment', 'region', 'slotOffers'],
+      },
+      selectedSlot: true,
+      slots: {
+        populate: ['employer', 'employerContact', 'region', 'workSector', 'slotOffer'],
+      },
+    },
+  });
+
+  return offers[0] || null;
+};
+
+const releaseInterviewForMissingDetails = async ({
+  interview,
+  requestContext,
+  strapi,
+}: {
+  interview: DocumentRecord;
+  requestContext: RequestContext;
+  strapi: StrapiDocumentService;
+}) => {
+  const interviewDocumentId = getDocumentId(interview);
+
+  if (!interviewDocumentId) {
+    return false;
+  }
+
+  const now = new Date().toISOString();
+  const offer = await findSelectedOfferForInterview(strapi, interview);
+  const selectedSlot =
+    documentRecordValue(interview.interviewSlot) ||
+    documentRecordValue(offer?.selectedSlot);
+  const reusableThreshold = addWorkingDays(new Date(), 4);
+  const selectedSlotStart = validDate(selectedSlot?.startTime);
+  const reusableSlot = Boolean(selectedSlotStart && selectedSlotStart >= reusableThreshold);
+
+  if (selectedSlot?.documentId) {
+    await documents(strapi, 'api::interview-slot.interview-slot').update({
+      documentId: selectedSlot.documentId,
+      data: {
+        metadata: {
+          ...objectValue(selectedSlot.metadata),
+          employerDetailsReleaseAt: now,
+          employerDetailsReleaseInterviewDocumentId: interviewDocumentId,
+          requestId: requestContext.requestId,
+        },
+        slotState: reusableSlot ? 'available' : 'expired',
+      },
+    });
+  }
+
+  await documents(strapi, 'api::interview.interview').update({
+    documentId: interviewDocumentId,
+    data: {
+      countsTowardGuarantee: false,
+      employerCancellation: true,
+      employerDetailsReleaseReason: 'employer_did_not_confirm',
+      employerDetailsReleasedAt: now,
+      interviewState: 'employer_cancelled',
+      metadata: {
+        ...objectValue(interview.metadata),
+        candidateSafeCancellationReason: 'The employer did not confirm the final interview details in time.',
+        employerDetailsReleasedAt: now,
+        employerDetailsReleaseRequestId: requestContext.requestId,
+        employerDetailsReleaseSource: 'interview_workflow_reconciliation',
+        releasedSlotDocumentId: selectedSlot?.documentId || null,
+        releasedSlotReturnedToPool: reusableSlot,
+      },
+    },
+  });
+
+  if (offer?.documentId) {
+    await documents(strapi, 'api::interview-slot-offer.interview-slot-offer').update({
+      documentId: offer.documentId,
+      data: {
+        metadata: {
+          ...objectValue(offer.metadata),
+          employerDetailsReleaseAt: now,
+          employerDetailsReleaseInterviewDocumentId: interviewDocumentId,
+          requestId: requestContext.requestId,
+        },
+        offerState: 'replacement_required',
+      },
+    });
+  }
+
+  const request = documentRecordValue(offer?.interviewRequest);
+  const requestDocumentId = getDocumentId(request);
+
+  if (requestDocumentId) {
+    await documents(strapi, 'api::interview-request.interview-request').update({
+      documentId: requestDocumentId,
+      data: {
+        candidateVisibleState: 'arranging_interviews',
+        claimedInterviewCount: 0,
+        lastCapacityCheckAt: now,
+        requestState: 'pending_capacity',
+      },
+    });
+  }
+
+  await queueEmployerInterviewReleasedNotification({
+    interview,
+    requestContext,
+    strapi,
+  });
+  await documents(strapi, 'api::interview.interview').update({
+    documentId: interviewDocumentId,
+    data: {
+      employerDetailsReleaseNotificationSentAt: now,
+    },
+  });
+
+  await auditEvents(strapi).record({
+    actorType: 'system',
+    eventCategory: 'interview',
+    eventType: 'employer.interview_details_missing_released',
+    ipAddress: requestContext.ipAddress,
+    metadata: {
+      interviewDocumentId,
+      interviewSlotOfferDocumentId: getDocumentId(offer) || null,
+      requestId: requestContext.requestId,
+      reusableSlot,
+      selectedSlotDocumentId: selectedSlot?.documentId || null,
+    },
+    requestId: requestContext.requestId,
+    serviceName: requestContext.serviceName,
+    severity: 'warning',
+    source: 'core_api',
+    subjectDisplayName: displayName(interview.candidate) || 'Interview',
+    subjectId: interviewDocumentId,
+    subjectType: 'interview',
+    userAgent: requestContext.userAgent,
+  });
+
+  if (request?.documentId) {
+    await routeInterviewRequest(
+      strapi,
+      {
+        ...request,
+        claimedInterviewCount: 0,
+        requestState: 'pending_capacity',
+      },
+      requestContext
+    );
+  }
+
+  return true;
+};
+
 export default factories.createCoreService('api::interview-request.interview-request', ({ strapi }) => ({
   async reconcileReusableInterviewSlots(limit = 100, requestContext: RequestContext = {}) {
     const reusableSlots = await documents(strapi, 'api::interview-slot.interview-slot').findMany({
@@ -1990,12 +2477,21 @@ export default factories.createCoreService('api::interview-request.interview-req
         interviewState: 'awaiting_employer_details',
       },
       limit,
-      populate: ['candidate', 'employer', 'employerContact'],
+      populate: {
+        candidate: true,
+        employer: {
+          populate: ['contacts'],
+        },
+        employerContact: true,
+        interviewSlot: true,
+      },
       sort: ['createdAt:asc'],
     });
     const summary = {
       checked: interviews.length,
+      escalated: 0,
       errors: [] as Array<{ error: string; interviewDocumentId?: string }>,
+      released: 0,
       reminded: 0,
       skipped: 0,
     };
@@ -2010,6 +2506,66 @@ export default factories.createCoreService('api::interview-request.interview-req
         }
 
         const reminderCount = integerValue(interview.employerDetailsReminderCount);
+        const fallbackWindow = detailDueWindowForInterview(interview, interview.createdAt || new Date(now));
+        const dueAt = interview.employerDetailsDueAt || fallbackWindow.dueAt;
+        const releaseEligibleAt =
+          interview.employerDetailsReleaseEligibleAt || fallbackWindow.releaseEligibleAt;
+        const dueMs = Date.parse(dueAt);
+        const releaseEligibleMs = Date.parse(releaseEligibleAt);
+
+        if (!interview.employerDetailsDueAt || !interview.employerDetailsReleaseEligibleAt) {
+          await documents(strapi, 'api::interview.interview').update({
+            documentId: interviewDocumentId,
+            data: {
+              employerDetailsDueAt: dueAt,
+              employerDetailsReleaseEligibleAt: releaseEligibleAt,
+              metadata: {
+                ...objectValue(interview.metadata),
+                employerDetailsDueBackfilledAt: new Date(now).toISOString(),
+                employerDetailsDueWorkingDays: fallbackWindow.dueDays,
+              },
+            },
+          });
+        }
+
+        if (
+          reminderCount > 0 &&
+          !interview.employerDetailsEscalatedAt &&
+          Number.isFinite(releaseEligibleMs) &&
+          now >= releaseEligibleMs
+        ) {
+          await queueEmployerInterviewDetailsLeadEscalationNotification({
+            interview,
+            requestContext,
+            strapi,
+          });
+          await documents(strapi, 'api::interview.interview').update({
+            documentId: interviewDocumentId,
+            data: {
+              employerDetailsEscalatedAt: new Date(now).toISOString(),
+            },
+          });
+          summary.escalated += 1;
+        }
+
+        if (
+          reminderCount > 0 &&
+          Number.isFinite(releaseEligibleMs) &&
+          now >= releaseEligibleMs
+        ) {
+          const released = await releaseInterviewForMissingDetails({
+            interview,
+            requestContext,
+            strapi,
+          });
+
+          if (released) {
+            summary.released += 1;
+          } else {
+            summary.skipped += 1;
+          }
+          continue;
+        }
 
         if (reminderCount >= reminderMax) {
           summary.skipped += 1;
@@ -2022,7 +2578,10 @@ export default factories.createCoreService('api::interview-request.interview-req
         const createdMs = interview.createdAt ? Date.parse(String(interview.createdAt)) : now;
         const referenceMs = Number.isNaN(lastReminderMs) ? createdMs : lastReminderMs;
 
-        if (now - referenceMs < reminderIntervalMs) {
+        if (
+          now - referenceMs < reminderIntervalMs &&
+          (!Number.isFinite(dueMs) || now < dueMs)
+        ) {
           summary.skipped += 1;
           continue;
         }
@@ -2041,6 +2600,133 @@ export default factories.createCoreService('api::interview-request.interview-req
               ...objectValue(interview.metadata),
               lastDetailsReminderRequestId: requestContext.requestId,
               lastDetailsReminderSource: 'employer_interview_details_reconciliation',
+            },
+          },
+        });
+        summary.reminded += 1;
+      } catch (error) {
+        summary.errors.push({
+          error: error instanceof Error ? error.message : String(error),
+          interviewDocumentId,
+        });
+      }
+    }
+
+    return summary;
+  },
+
+  async reconcileEmployerInterviewFeedback(limit = 100, requestContext: RequestContext = {}) {
+    const now = Date.now();
+    const reminderIntervalMs = employerFeedbackReminderIntervalMs();
+    const interviews = await documents(strapi, 'api::interview.interview').findMany({
+      filters: {
+        interviewState: 'completed',
+      },
+      limit,
+      populate: {
+        candidate: true,
+        employer: true,
+        employerContact: true,
+        interviewSlot: true,
+      },
+      sort: ['completedAt:asc', 'scheduledEndTime:asc', 'createdAt:asc'],
+    });
+    const interviewDocumentIds = interviews
+      .map(getDocumentId)
+      .filter((documentId): documentId is string => Boolean(documentId));
+    const feedbackRecords = interviewDocumentIds.length
+      ? await documents(strapi, 'api::interview-feedback.interview-feedback').findMany({
+          filters: {
+            interview: {
+              documentId: {
+                $in: interviewDocumentIds,
+              },
+            },
+            submittedByType: 'employer_contact',
+          },
+          limit: Math.max(limit, 100),
+          populate: ['interview'],
+        })
+      : [];
+    const feedbackInterviewIds = new Set(
+      feedbackRecords
+        .map((feedback) => getDocumentId(documentRecordValue(feedback.interview)))
+        .filter((documentId): documentId is string => Boolean(documentId))
+    );
+    const summary = {
+      checked: interviews.length,
+      errors: [] as Array<{ error: string; interviewDocumentId?: string }>,
+      overdue: 0,
+      reminded: 0,
+      skipped: 0,
+    };
+
+    for (const interview of interviews) {
+      const interviewDocumentId = getDocumentId(interview);
+
+      try {
+        if (!interviewDocumentId || feedbackInterviewIds.has(interviewDocumentId)) {
+          summary.skipped += 1;
+          continue;
+        }
+
+        const dueAt = interviewFeedbackDueAt(interview);
+        const dueMs = Date.parse(dueAt);
+        const reminderCount = integerValue(interview.employerFeedbackReminderCount);
+
+        if (!interview.feedbackDueAt) {
+          await documents(strapi, 'api::interview.interview').update({
+            documentId: interviewDocumentId,
+            data: {
+              feedbackDueAt: dueAt,
+            },
+          });
+        }
+
+        if (Number.isFinite(dueMs) && now > dueMs) {
+          if (!interview.feedbackOverdueDetectedAt) {
+            await documents(strapi, 'api::interview.interview').update({
+              documentId: interviewDocumentId,
+              data: {
+                feedbackOverdueDetectedAt: new Date(now).toISOString(),
+              },
+            });
+          }
+          summary.overdue += 1;
+          continue;
+        }
+
+        if (!documentRecordValue(interview.employerContact)?.email) {
+          summary.skipped += 1;
+          continue;
+        }
+
+        const lastReminderMs = interview.lastEmployerFeedbackReminderSentAt
+          ? Date.parse(interview.lastEmployerFeedbackReminderSentAt)
+          : Number.NaN;
+        const referenceMs = Number.isNaN(lastReminderMs)
+          ? Date.parse(String(interview.completedAt || interview.scheduledEndTime || interview.createdAt || now))
+          : lastReminderMs;
+
+        if (Number.isFinite(referenceMs) && now - referenceMs < reminderIntervalMs) {
+          summary.skipped += 1;
+          continue;
+        }
+
+        await queueEmployerFeedbackReminderNotification({
+          interview,
+          requestContext,
+          strapi,
+        });
+        await documents(strapi, 'api::interview.interview').update({
+          documentId: interviewDocumentId,
+          data: {
+            employerFeedbackReminderCount: reminderCount + 1,
+            lastEmployerFeedbackReminderSentAt: new Date(now).toISOString(),
+            metadata: {
+              ...objectValue(interview.metadata),
+              lastFeedbackReminderRequestId: requestContext.requestId,
+              lastFeedbackReminderSource: 'employer_interview_feedback_reconciliation',
             },
           },
         });

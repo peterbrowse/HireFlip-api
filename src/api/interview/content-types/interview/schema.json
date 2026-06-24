@@ -77,6 +77,44 @@
     "lastEmployerDetailsReminderSentAt": {
       "type": "datetime"
     },
+    "employerDetailsDueAt": {
+      "type": "datetime"
+    },
+    "employerDetailsReleaseEligibleAt": {
+      "type": "datetime"
+    },
+    "employerDetailsEscalatedAt": {
+      "type": "datetime"
+    },
+    "employerDetailsReleasedAt": {
+      "type": "datetime"
+    },
+    "employerDetailsReleaseReason": {
+      "type": "enumeration",
+      "enum": [
+        "employer_did_not_confirm",
+        "admin_released",
+        "other"
+      ]
+    },
+    "employerDetailsReleaseNotificationSentAt": {
+      "type": "datetime"
+    },
+    "feedbackDueAt": {
+      "type": "datetime"
+    },
+    "employerFeedbackReminderCount": {
+      "type": "integer",
+      "min": 0,
+      "default": 0,
+      "required": true
+    },
+    "lastEmployerFeedbackReminderSentAt": {
+      "type": "datetime"
+    },
+    "feedbackOverdueDetectedAt": {
+      "type": "datetime"
+    },
     "locationType": {
       "type": "enumeration",
       "enum": [

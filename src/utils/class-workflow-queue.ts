@@ -14,6 +14,7 @@ type CandidateService = {
 
 type InterviewRequestService = {
   reconcileEmployerCapacityClaims(limit?: number, context?: RequestContext): Promise<unknown>;
+  reconcileEmployerInterviewFeedback(limit?: number, context?: RequestContext): Promise<unknown>;
   reconcileEmployerInterviewDetails(limit?: number, context?: RequestContext): Promise<unknown>;
   reconcileReusableInterviewSlots(limit?: number, context?: RequestContext): Promise<unknown>;
 };
@@ -326,6 +327,14 @@ export const startClassWorkflowWorker = (strapi: Core.Strapi) => {
           });
         } catch (error) {
           throw new Error(`Employer interview-detail reconciliation failed: ${formatJobError(error)}`);
+        }
+
+        try {
+          await interviewRequestService(strapi).reconcileEmployerInterviewFeedback(limit, {
+            serviceName: 'class-workflow-worker',
+          });
+        } catch (error) {
+          throw new Error(`Employer interview-feedback reconciliation failed: ${formatJobError(error)}`);
         }
 
         try {

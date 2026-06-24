@@ -23,6 +23,7 @@
       "enum": [
         "assessment_appeal",
         "ai_feedback_review",
+        "interview_operation",
         "payment_review",
         "refund_review",
         "support_case",
@@ -72,6 +73,7 @@
         "enrollment",
         "support_case",
         "interview_feedback",
+        "interview",
         "notification_event",
         "audit_event"
       ],

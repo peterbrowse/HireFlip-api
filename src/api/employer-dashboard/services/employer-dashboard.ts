@@ -857,6 +857,13 @@ const addDays = (date: Date, days: number) => {
 const interviewFeedbackDeadline = (interview: DocumentRecord) =>
   addDays(interview.completedAt ? new Date(interview.completedAt) : new Date(), 7).toISOString();
 
+const additionalFeedbackInviteDeadline = (interview: DocumentRecord) => {
+  const mainDeadline = new Date(interviewFeedbackDeadline(interview));
+  const inviteDeadline = addWorkingDays(new Date(), getIntegerEnv('EMPLOYER_ADDITIONAL_FEEDBACK_INVITE_WORKING_DAYS', 3));
+
+  return new Date(Math.min(mainDeadline.getTime(), inviteDeadline.getTime())).toISOString();
+};
+
 const isWeekend = (date: Date) => {
   const day = date.getUTCDay();
   return day === 0 || day === 6;
@@ -5452,7 +5459,7 @@ export default ({ strapi }) => ({
       throw new ValidationError('Feedback invite could not be created.');
     }
 
-    const expiresAt = interviewFeedbackDeadline(interview);
+    const expiresAt = additionalFeedbackInviteDeadline(interview);
 
     if (Date.parse(expiresAt) <= Date.now()) {
       throw new ValidationError('The feedback invite deadline has passed.');

@@ -42,6 +42,28 @@ export const addWorkingDays = (value: string | Date, days: number) => {
   return result;
 };
 
+export const subtractWorkingDays = (value: string | Date, days: number) => {
+  const date = dateFrom(value);
+
+  if (!date) {
+    return undefined;
+  }
+
+  const totalDays = Math.max(0, Math.floor(days));
+  const result = new Date(date.getTime());
+  let subtractedDays = 0;
+
+  while (subtractedDays < totalDays) {
+    result.setUTCDate(result.getUTCDate() - 1);
+
+    if (isWorkingDay(result)) {
+      subtractedDays += 1;
+    }
+  }
+
+  return result;
+};
+
 export const completedWorkingDaysBetween = (
   fromValue?: string | Date | null,
   toValue: string | Date = new Date()

@@ -21,7 +21,7 @@ import {
   publishClassRealtimeEvent,
 } from '../../../utils/class-realtime-events';
 import { publishAdminRealtimeEvent } from '../../../utils/admin-realtime-events';
-import { addWorkingDays, workingDayWindow } from '../../../utils/working-days';
+import { addWorkingDays, subtractWorkingDays, workingDayWindow } from '../../../utils/working-days';
 
 const { ApplicationError, UnauthorizedError, ValidationError } = errors;
 
@@ -163,6 +163,8 @@ type DocumentRecord = Record<string, unknown> & {
   requiredCompletionPercentage?: number;
   retryEligibilityState?: string;
   reservation?: DocumentRecord;
+  scheduledEndTime?: string;
+  scheduledStartTime?: string;
   reservationState?: string;
   region?: string;
   reviewState?: string;
@@ -1326,6 +1328,49 @@ const findClassInterestCounts = async (strapi: StrapiDocumentService, classes: D
 };
 
 const isPastDate = (value?: string) => Boolean(value && Date.parse(value) <= Date.now());
+
+const validDate = (value?: string | Date | null) => {
+  if (!value) {
+    return null;
+  }
+
+  const date = value instanceof Date ? new Date(value.getTime()) : new Date(value);
+
+  return Number.isFinite(date.getTime()) ? date : null;
+};
+
+const detailDueWindowForSelectedSlot = (slot: DocumentRecord, from: string | Date = new Date()) => {
+  const fromDate = validDate(from) || new Date();
+  const scheduledStart = validDate(typeof slot.startTime === 'string' ? slot.startTime : null);
+  const twoWorkingDays = addWorkingDays(fromDate, 2) || fromDate;
+  let dueDays = 2;
+
+  if (scheduledStart) {
+    const minimumNoticeCutoff = subtractWorkingDays(scheduledStart, 4);
+
+    if (minimumNoticeCutoff && twoWorkingDays.getTime() > minimumNoticeCutoff.getTime()) {
+      dueDays = 1;
+    }
+  }
+
+  const dueAt = addWorkingDays(fromDate, dueDays) || fromDate;
+  const extraDay = addWorkingDays(dueAt, 1) || dueAt;
+  let releaseEligibleAt = extraDay;
+
+  if (scheduledStart) {
+    const minimumNoticeCutoff = subtractWorkingDays(scheduledStart, 4);
+
+    if (minimumNoticeCutoff && extraDay.getTime() > minimumNoticeCutoff.getTime()) {
+      releaseEligibleAt = dueAt;
+    }
+  }
+
+  return {
+    dueAt: dueAt.toISOString(),
+    dueDays,
+    releaseEligibleAt: releaseEligibleAt.toISOString(),
+  };
+};
 
 const getReservationExpiry = (now = new Date()) => new Date(now.getTime() + getReservationWindowMs()).toISOString();
 const getWaitingListOfferExpiry = (now = new Date()) =>
@@ -2670,13 +2715,20 @@ const sanitizeCandidateInterviewRecord = (
 
   const detailsVisible = ['confirmed', 'completed'].includes(String(interview.interviewState || ''));
   const employerContact = documentRecordValue(interview.employerContact);
+  const metadata = objectValue(interview.metadata);
+  const candidateSafeCancellationReason =
+    typeof metadata.candidateSafeCancellationReason === 'string'
+      ? metadata.candidateSafeCancellationReason
+      : null;
 
   return {
     arrivalInstructions: detailsVisible ? interview.arrivalInstructions || null : null,
     candidateInstructions: detailsVisible ? interview.candidateInstructions || null : null,
+    cancellationReason: candidateSafeCancellationReason,
     countsTowardGuarantee: Boolean(interview.countsTowardGuarantee),
     detailsPending: !detailsVisible,
     documentId: interview.documentId,
+    employerCancellation: Boolean(interview.employerCancellation),
     interviewerName: detailsVisible
       ? interview.interviewerName || employerContactDisplayName(employerContact)
       : null,
@@ -6700,18 +6752,22 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
     const employerContact =
       documentRecordValue(selectedSlot.employerContact) ||
       documentRecordValue(offer.employerContact);
+    const detailDueWindow = detailDueWindowForSelectedSlot(selectedSlot, now);
     const interview = await documents(strapi, 'api::interview.interview').create({
       data: {
         candidate: relationConnect(existingCandidate),
         countsTowardGuarantee: false,
         employer: relationConnect(selectedSlotEmployer),
         employerContact: relationConnect(employerContact),
+        employerDetailsDueAt: detailDueWindow.dueAt,
+        employerDetailsReleaseEligibleAt: detailDueWindow.releaseEligibleAt,
         enrollment: relationConnect(offer.enrollment),
         interviewSlot: relationConnect(selectedSlot),
         interviewState: 'awaiting_employer_details',
         metadata: {
           candidateInterviewFormatPreference: payload.formatPreference,
           candidateSelectedAt: now,
+          employerDetailsDueWorkingDays: detailDueWindow.dueDays,
           interviewSlotOfferDocumentId: offer.documentId,
           requestId: requestContext.requestId,
           source: 'candidate_dashboard',
