@@ -50,12 +50,12 @@ const getRequestContext = (ctx): RequestContext => ({
 const adminRealtimeChannelsForRoles = (roleKeys: string[]) => {
   const channels = new Set<AdminRealtimeChannel>();
 
-  if (roleKeys.some((roleKey) => ['admin', 'super_admin'].includes(roleKey))) {
+  if (roleKeys.some((roleKey) => ['admin', 'sales', 'super_admin'].includes(roleKey))) {
     channels.add('operations');
     channels.add('refunds');
   }
 
-  if (roleKeys.some((roleKey) => ['admin', 'super_admin', 'support'].includes(roleKey))) {
+  if (roleKeys.some((roleKey) => ['admin', 'sales', 'super_admin', 'support'].includes(roleKey))) {
     channels.add('support');
   }
 

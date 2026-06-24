@@ -70,5 +70,23 @@ export default {
         policies: [adminDashboardServicePolicy],
       },
     },
+    {
+      method: 'POST',
+      path: '/internal/admin/support/ai-feedback-report-failure/detail',
+      handler: 'admin-support.feedbackReportFailureDetail',
+      config: {
+        auth: false,
+        policies: [adminDashboardServicePolicy],
+      },
+    },
+    {
+      method: 'POST',
+      path: '/internal/admin/support/ai-feedback-report-failure/action',
+      handler: 'admin-support.feedbackReportFailureAction',
+      config: {
+        auth: false,
+        policies: [adminDashboardServicePolicy],
+      },
+    },
   ],
 };

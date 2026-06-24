@@ -17,6 +17,10 @@ type InterviewRequestService = {
   reconcileEmployerInterviewDetails(limit?: number, context?: RequestContext): Promise<unknown>;
 };
 
+type EmployerDashboardService = {
+  reconcileCandidateFeedbackReports(limit?: number, context?: RequestContext): Promise<unknown>;
+};
+
 type PaymentWebhookEventService = {
   retryFailedStripeEvents(limit?: number): Promise<unknown>;
 };
@@ -158,6 +162,9 @@ const candidateService = (strapi: Core.Strapi) =>
 
 const interviewRequestService = (strapi: Core.Strapi) =>
   strapi.service('api::interview-request.interview-request') as unknown as InterviewRequestService;
+
+const employerDashboardService = (strapi: Core.Strapi) =>
+  strapi.service('api::employer-dashboard.employer-dashboard') as unknown as EmployerDashboardService;
 
 const paymentWebhookEventService = (strapi: Core.Strapi) =>
   strapi.service('api::payment-webhook-event.payment-webhook-event') as unknown as PaymentWebhookEventService;
@@ -310,6 +317,14 @@ export const startClassWorkflowWorker = (strapi: Core.Strapi) => {
           });
         } catch (error) {
           throw new Error(`Employer interview-detail reconciliation failed: ${formatJobError(error)}`);
+        }
+
+        try {
+          await employerDashboardService(strapi).reconcileCandidateFeedbackReports(limit, {
+            serviceName: 'class-workflow-worker',
+          });
+        } catch (error) {
+          throw new Error(`Candidate feedback-report reconciliation failed: ${formatJobError(error)}`);
         }
 
         return;

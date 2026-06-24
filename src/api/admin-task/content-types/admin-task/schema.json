@@ -22,6 +22,7 @@
       "type": "enumeration",
       "enum": [
         "assessment_appeal",
+        "ai_feedback_review",
         "payment_review",
         "refund_review",
         "support_case",
@@ -70,6 +71,7 @@
         "reservation",
         "enrollment",
         "support_case",
+        "interview_feedback",
         "notification_event",
         "audit_event"
       ],

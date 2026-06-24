@@ -61,19 +61,53 @@ type SupportCaseService = {
 };
 
 type DocumentRecord = Record<string, unknown> & {
+  aiMetadata?: unknown;
+  aiModel?: string;
+  aiPromptVersion?: string;
+  aiProvider?: string;
   candidate?: DocumentRecord;
+  candidateReportConclusion?: string;
+  candidateReportFailureCategory?: string;
+  candidateReportFailureFirstDetectedAt?: string;
+  candidateReportFailureReason?: string;
+  candidateReportGeneratedAt?: string;
+  candidateReportImprovements?: string;
+  candidateReportIntro?: string;
+  candidateReportLastAttemptAt?: string;
+  candidateReportManualDraftSavedAt?: string;
+  candidateReportManualDraftSavedByStaffEmail?: string;
+  candidateReportNextRetryAt?: string;
+  candidateReportRetryCount?: number;
+  candidateReportState?: string;
+  candidateReportStrengths?: string;
+  candidateReportTakeaways?: unknown;
+  candidateReportVisibleAt?: string;
+  concerns?: string;
+  createdAt?: string;
   documentId?: string;
   email?: string;
   employer?: DocumentRecord;
   employerContact?: DocumentRecord;
   firstName?: string;
   id?: number | string;
+  interview?: DocumentRecord;
   lastName?: string;
   metadata?: unknown;
+  nextStep?: string;
+  notes?: string;
   notificationPreferences?: unknown;
+  outcome?: string;
   phone?: string;
+  previousTakeawayAssessment?: string;
+  rating?: number | string;
   refund?: DocumentRecord;
+  scheduledStartTime?: string;
+  sourceType?: string;
+  strengths?: string;
+  submittedAt?: string;
+  submittedByType?: string;
   title?: string;
+  updatedAt?: string;
 };
 
 type DocumentCollection = {
@@ -188,6 +222,29 @@ const feedbackReportConcernActionSchema = z
       });
     }
   });
+const feedbackReportFailureDetailSchema = z
+  .object({
+    feedbackDocumentId: z.string().trim().min(1).max(160),
+    sessionToken: z.string().trim().min(32).max(512),
+  })
+  .strict();
+const feedbackReportFailureActionSchema = feedbackReportFailureDetailSchema
+  .extend({
+    action: z.enum(['edit_approve', 'regenerate', 'save_draft']),
+    report: generatedReportSchema.optional(),
+    resolutionNote: z.string().trim().max(4000).optional(),
+    reviewClaimToken: z.string().trim().min(32).max(160).optional(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (['edit_approve', 'save_draft'].includes(value.action) && !value.report) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Report fields are required.',
+        path: ['report'],
+      });
+    }
+  });
 const aiFeedbackReportResponseSchema = z
   .object({
     data: z.object({
@@ -206,6 +263,8 @@ const validateAssignableStaff = validateZodSchema(assignableStaffSchema);
 const validateAssignCase = validateZodSchema(assignCaseSchema);
 const validateMessageCase = validateZodSchema(messageCaseSchema);
 const validateFeedbackReportConcernAction = validateZodSchema(feedbackReportConcernActionSchema);
+const validateFeedbackReportFailureDetail = validateZodSchema(feedbackReportFailureDetailSchema);
+const validateFeedbackReportFailureAction = validateZodSchema(feedbackReportFailureActionSchema);
 
 type AiFeedbackReportResponse = z.infer<typeof aiFeedbackReportResponseSchema>['data'];
 
@@ -231,10 +290,89 @@ const getIntegerEnv = (name: string, fallback: number) => {
   return Number.isFinite(parsedValue) && parsedValue > 0 ? parsedValue : fallback;
 };
 
+const getAiMonthlySpendLimitGbp = async (strapi: StrapiService) => {
+  const settings = await documents(strapi, 'api::platform-setting.platform-setting').findMany({
+    filters: {
+      settingKey: 'ai.monthly_spend_limit_gbp',
+    },
+    limit: 1,
+  });
+  const configured = Number(settings[0]?.numberValue);
+
+  if (Number.isFinite(configured) && configured > 0) {
+    return configured;
+  }
+
+  return getIntegerEnv('AI_MONTHLY_SPEND_LIMIT_GBP', 100);
+};
+
 const objectValue = (value: unknown) =>
   value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+
+const documentRecordValue = (value: unknown): DocumentRecord | undefined =>
+  value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as DocumentRecord)
+    : undefined;
+
+const candidateDashboardInterviewsUrl = () =>
+  `${trimTrailingSlash(process.env.CANDIDATE_DASHBOARD_BASE_URL || 'http://localhost:3001')}/interviews`;
+
+const aiFeedbackTaskKey = (feedbackDocumentId: string) =>
+  `ai-feedback-report:${feedbackDocumentId}:failed`;
+
+const businessDayStartHourUtc = 9;
+const businessDayEndHourUtc = 17;
+const isWorkingDay = (date: Date) => {
+  const day = date.getUTCDay();
+  return day !== 0 && day !== 6;
+};
+const nextBusinessStart = (date: Date) => {
+  const result = new Date(date.getTime());
+
+  while (!isWorkingDay(result)) {
+    result.setUTCDate(result.getUTCDate() + 1);
+    result.setUTCHours(businessDayStartHourUtc, 0, 0, 0);
+  }
+
+  if (result.getUTCHours() < businessDayStartHourUtc) {
+    result.setUTCHours(businessDayStartHourUtc, 0, 0, 0);
+  }
+
+  if (result.getUTCHours() >= businessDayEndHourUtc) {
+    result.setUTCDate(result.getUTCDate() + 1);
+    result.setUTCHours(businessDayStartHourUtc, 0, 0, 0);
+    return nextBusinessStart(result);
+  }
+
+  return result;
+};
+const addBusinessHours = (value?: string | Date | null, hours = 4) => {
+  const parsed = value ? new Date(value) : undefined;
+
+  if (!parsed || !Number.isFinite(parsed.getTime())) {
+    return null;
+  }
+
+  let remainingMs = Math.max(0, hours) * 60 * 60 * 1000;
+  let cursor = nextBusinessStart(parsed);
+
+  while (remainingMs > 0) {
+    const endOfDay = new Date(cursor.getTime());
+    endOfDay.setUTCHours(businessDayEndHourUtc, 0, 0, 0);
+    const availableMs = Math.max(0, endOfDay.getTime() - cursor.getTime());
+
+    if (remainingMs <= availableMs) {
+      return new Date(cursor.getTime() + remainingMs).toISOString();
+    }
+
+    remainingMs -= availableMs;
+    cursor = nextBusinessStart(new Date(endOfDay.getTime() + 1));
+  }
+
+  return cursor.toISOString();
+};
 
 const normalizeRole = (value: unknown) =>
   typeof value === 'string'
@@ -746,6 +884,107 @@ const feedbackReportReviewPayload = async (
   };
 };
 
+const findFeedbackReportByDocumentId = async (
+  strapi: StrapiService,
+  feedbackDocumentId: string
+) => {
+  const feedbackRecords = await documents(strapi, 'api::interview-feedback.interview-feedback').findMany({
+    filters: {
+      documentId: feedbackDocumentId,
+    },
+    limit: 1,
+    populate: {
+      interview: {
+        populate: ['candidate', 'employer'],
+      },
+    },
+  });
+
+  return feedbackRecords[0] || null;
+};
+
+const failureDetectedAt = (feedback: DocumentRecord) =>
+  feedback.candidateReportFailureFirstDetectedAt ||
+  feedback.candidateReportLastAttemptAt ||
+  feedback.updatedAt ||
+  feedback.createdAt ||
+  null;
+
+const aiFailureEscalatedAt = (feedback: DocumentRecord) => addBusinessHours(failureDetectedAt(feedback), 4);
+
+const assertAiFeedbackFailureAccess = (feedback: DocumentRecord, session: AdminSession) => {
+  const roleKeys = session.user.roleKeys;
+
+  if (roleKeys.some((roleKey) => ['sales', 'support'].includes(roleKey))) {
+    return;
+  }
+
+  const escalatedAt = aiFailureEscalatedAt(feedback);
+  const escalated = Boolean(escalatedAt && Date.parse(escalatedAt) <= Date.now());
+
+  if (escalated && roleKeys.some((roleKey) => ['admin', 'super_admin'].includes(roleKey))) {
+    return;
+  }
+
+  throw new ForbiddenError('This AI feedback review has not escalated to your access level yet.');
+};
+
+const aiFeedbackFailureReviewPayload = async (
+  strapi: StrapiService,
+  feedback: DocumentRecord
+) => {
+  const populatedInterview = documentRecordValue(feedback.interview);
+  const interview = populatedInterview || (await findInterviewForFeedbackReport(strapi, feedback));
+  const interviewDocumentId = getDocumentId(interview);
+  const rawFeedback = await findRawFeedbackForInterview(strapi, interviewDocumentId || undefined);
+  const escalatedAt = aiFailureEscalatedAt(feedback);
+  const failedAt = failureDetectedAt(feedback);
+
+  return {
+    ai: {
+      metadata: objectValue(feedback.aiMetadata),
+      model: feedback.aiModel || null,
+      promptVersion: feedback.aiPromptVersion || null,
+      provider: feedback.aiProvider || null,
+    },
+    candidateReason: null,
+    concern: {
+      flaggedAt: null,
+      resolution: feedback.candidateReportFailureReason || null,
+      resolvedAt: null,
+      reviewedAt: null,
+      state: 'generation_failed',
+    },
+    failure: {
+      category: feedback.candidateReportFailureCategory || null,
+      escalatedToAdminAt: escalatedAt,
+      failedAt,
+      lastAttemptAt: feedback.candidateReportLastAttemptAt || null,
+      nextRetryAt: feedback.candidateReportNextRetryAt || null,
+      reason: feedback.candidateReportFailureReason || null,
+      retryCount: Number(feedback.candidateReportRetryCount || 0),
+    },
+    feedbackDocumentId: getDocumentId(feedback) || null,
+    interview: {
+      documentId: interviewDocumentId || null,
+      employerName: stringValue(interview?.employer?.companyName || interview?.employer?.name),
+      scheduledStartTime: interview?.scheduledStartTime || null,
+      state: interview?.interviewState || null,
+    },
+    rawFeedback: rawFeedback.map(publicRawFeedback),
+    report: {
+      conclusion: feedback.candidateReportConclusion || null,
+      generatedAt: feedback.candidateReportGeneratedAt || null,
+      improvements: feedback.candidateReportImprovements || null,
+      intro: feedback.candidateReportIntro || null,
+      state: feedback.candidateReportState || null,
+      strengths: feedback.candidateReportStrengths || null,
+      takeaways: normalizeCandidateReportTakeaways(feedback.candidateReportTakeaways),
+      visibleAt: feedback.candidateReportVisibleAt || null,
+    },
+  };
+};
+
 const buildSupportCasePrompt = (supportCase: DocumentRecord) => {
   const url = supportCaseUrl(String(supportCase.documentId));
   const name = candidateFirstName(supportCase.candidate);
@@ -874,6 +1113,111 @@ const queueCandidateSupportPrompt = async ({
   };
 };
 
+const queueCandidateFeedbackReportReadyNotification = async ({
+  feedback,
+  interview,
+  requestContext,
+  strapi,
+}: {
+  feedback: DocumentRecord;
+  interview: DocumentRecord;
+  requestContext: RequestContext;
+  strapi: StrapiService;
+}) => {
+  const candidate = documentRecordValue(interview.candidate);
+  const candidateEmail = typeof candidate?.email === 'string' ? candidate.email : null;
+  const candidateDocumentId = getDocumentId(candidate);
+  const subject = 'Your interview feedback is ready';
+  const dashboardUrl = candidateDashboardInterviewsUrl();
+  const candidateName = candidateFirstName(candidate);
+  const bodyLines = [
+    `Hi ${candidateName},`,
+    'Your HireFlip interview feedback report is ready to view in your dashboard.',
+    'This report was generated from direct interviewer feedback and is designed to give you clear, constructive next steps.',
+    'If anything does not look right, you can flag it for review from the dashboard.',
+  ];
+  let emailDeliveryState: 'queued' | 'failed' = 'failed';
+  let emailJobId: unknown;
+  let emailErrorMessage: string | undefined;
+
+  if (candidateEmail) {
+    try {
+      const emailQueueResult = await requestNotificationServiceEmail({
+        correlationId: getDocumentId(feedback) || getDocumentId(interview),
+        template: {
+          key: 'generic_branded_message',
+          variables: {
+            bodyLines,
+            ctaLabel: 'View interview feedback',
+            ctaUrl: dashboardUrl,
+            heading: subject,
+            subject,
+          },
+        },
+        to: candidateEmail,
+        type: 'candidate_interview_feedback_report_ready',
+      });
+
+      emailDeliveryState = emailQueueResult?.data?.queued === true ? 'queued' : 'failed';
+      emailJobId = emailQueueResult?.data?.jobId;
+    } catch (error) {
+      emailErrorMessage =
+        error instanceof Error ? error.message : 'Candidate feedback report notification could not be queued.';
+    }
+  }
+
+  await Promise.all(
+    [
+      {
+        channel: 'in_app',
+        deliveryState: 'queued' as const,
+        errorMessage: undefined,
+        jobId: undefined,
+      },
+      ...(candidateEmail
+        ? [
+            {
+              channel: 'email',
+              deliveryState: emailDeliveryState,
+              errorMessage: emailErrorMessage,
+              jobId: emailJobId,
+            },
+          ]
+        : []),
+    ].map(({ channel, deliveryState, errorMessage, jobId }) =>
+      documents(strapi, 'api::notification-event.notification-event').create({
+        data: {
+          candidate: relationConnect(candidate),
+          channel,
+          deliveryState,
+          ...(deliveryState === 'failed' ? { failedAt: new Date().toISOString() } : {}),
+          errorMessage: errorMessage || null,
+          employer: relationConnect(interview.employer),
+          eventType: 'candidate.interview_feedback_report_ready',
+          interview: relationConnect(interview),
+          metadata: {
+            dashboardUrl,
+            feedbackDocumentId: getDocumentId(feedback),
+            notificationServiceJobId: typeof jobId === 'undefined' ? null : String(jobId),
+            requestId: requestContext.requestId,
+          },
+          priority: 'high',
+          recipientEmail: candidateEmail,
+          recipientId: candidateDocumentId,
+          recipientType: 'candidate',
+          relatedId: getDocumentId(feedback),
+          relatedType: 'interview_feedback',
+          templateKey: channel === 'email' ? 'generic_branded_message' : undefined,
+        },
+      })
+    )
+  );
+
+  return {
+    emailQueued: emailDeliveryState === 'queued',
+  };
+};
+
 const assertSupportSession = async (
   strapi: StrapiService,
   sessionToken: string,
@@ -902,7 +1246,52 @@ const publishSupportChange = (strapi: StrapiService, supportCaseDocumentId?: str
     (strapi as { log?: { error?: (message: string, error?: unknown) => void } }).log
   );
 
+const publishAiFeedbackTaskChange = (strapi: StrapiService, feedbackDocumentId?: string) =>
+  publishAdminRealtimeEvent(
+    {
+      channels: ['operations', 'support'],
+      resourceKey: feedbackDocumentId ? aiFeedbackTaskKey(feedbackDocumentId) : undefined,
+      resourceType: 'admin_task',
+      type: 'admin_tasks_changed',
+    },
+    (strapi as { log?: { error?: (message: string, error?: unknown) => void } }).log
+  );
+
 export default ({ strapi }: { strapi: StrapiService }) => ({
+  async getFeedbackReportFailure(input: unknown, requestContext: RequestContext = {}) {
+    const body = validateFeedbackReportFailureDetail(input);
+    const session = await adminAuthService(strapi).getSession({ sessionToken: body.sessionToken }, requestContext);
+    const feedback = await findFeedbackReportByDocumentId(strapi, body.feedbackDocumentId);
+
+    if (!feedback) {
+      throw new ValidationError('Feedback report could not be found.');
+    }
+
+    if (String(feedback.candidateReportState || '') !== 'failed') {
+      throw new ValidationError('Feedback report is not in failed generation state.');
+    }
+
+    assertAiFeedbackFailureAccess(feedback, session);
+
+    const { reviewClaim } = await reviewClaimService(strapi).claimForSession(
+      {
+        resourceDocumentId: body.feedbackDocumentId,
+        resourceKey: aiFeedbackTaskKey(body.feedbackDocumentId),
+        resourceLabel: 'AI feedback report failed',
+        resourceType: 'admin_task',
+      },
+      session,
+      requestContext
+    );
+
+    return {
+      feedbackReportReview: await aiFeedbackFailureReviewPayload(strapi, feedback),
+      generatedAt: new Date().toISOString(),
+      reviewClaim,
+      user: session.user,
+    };
+  },
+
   async listAssignableStaff(input: unknown, requestContext: RequestContext = {}) {
     const body = validateAssignableStaff(input);
     const session = await assertSupportSession(strapi, body.sessionToken, requestContext);
@@ -1144,6 +1533,195 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
     };
   },
 
+  async resolveFeedbackReportFailure(input: unknown, requestContext: RequestContext = {}) {
+    const body = validateFeedbackReportFailureAction(input);
+    const session = await adminAuthService(strapi).getSession({ sessionToken: body.sessionToken }, requestContext);
+    const feedback = await findFeedbackReportByDocumentId(strapi, body.feedbackDocumentId);
+
+    if (!feedback?.documentId) {
+      throw new ValidationError('Feedback report could not be found.');
+    }
+
+    if (String(feedback.candidateReportState || '') !== 'failed') {
+      throw new ValidationError('Feedback report is not in failed generation state.');
+    }
+
+    assertAiFeedbackFailureAccess(feedback, session);
+
+    await reviewClaimService(strapi).assertActiveClaimForSession(
+      {
+        claimToken: body.reviewClaimToken,
+        resourceDocumentId: body.feedbackDocumentId,
+        resourceKey: aiFeedbackTaskKey(body.feedbackDocumentId),
+        resourceLabel: 'AI feedback report failed',
+        resourceType: 'admin_task',
+      },
+      session
+    );
+
+    const populatedInterview = documentRecordValue(feedback.interview);
+    const interview = populatedInterview || (await findInterviewForFeedbackReport(strapi, feedback));
+
+    if (!interview) {
+      throw new ValidationError('Interview could not be found for this feedback report.');
+    }
+
+    const rawFeedback = await findRawFeedbackForInterview(strapi, getDocumentId(interview));
+    const now = new Date().toISOString();
+    let updatedFeedback: DocumentRecord;
+    let notificationQueued = false;
+    let actionState: 'draft_saved' | 'regenerated' | 'resolved';
+
+    if (body.action === 'save_draft' && body.report) {
+      updatedFeedback = await documents(strapi, 'api::interview-feedback.interview-feedback').update({
+        documentId: feedback.documentId,
+        data: {
+          candidateReportConclusion: body.report.conclusion,
+          candidateReportImprovements: body.report.improvements,
+          candidateReportIntro: body.report.intro,
+          candidateReportManualDraftSavedAt: now,
+          candidateReportManualDraftSavedByStaffEmail: session.user.email,
+          candidateReportStrengths: body.report.strengths,
+          candidateReportTakeaways: body.report.takeaways,
+          metadata: {
+            ...objectValue(feedback.metadata),
+            failedReportDraftSavedAt: now,
+            failedReportDraftSavedByStaffEmail: session.user.email,
+            failedReportDraftRequestId: requestContext.requestId,
+          },
+        },
+        populate: {
+          interview: {
+            populate: ['candidate', 'employer'],
+          },
+        },
+      });
+      actionState = 'draft_saved';
+    } else if (body.action === 'regenerate') {
+      if (rawFeedback.length === 0) {
+        throw new ValidationError('Raw interview feedback is required before regenerating the report.');
+      }
+
+      const aiReport = await requestAiFeedbackReport({
+        correlationId: `interview-feedback-report:${feedback.documentId}:admin-retry:${Date.now()}`,
+        payload: await buildFeedbackReportAiPayload({
+          feedback,
+          interview,
+          rawFeedback,
+          strapi,
+        }),
+      });
+
+      if (!aiReport) {
+        throw new ValidationError('AI service is not configured.');
+      }
+
+      const monthlySpendLimitGbp = await getAiMonthlySpendLimitGbp(strapi);
+      updatedFeedback = await documents(strapi, 'api::interview-feedback.interview-feedback').update({
+        documentId: feedback.documentId,
+        data: {
+          aiMetadata: {
+            ...objectValue(feedback.aiMetadata),
+            ...(aiReport.metadata || {}),
+            adminRecoveredAt: now,
+            adminRecoveredByStaffEmail: session.user.email,
+            feedbackSourceDocumentIds: rawFeedback
+              .map((item) => getDocumentId(item))
+              .filter(Boolean),
+            monthlySpendLimitGbp,
+            requestId: requestContext.requestId,
+          },
+          aiModel: aiReport.model,
+          aiPromptVersion: aiReport.promptVersion,
+          aiProvider: aiReport.provider,
+          candidateReportConclusion: aiReport.report.conclusion,
+          candidateReportFailureCategory: null,
+          candidateReportFailureFirstDetectedAt: null,
+          candidateReportFailureReason: null,
+          candidateReportGeneratedAt: now,
+          candidateReportImprovements: aiReport.report.improvements,
+          candidateReportIntro: aiReport.report.intro,
+          candidateReportLastAttemptAt: now,
+          candidateReportManualDraftSavedAt: null,
+          candidateReportManualDraftSavedByStaffEmail: null,
+          candidateReportNextRetryAt: null,
+          candidateReportRetryCount: 0,
+          candidateReportState: 'generated',
+          candidateReportStrengths: aiReport.report.strengths,
+          candidateReportTakeaways: aiReport.report.takeaways,
+          candidateReportVisibleAt: now,
+        },
+        populate: {
+          interview: {
+            populate: ['candidate', 'employer'],
+          },
+        },
+      });
+      const notificationResult = await queueCandidateFeedbackReportReadyNotification({
+        feedback: updatedFeedback,
+        interview,
+        requestContext,
+        strapi,
+      });
+      notificationQueued = notificationResult.emailQueued;
+      actionState = 'regenerated';
+    } else if (body.action === 'edit_approve' && body.report) {
+      updatedFeedback = await documents(strapi, 'api::interview-feedback.interview-feedback').update({
+        documentId: feedback.documentId,
+        data: {
+          candidateReportConclusion: body.report.conclusion,
+          candidateReportFailureCategory: null,
+          candidateReportFailureFirstDetectedAt: null,
+          candidateReportFailureReason: null,
+          candidateReportGeneratedAt: feedback.candidateReportGeneratedAt || now,
+          candidateReportImprovements: body.report.improvements,
+          candidateReportIntro: body.report.intro,
+          candidateReportLastAttemptAt: now,
+          candidateReportManualDraftSavedAt: null,
+          candidateReportManualDraftSavedByStaffEmail: null,
+          candidateReportNextRetryAt: null,
+          candidateReportRetryCount: 0,
+          candidateReportState: 'manually_edited',
+          candidateReportStrengths: body.report.strengths,
+          candidateReportTakeaways: body.report.takeaways,
+          candidateReportVisibleAt: now,
+          metadata: {
+            ...objectValue(feedback.metadata),
+            failedReportManuallyApprovedAt: now,
+            failedReportManuallyApprovedByStaffEmail: session.user.email,
+            failedReportManualApprovalRequestId: requestContext.requestId,
+            resolutionNote: body.resolutionNote || null,
+          },
+        },
+        populate: {
+          interview: {
+            populate: ['candidate', 'employer'],
+          },
+        },
+      });
+      const notificationResult = await queueCandidateFeedbackReportReadyNotification({
+        feedback: updatedFeedback,
+        interview,
+        requestContext,
+        strapi,
+      });
+      notificationQueued = notificationResult.emailQueued;
+      actionState = 'resolved';
+    } else {
+      throw new ValidationError('Unsupported feedback report failure action.');
+    }
+
+    await publishAiFeedbackTaskChange(strapi, feedback.documentId);
+
+    return {
+      action: actionState,
+      feedbackReportReview: await aiFeedbackFailureReviewPayload(strapi, updatedFeedback),
+      notificationQueued,
+      updatedFeedbackDocumentId: updatedFeedback.documentId || feedback.documentId,
+      user: session.user,
+    };
+  },
+
   async resolveFeedbackReportConcern(input: unknown, requestContext: RequestContext = {}) {
     const body = validateFeedbackReportConcernAction(input);
     const session = await assertSupportSession(strapi, body.sessionToken, requestContext);
@@ -1205,6 +1783,7 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
         throw new ValidationError('AI service is not configured.');
       }
 
+      const monthlySpendLimitGbp = await getAiMonthlySpendLimitGbp(strapi);
       updatedFeedback = await documents(strapi, 'api::interview-feedback.interview-feedback').update({
         documentId: feedback.documentId,
         data: {
@@ -1214,6 +1793,7 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
             feedbackSourceDocumentIds: rawFeedback
               .map((item) => getDocumentId(item))
               .filter(Boolean),
+            monthlySpendLimitGbp,
             regeneratedAt: now,
             regeneratedByStaffEmail: session.user.email,
             requestId: requestContext.requestId,

@@ -1,0 +1,38 @@
+{
+  "kind": "collectionType",
+  "collectionName": "platform_settings",
+  "info": {
+    "singularName": "platform-setting",
+    "pluralName": "platform-settings",
+    "displayName": "Platform Setting",
+    "description": "Operational settings owned by the core API."
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "settingKey": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "required": true,
+      "unique": true
+    },
+    "numberValue": {
+      "type": "decimal"
+    },
+    "stringValue": {
+      "type": "text"
+    },
+    "jsonValue": {
+      "type": "json"
+    },
+    "description": {
+      "type": "text"
+    },
+    "updatedByStaffEmail": {
+      "type": "email",
+      "maxLength": 254
+    }
+  }
+}

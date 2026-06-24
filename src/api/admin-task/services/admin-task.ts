@@ -40,7 +40,15 @@ type DocumentRecord = Record<string, unknown> & {
   actionPath?: string;
   amountPence?: number;
   appealState?: string;
+  aiModel?: string;
+  aiProvider?: string;
   candidate?: DocumentRecord;
+  candidateReportFailureCategory?: string;
+  candidateReportFailureFirstDetectedAt?: string;
+  candidateReportFailureReason?: string;
+  candidateReportLastAttemptAt?: string;
+  candidateReportRetryCount?: number;
+  candidateReportState?: string;
   class?: DocumentRecord;
   courseTestAttempt?: DocumentRecord;
   createdAt?: string;
@@ -56,6 +64,7 @@ type DocumentRecord = Record<string, unknown> & {
   failedAt?: string;
   firstName?: string;
   id?: number | string;
+  interview?: DocumentRecord;
   lastDetectedAt?: string;
   lastName?: string;
   metadata?: unknown;
@@ -104,6 +113,7 @@ type AdminTaskSourceType =
   | 'assessment_appeal'
   | 'audit_event'
   | 'enrollment'
+  | 'interview_feedback'
   | 'notification_event'
   | 'payment'
   | 'refund'
@@ -112,6 +122,7 @@ type AdminTaskSourceType =
 type AdminTaskState = 'acknowledged' | 'dismissed' | 'open' | 'resolved';
 type AdminTaskType =
   | 'assessment_appeal'
+  | 'ai_feedback_review'
   | 'notification_failure'
   | 'payment_review'
   | 'refund_review'
@@ -184,6 +195,8 @@ const taskDetailPath = (taskKey: string) => `/tasks/${taskRouteSegment(taskKey)}
 const refundTaskPath = (taskKey: string) => `/refunds/${taskRouteSegment(taskKey)}`;
 const supportCasePath = (supportCaseDocumentId: string) =>
   `/support/${encodeURIComponent(supportCaseDocumentId)}`;
+const aiFeedbackReviewPath = (feedbackDocumentId: string) =>
+  `/support/ai-feedback/${encodeURIComponent(feedbackDocumentId)}`;
 
 const candidateDisplayName = (candidate?: DocumentRecord) => {
   if (!candidate) {
@@ -213,6 +226,7 @@ const sourceTimestamp = (record: DocumentRecord) =>
 
 const taskTypeLabels: Record<AdminTaskType, string> = {
   assessment_appeal: 'Assessment appeal',
+  ai_feedback_review: 'AI feedback review',
   notification_failure: 'Notification failure',
   payment_review: 'Payment review',
   refund_review: 'Refund review',
@@ -230,6 +244,7 @@ const priorityRank: Record<AdminTaskPriority, number> = {
 
 const monitoredTaskTypes: AdminTaskType[] = [
   'assessment_appeal',
+  'ai_feedback_review',
   'payment_review',
   'refund_review',
   'support_case',
@@ -249,6 +264,65 @@ const objectValue = (value: unknown) => {
   return {};
 };
 
+const documentRecordValue = (value: unknown): DocumentRecord | undefined =>
+  value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as DocumentRecord)
+    : undefined;
+
+const businessDayStartHourUtc = 9;
+const businessDayEndHourUtc = 17;
+const isWorkingDay = (date: Date) => {
+  const day = date.getUTCDay();
+  return day !== 0 && day !== 6;
+};
+
+const nextBusinessStart = (date: Date) => {
+  const result = new Date(date.getTime());
+
+  while (!isWorkingDay(result)) {
+    result.setUTCDate(result.getUTCDate() + 1);
+    result.setUTCHours(businessDayStartHourUtc, 0, 0, 0);
+  }
+
+  if (result.getUTCHours() < businessDayStartHourUtc) {
+    result.setUTCHours(businessDayStartHourUtc, 0, 0, 0);
+  }
+
+  if (result.getUTCHours() >= businessDayEndHourUtc) {
+    result.setUTCDate(result.getUTCDate() + 1);
+    result.setUTCHours(businessDayStartHourUtc, 0, 0, 0);
+    return nextBusinessStart(result);
+  }
+
+  return result;
+};
+
+const addBusinessHours = (value?: string | Date | null, hours = 4) => {
+  const parsed = value ? new Date(value) : undefined;
+
+  if (!parsed || !Number.isFinite(parsed.getTime())) {
+    return null;
+  }
+
+  let remainingMs = Math.max(0, hours) * 60 * 60 * 1000;
+  let cursor = nextBusinessStart(parsed);
+
+  while (remainingMs > 0) {
+    const endOfDay = new Date(cursor.getTime());
+    endOfDay.setUTCHours(businessDayEndHourUtc, 0, 0, 0);
+    const availableMs = Math.max(0, endOfDay.getTime() - cursor.getTime());
+
+    if (remainingMs <= availableMs) {
+      return new Date(cursor.getTime() + remainingMs).toISOString();
+    }
+
+    remainingMs -= availableMs;
+    cursor = nextBusinessStart(new Date(endOfDay.getTime() + 1));
+  }
+
+  return cursor.toISOString();
+};
+
 const assertOperationsSession = async (
   strapi: StrapiDocumentService,
   sessionToken: string,
@@ -264,6 +338,23 @@ const assertOperationsSession = async (
   }
 
   return session;
+};
+
+const canViewTaskRecordForSession = (task: DocumentRecord, session: AdminSession) => {
+  if (task.taskType !== 'ai_feedback_review') {
+    return true;
+  }
+
+  const metadata = objectValue(task.metadata);
+  const roleKeys = session.user.roleKeys;
+  const escalatedAt = typeof metadata.escalatedToAdminAt === 'string' ? metadata.escalatedToAdminAt : null;
+  const isEscalated = Boolean(escalatedAt && Date.parse(escalatedAt) <= Date.now());
+
+  if (roleKeys.some((roleKey) => ['sales', 'support'].includes(roleKey))) {
+    return true;
+  }
+
+  return isEscalated && roleKeys.some((roleKey) => ['admin', 'super_admin'].includes(roleKey));
 };
 
 const findExistingTask = async (strapi: StrapiDocumentService, taskKey: string) => {
@@ -727,6 +818,67 @@ const supportCaseTask = (supportCase: DocumentRecord): AdminTaskDraft | null => 
   };
 };
 
+const aiFeedbackFailureTask = (feedback: DocumentRecord): AdminTaskDraft | null => {
+  const documentId = getDocumentId(feedback);
+
+  if (!documentId) {
+    return null;
+  }
+
+  const interview = documentRecordValue(feedback.interview);
+  const candidate = documentRecordValue(interview?.candidate);
+  const candidateName = candidateDisplayName(candidate);
+  const failureDetectedAt =
+    feedback.candidateReportFailureFirstDetectedAt ||
+    feedback.candidateReportLastAttemptAt ||
+    feedback.updatedAt ||
+    feedback.createdAt;
+  const escalatedToAdminAt = addBusinessHours(failureDetectedAt, 4);
+  const isEscalated = Boolean(escalatedToAdminAt && Date.parse(escalatedToAdminAt) <= Date.now());
+  const retryCount = typeof feedback.candidateReportRetryCount === 'number'
+    ? feedback.candidateReportRetryCount
+    : 0;
+  const taskKey = `ai-feedback-report:${documentId}:failed`;
+
+  return {
+    actionLabel: 'Review report',
+    actionPath: aiFeedbackReviewPath(documentId),
+    metadata: {
+      candidateName,
+      escalatedToAdminAt,
+      failureCategory: feedback.candidateReportFailureCategory || null,
+      failureDetectedAt,
+      failureReason: feedback.candidateReportFailureReason || null,
+      feedbackDocumentId: documentId,
+      interviewDocumentId: getDocumentId(interview),
+      model: feedback.aiModel || null,
+      provider: feedback.aiProvider || null,
+      retryCount,
+      sourceCreatedAt: feedback.createdAt,
+      sourceDetectedAt: failureDetectedAt || sourceTimestamp(feedback),
+      visibleRoleKeys: isEscalated
+        ? ['support', 'sales', 'admin', 'super_admin']
+        : ['support', 'sales'],
+    },
+    priority: isEscalated ? 'urgent' : 'high',
+    relatedDocumentId: getDocumentId(interview),
+    relatedType: getDocumentId(interview) ? 'interview' : undefined,
+    sourceDocumentId: documentId,
+    sourceType: 'interview_feedback',
+    summary: trimToLength(
+      [
+        'AI feedback report generation failed and needs staff recovery.',
+        candidateName ? `Candidate: ${candidateName}.` : '',
+        retryCount ? `Automatic attempts: ${retryCount}.` : '',
+      ].filter(Boolean).join(' '),
+      500
+    ),
+    taskKey,
+    taskType: 'ai_feedback_review',
+    title: 'AI feedback report failed',
+  };
+};
+
 const collectPaymentTasks = async (strapi: StrapiDocumentService) => {
   const payments = await documents(strapi, 'api::payment.payment').findMany({
     filters: {
@@ -881,6 +1033,25 @@ const collectSupportCaseTasks = async (strapi: StrapiDocumentService) => {
     .filter((task): task is AdminTaskDraft => Boolean(task));
 };
 
+const collectAiFeedbackFailureTasks = async (strapi: StrapiDocumentService) => {
+  const feedbackRecords = await documents(strapi, 'api::interview-feedback.interview-feedback').findMany({
+    filters: {
+      candidateReportState: 'failed',
+    },
+    limit: 100,
+    populate: {
+      interview: {
+        populate: ['candidate', 'employer'],
+      },
+    },
+    sort: ['candidateReportFailureFirstDetectedAt:asc', 'updatedAt:asc', 'createdAt:asc'],
+  });
+
+  return feedbackRecords
+    .map(aiFeedbackFailureTask)
+    .filter((task): task is AdminTaskDraft => Boolean(task));
+};
+
 const collectTaskDrafts = async (strapi: StrapiDocumentService) => {
   const [
     assessmentAppeals,
@@ -890,6 +1061,7 @@ const collectTaskDrafts = async (strapi: StrapiDocumentService) => {
     refunds,
     notifications,
     auditEvents,
+    aiFeedbackFailures,
     supportCases,
   ] = await Promise.all([
     collectAssessmentAppealTasks(strapi),
@@ -899,6 +1071,7 @@ const collectTaskDrafts = async (strapi: StrapiDocumentService) => {
     collectRefundTasks(strapi),
     collectNotificationTasks(strapi),
     collectAuditTasks(strapi),
+    collectAiFeedbackFailureTasks(strapi),
     collectSupportCaseTasks(strapi),
   ]);
 
@@ -910,6 +1083,7 @@ const collectTaskDrafts = async (strapi: StrapiDocumentService) => {
     ...refunds,
     ...notifications,
     ...auditEvents,
+    ...aiFeedbackFailures,
     ...supportCases,
   ];
 };
@@ -986,7 +1160,7 @@ const taskCounts = (tasks: ReturnType<typeof publicTask>[]) => {
   };
 };
 
-const syncTasks = async (strapi: StrapiDocumentService) => {
+const syncTasks = async (strapi: StrapiDocumentService, session?: AdminSession) => {
   const detectedAt = new Date().toISOString();
   const drafts = await collectTaskDrafts(strapi);
   const activeTaskKeys = new Set(drafts.map((draft) => draft.taskKey));
@@ -1007,14 +1181,18 @@ const syncTasks = async (strapi: StrapiDocumentService) => {
     sort: ['createdAt:desc'],
   });
 
-  return openTasks.sort(compareTasks).slice(0, 20).map(publicTask);
+  return openTasks
+    .filter((task) => (session ? canViewTaskRecordForSession(task, session) : true))
+    .sort(compareTasks)
+    .slice(0, 20)
+    .map(publicTask);
 };
 
 export default factories.createCoreService('api::admin-task.admin-task', ({ strapi }) => ({
   async getOverview(input: unknown, requestContext: RequestContext = {}) {
     const body = validateOverview(input);
     const session = await assertOperationsSession(strapi, body.sessionToken, requestContext);
-    const tasks = await syncTasks(strapi);
+    const tasks = await syncTasks(strapi, session);
 
     return {
       counts: taskCounts(tasks),
@@ -1028,12 +1206,15 @@ export default factories.createCoreService('api::admin-task.admin-task', ({ stra
     const body = validateTaskAction(input);
 
     const session = await assertOperationsSession(strapi, body.sessionToken, requestContext);
-    await syncTasks(strapi);
+    await syncTasks(strapi, session);
 
     const task = await findExistingTask(strapi, body.taskKey);
 
     if (!task) {
       throw new ValidationError('Admin task could not be found.');
+    }
+    if (!canViewTaskRecordForSession(task, session)) {
+      throw new ForbiddenError('This task is not visible to your access level yet.');
     }
     const { reviewClaim } = await reviewClaimService(strapi).claimForSession(
       {

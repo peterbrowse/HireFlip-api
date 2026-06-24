@@ -9,9 +9,11 @@ type AdminSupportService = {
   addInternalNote(input: unknown, context: RequestContext): Promise<unknown>;
   assignCase(input: unknown, context: RequestContext): Promise<unknown>;
   getCase(input: unknown, context: RequestContext): Promise<unknown>;
+  getFeedbackReportFailure(input: unknown, context: RequestContext): Promise<unknown>;
   listAssignableStaff(input: unknown, context: RequestContext): Promise<unknown>;
   listCases(input: unknown, context: RequestContext): Promise<unknown>;
   replyToCase(input: unknown, context: RequestContext): Promise<unknown>;
+  resolveFeedbackReportFailure(input: unknown, context: RequestContext): Promise<unknown>;
   resolveFeedbackReportConcern(input: unknown, context: RequestContext): Promise<unknown>;
 };
 
@@ -111,6 +113,18 @@ export default ({ strapi }) => ({
   async feedbackReportConcern(ctx) {
     await writeResult(ctx, () =>
       adminSupportService(strapi).resolveFeedbackReportConcern(ctx.request.body, getRequestContext(ctx))
+    );
+  },
+
+  async feedbackReportFailureDetail(ctx) {
+    await writeResult(ctx, () =>
+      adminSupportService(strapi).getFeedbackReportFailure(ctx.request.body, getRequestContext(ctx))
+    );
+  },
+
+  async feedbackReportFailureAction(ctx) {
+    await writeResult(ctx, () =>
+      adminSupportService(strapi).resolveFeedbackReportFailure(ctx.request.body, getRequestContext(ctx))
     );
   },
 });

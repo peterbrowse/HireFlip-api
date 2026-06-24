@@ -1515,6 +1515,73 @@ const aiFeedbackReportResponseSchema = z
 
 type AiFeedbackReportResponse = z.infer<typeof aiFeedbackReportResponseSchema>['data'];
 
+class AiFeedbackReportGenerationError extends Error {
+  category: 'configuration' | 'input' | 'provider' | 'service_unavailable' | 'timeout' | 'validation' | 'unknown';
+  status?: number;
+  transient: boolean;
+
+  constructor(
+    message: string,
+    {
+      category = 'unknown',
+      status,
+      transient = false,
+    }: {
+      category?: AiFeedbackReportGenerationError['category'];
+      status?: number;
+      transient?: boolean;
+    } = {}
+  ) {
+    super(message);
+    this.name = 'AiFeedbackReportGenerationError';
+    this.category = category;
+    this.status = status;
+    this.transient = transient;
+  }
+}
+
+const aiFeedbackRetryDelaysMs = [
+  5 * 60 * 1000,
+  30 * 60 * 1000,
+  2 * 60 * 60 * 1000,
+];
+const aiFeedbackMaxAttempts = () =>
+  getIntegerEnv('AI_FEEDBACK_REPORT_MAX_ATTEMPTS', aiFeedbackRetryDelaysMs.length);
+
+const getAiMonthlySpendLimitGbp = async (strapi: StrapiDocumentService) => {
+  const settings = await documents(strapi, 'api::platform-setting.platform-setting').findMany({
+    filters: {
+      settingKey: 'ai.monthly_spend_limit_gbp',
+    },
+    limit: 1,
+  });
+  const configured = Number(settings[0]?.numberValue);
+
+  if (Number.isFinite(configured) && configured > 0) {
+    return configured;
+  }
+
+  return getIntegerEnv('AI_MONTHLY_SPEND_LIMIT_GBP', 100);
+};
+
+const aiFeedbackFailure = (error: unknown) => {
+  if (error instanceof AiFeedbackReportGenerationError) {
+    return {
+      category: error.category,
+      message: error.message,
+      status: error.status,
+      transient: error.transient,
+    };
+  }
+
+  return {
+    category: 'unknown' as const,
+    message: error instanceof Error ? error.message : 'AI feedback report generation failed.',
+    status: undefined,
+    transient: false,
+  };
+};
+
 const requestAiFeedbackReport = async ({
   correlationId,
   payload,
@@ -1526,7 +1593,10 @@ const requestAiFeedbackReport = async ({
   const serviceToken = process.env.AI_SERVICE_TOKEN;
 
   if (!baseUrl || !serviceToken) {
-    return undefined;
+    throw new AiFeedbackReportGenerationError('AI service is not configured.', {
+      category: 'configuration',
+      transient: false,
+    });
   }
 
   const controller = new AbortController();
@@ -1550,10 +1620,58 @@ const requestAiFeedbackReport = async ({
     const parsed = aiFeedbackReportResponseSchema.safeParse(responseBody);
 
     if (!response.ok || !parsed.success) {
-      throw new Error('AI service could not generate a valid feedback report.');
+      const responseError =
+        responseBody && typeof responseBody === 'object' && 'error' in responseBody
+          ? String((responseBody as { error?: unknown }).error || '')
+          : '';
+      const status = response.status;
+      const category =
+        status === 401 || status === 403
+          ? 'configuration'
+          : status === 400
+            ? 'input'
+            : !parsed.success
+              ? 'validation'
+              : status >= 500
+                ? 'service_unavailable'
+                : 'provider';
+      const transient = status === 408 || status === 429 || status >= 500 || !parsed.success;
+
+      throw new AiFeedbackReportGenerationError(
+        responseError || 'AI service could not generate a valid feedback report.',
+        {
+          category,
+          status,
+          transient,
+        }
+      );
     }
 
     return parsed.data.data;
+  } catch (error) {
+    if (error instanceof AiFeedbackReportGenerationError) {
+      throw error;
+    }
+
+    if (
+      error &&
+      typeof error === 'object' &&
+      'name' in error &&
+      String((error as { name?: unknown }).name) === 'AbortError'
+    ) {
+      throw new AiFeedbackReportGenerationError('AI service request timed out.', {
+        category: 'timeout',
+        transient: true,
+      });
+    }
+
+    throw new AiFeedbackReportGenerationError(
+      error instanceof Error ? error.message : 'AI service request failed.',
+      {
+        category: 'service_unavailable',
+        transient: true,
+      }
+    );
   } finally {
     clearTimeout(timeout);
   }
@@ -3087,6 +3205,130 @@ const queueCandidateFeedbackReportNotification = async ({
   );
 };
 
+const shouldAttemptCandidateFeedbackReport = (feedback: DocumentRecord) => {
+  const state = String(feedback.candidateReportState || 'pending');
+
+  if (state !== 'pending') {
+    return false;
+  }
+
+  const nextRetryAt = typeof feedback.candidateReportNextRetryAt === 'string'
+    ? Date.parse(feedback.candidateReportNextRetryAt)
+    : Number.NaN;
+
+  return Number.isNaN(nextRetryAt) || nextRetryAt <= Date.now();
+};
+
+const retryCountForFeedback = (feedback: DocumentRecord) => {
+  const value = Number(feedback.candidateReportRetryCount || 0);
+  return Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
+};
+
+const recordCandidateFeedbackReportFailure = async ({
+  error,
+  feedback,
+  feedbackRecords,
+  interview,
+  requestContext,
+  strapi,
+}: {
+  error: unknown;
+  feedback: DocumentRecord;
+  feedbackRecords: DocumentRecord[];
+  interview: DocumentRecord;
+  requestContext: RequestContext;
+  strapi: StrapiDocumentService;
+}) => {
+  const feedbackDocumentId = getDocumentId(feedback);
+  const interviewDocumentId = getDocumentId(interview);
+
+  if (!feedbackDocumentId) {
+    return feedback;
+  }
+
+  const failure = aiFeedbackFailure(error);
+  const now = new Date();
+  const nowIso = now.toISOString();
+  const previousRetryCount = retryCountForFeedback(feedback);
+  const nextRetryCount = previousRetryCount + 1;
+  const maxAttempts = aiFeedbackMaxAttempts();
+  const shouldRetry = failure.transient && nextRetryCount < maxAttempts;
+  const retryDelay = aiFeedbackRetryDelaysMs[Math.min(nextRetryCount - 1, aiFeedbackRetryDelaysMs.length - 1)];
+  const nextRetryAt = shouldRetry ? new Date(now.getTime() + retryDelay).toISOString() : null;
+  const previousMetadata = objectValue(feedback.aiMetadata);
+  const retryHistory = Array.isArray(previousMetadata.retryHistory)
+    ? previousMetadata.retryHistory.slice(-9)
+    : [];
+  const candidateReportState = shouldRetry ? 'pending' : 'failed';
+
+  const updatedFeedback = await documents(strapi, 'api::interview-feedback.interview-feedback').update({
+    documentId: feedbackDocumentId,
+    data: {
+      aiMetadata: {
+        ...previousMetadata,
+        feedbackSourceCount: feedbackRecords.length,
+        lastGenerationError: {
+          category: failure.category,
+          message: failure.message,
+          nextRetryAt,
+          retryCount: nextRetryCount,
+          status: failure.status || null,
+          transient: failure.transient,
+        },
+        requestId: requestContext.requestId,
+        retryHistory: [
+          ...retryHistory,
+          {
+            at: nowIso,
+            category: failure.category,
+            message: failure.message,
+            nextRetryAt,
+            retryCount: nextRetryCount,
+            status: failure.status || null,
+            transient: failure.transient,
+          },
+        ],
+      },
+      candidateReportFailureCategory: shouldRetry ? null : failure.category,
+      candidateReportFailureFirstDetectedAt:
+        feedback.candidateReportFailureFirstDetectedAt || nowIso,
+      candidateReportFailureReason: shouldRetry ? null : failure.message,
+      candidateReportLastAttemptAt: nowIso,
+      candidateReportNextRetryAt: nextRetryAt,
+      candidateReportRetryCount: nextRetryCount,
+      candidateReportState,
+    },
+  });
+
+  await auditEvents(strapi).record({
+    actorType: 'service',
+    eventCategory: 'interview',
+    eventType: shouldRetry
+      ? 'ai.interview_feedback_report_retry_scheduled'
+      : 'ai.interview_feedback_report_failed',
+    metadata: {
+      errorCategory: failure.category,
+      errorMessage: failure.message,
+      feedbackDocumentId,
+      feedbackSourceCount: feedbackRecords.length,
+      nextRetryAt,
+      requestId: requestContext.requestId,
+      retryCount: nextRetryCount,
+      status: failure.status || null,
+      transient: failure.transient,
+    },
+    requestId: requestContext.requestId,
+    serviceName: 'core-api',
+    severity: shouldRetry ? 'warning' : 'error',
+    source: 'ai_service',
+    subjectDisplayName: candidateDisplayName(interview.candidate),
+    subjectId: interviewDocumentId,
+    subjectType: 'interview',
+  });
+
+  return updatedFeedback;
+};
+
 const maybeGenerateCandidateFeedbackReport = async ({
   interview,
   requestContext,
@@ -3112,7 +3354,7 @@ const maybeGenerateCandidateFeedbackReport = async ({
     return primaryFeedback;
   }
 
-  if (String(primaryFeedback.candidateReportState || 'pending') !== 'pending') {
+  if (!shouldAttemptCandidateFeedbackReport(primaryFeedback)) {
     return primaryFeedback;
   }
 
@@ -3150,6 +3392,7 @@ const maybeGenerateCandidateFeedbackReport = async ({
     }
 
     const now = new Date().toISOString();
+    const monthlySpendLimitGbp = await getAiMonthlySpendLimitGbp(strapi);
     const updatedFeedback = await documents(strapi, 'api::interview-feedback.interview-feedback').update({
       documentId: primaryFeedbackDocumentId,
       data: {
@@ -3158,15 +3401,24 @@ const maybeGenerateCandidateFeedbackReport = async ({
           feedbackSourceDocumentIds: feedbackRecords
             .map((feedback) => getDocumentId(feedback))
             .filter(Boolean),
+          monthlySpendLimitGbp,
           requestId: requestContext.requestId,
         },
         aiModel: aiReport.model,
         aiPromptVersion: aiReport.promptVersion,
         aiProvider: aiReport.provider,
         candidateReportConclusion: aiReport.report.conclusion,
+        candidateReportFailureCategory: null,
+        candidateReportFailureFirstDetectedAt: null,
+        candidateReportFailureReason: null,
         candidateReportGeneratedAt: now,
         candidateReportImprovements: aiReport.report.improvements,
         candidateReportIntro: aiReport.report.intro,
+        candidateReportLastAttemptAt: now,
+        candidateReportManualDraftSavedAt: null,
+        candidateReportManualDraftSavedByStaffEmail: null,
+        candidateReportNextRetryAt: null,
+        candidateReportRetryCount: 0,
         candidateReportState: 'generated',
         candidateReportStrengths: aiReport.report.strengths,
         candidateReportTakeaways: aiReport.report.takeaways,
@@ -3205,43 +3457,14 @@ const maybeGenerateCandidateFeedbackReport = async ({
 
     return updatedFeedback;
   } catch (error) {
-    const errorMessage =
-      error instanceof Error ? error.message : 'AI feedback report generation failed.';
-    const now = new Date().toISOString();
-
-    await documents(strapi, 'api::interview-feedback.interview-feedback').update({
-      documentId: primaryFeedbackDocumentId,
-      data: {
-        aiMetadata: {
-          errorMessage,
-          failedAt: now,
-          feedbackSourceCount: feedbackRecords.length,
-          requestId: requestContext.requestId,
-        },
-        candidateReportState: 'failed',
-      },
+    return recordCandidateFeedbackReportFailure({
+      error,
+      feedback: primaryFeedback,
+      feedbackRecords,
+      interview,
+      requestContext,
+      strapi,
     });
-
-    await auditEvents(strapi).record({
-      actorType: 'service',
-      eventCategory: 'interview',
-      eventType: 'ai.interview_feedback_report_failed',
-      metadata: {
-        errorMessage,
-        feedbackDocumentId: primaryFeedbackDocumentId,
-        feedbackSourceCount: feedbackRecords.length,
-        requestId: requestContext.requestId,
-      },
-      requestId: requestContext.requestId,
-      serviceName: 'core-api',
-      severity: 'error',
-      source: 'ai_service',
-      subjectDisplayName: candidateDisplayName(interview.candidate),
-      subjectId: interviewDocumentId,
-      subjectType: 'interview',
-    });
-
-    return primaryFeedback;
   }
 };
 
@@ -3973,6 +4196,72 @@ const queueCandidateInterviewDetailsNotification = async ({
 };
 
 export default ({ strapi }) => ({
+  async reconcileCandidateFeedbackReports(limit = 100, requestContext: RequestContext = {}) {
+    const dueFeedback = await documents(strapi, 'api::interview-feedback.interview-feedback').findMany({
+      filters: {
+        candidateReportNextRetryAt: {
+          $lte: new Date().toISOString(),
+        },
+        candidateReportState: 'pending',
+      },
+      limit,
+      populate: {
+        interview: {
+          populate: ['candidate', 'employer'],
+        },
+      },
+      sort: ['candidateReportNextRetryAt:asc', 'updatedAt:asc'],
+    });
+    const summary = {
+      checked: dueFeedback.length,
+      errors: [] as Array<{ error: string; feedbackDocumentId?: string }>,
+      generated: 0,
+      rescheduled: 0,
+      skipped: 0,
+      failed: 0,
+    };
+
+    for (const feedback of dueFeedback) {
+      const feedbackDocumentId = getDocumentId(feedback);
+
+      try {
+        const interview = documentRecordValue(feedback.interview);
+
+        if (!feedbackDocumentId || !interview?.documentId) {
+          summary.skipped += 1;
+          continue;
+        }
+
+        const result = await maybeGenerateCandidateFeedbackReport({
+          interview,
+          requestContext: {
+            ...requestContext,
+            serviceName: requestContext.serviceName || 'class-workflow-worker',
+          },
+          strapi,
+        });
+        const state = String(result?.candidateReportState || 'pending');
+
+        if (state === 'generated') {
+          summary.generated += 1;
+        } else if (state === 'failed') {
+          summary.failed += 1;
+        } else if (result?.candidateReportNextRetryAt) {
+          summary.rescheduled += 1;
+        } else {
+          summary.skipped += 1;
+        }
+      } catch (error) {
+        summary.errors.push({
+          error: error instanceof Error ? error.message : String(error),
+          feedbackDocumentId,
+        });
+      }
+    }
+
+    return summary;
+  },
+
   async validateInvite(input: unknown) {
     const body = validateInviteToken(input);
     const invite = await assertValidInvite(strapi, body.inviteToken);
