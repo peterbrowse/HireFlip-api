@@ -21,6 +21,16 @@
       "relation": "manyToOne",
       "target": "api::employer-contact.employer-contact"
     },
+    "region": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::class-area.class-area"
+    },
+    "workSector": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::work-sector.work-sector"
+    },
     "startTime": {
       "type": "datetime",
       "required": true

@@ -148,6 +148,7 @@ const createOfferFixture = async ({
   runId,
   strapi,
   suffix,
+  workSector,
 }) => {
   const request = await documents(strapi, 'api::interview-request.interview-request').create({
     data: {
@@ -173,6 +174,7 @@ const createOfferFixture = async ({
       fulfilledAt: new Date().toISOString(),
       interviewRequest: connect(request),
       region: connect(classArea),
+      requiredSlotCount: 3,
       releaseReason: 'slot_options_submitted',
     },
     populate: ['employer', 'employerContact', 'interviewRequest', 'region'],
@@ -192,6 +194,7 @@ const createOfferFixture = async ({
         suffix,
       },
       offerState: 'sent',
+      requiredSlotCount: 3,
     },
     populate: ['candidate', 'capacityClaim', 'employer', 'employerContact', 'enrollment', 'interviewRequest'],
   });
@@ -214,9 +217,15 @@ const createOfferFixture = async ({
             smokeRunId: runId,
             suffix,
           },
+          region: connect(classArea),
           slotOffer: connect(offer),
           slotState: 'offered',
           startTime: start,
+          ...(workSector
+            ? {
+                workSector: connect(workSector),
+              }
+            : {}),
         },
       })
     );
@@ -227,6 +236,69 @@ const createOfferFixture = async ({
     offer,
     request,
     slots,
+  };
+};
+
+const createCandidateRequestFixture = async ({
+  classArea,
+  classRecord,
+  runId,
+  strapi,
+  suffix,
+}) => {
+  const now = new Date().toISOString();
+  const candidate = await documents(strapi, 'api::candidate.candidate').create({
+    data: {
+      accountOnboardingCompletedAt: now,
+      accountRestrictionStatus: 'active',
+      authIdentityId: `auth0|candidate-interview-${suffix}-${runId}`,
+      authProvider: 'auth0',
+      candidateState: 'enrolled',
+      email: `candidate-interview-${suffix}-${runId}@example.test`,
+      firstName: 'Reusable',
+      lastName: suffix,
+      marketingConsentState: 'opted_out',
+      notificationPreferences: {
+        channels: {
+          email: true,
+          sms: false,
+        },
+      },
+      preferredCommunicationChannel: 'email',
+    },
+  });
+  const enrollment = await documents(strapi, 'api::enrollment.enrollment').create({
+    data: {
+      beganClassAt: now,
+      candidate: connect(candidate),
+      class: connect(classRecord),
+      completionStatus: 'completed',
+      enrollmentState: 'interview_phase',
+      passStatus: 'passed',
+      paymentStatus: 'paid',
+    },
+    populate: ['candidate', 'class'],
+  });
+  const request = await documents(strapi, 'api::interview-request.interview-request').create({
+    data: {
+      candidate: connect(candidate),
+      candidateVisibleState: 'arranging_interviews',
+      claimedInterviewCount: 0,
+      class: connect(classRecord),
+      enrollment: connect(enrollment),
+      fulfilledInterviewCount: 0,
+      region: connect(classArea),
+      requestState: 'pending_capacity',
+      requestedInterviewCount: 1,
+      responseSlaWorkingDays: 2,
+    },
+    populate: ['candidate', 'class', 'enrollment', 'region'],
+  });
+
+  return {
+    candidate,
+    enrollment,
+    request,
   };
 };
 
@@ -256,6 +328,13 @@ const main = async () => {
     contact: null,
     employer: null,
     enrollment: null,
+    extraCandidates: [],
+    extraClassAreas: [],
+    extraClassRecords: [],
+    extraContacts: [],
+    extraEmployers: [],
+    extraEnrollments: [],
+    extraWorkSectors: [],
     fixtures: [],
   };
 
@@ -549,6 +628,264 @@ const main = async () => {
 
     assert(releasedClaim[0]?.claimState === 'released', 'Expected candidate decline to release capacity claim.');
 
+    const reusableTarget = await createCandidateRequestFixture({
+      classArea: created.classArea,
+      classRecord: created.classRecord,
+      runId,
+      strapi,
+      suffix: 'pool-target',
+    });
+    created.extraCandidates.push(reusableTarget.candidate);
+    created.extraEnrollments.push(reusableTarget.enrollment);
+    created.fixtures.push({
+      claim: null,
+      offer: null,
+      request: reusableTarget.request,
+      slots: [],
+    });
+
+    await interviewRequestService.reconcileReusableInterviewSlots(25, {
+      requestId: `candidate-interview-smoke-reusable-${runId}`,
+    });
+
+    const reusableAssignedOffers = await documents(
+      strapi,
+      'api::interview-slot-offer.interview-slot-offer'
+    ).findMany({
+      filters: {
+        interviewRequest: {
+          documentId: reusableTarget.request.documentId,
+        },
+      },
+      limit: 5,
+      populate: ['slots'],
+    });
+    const reusableAssignedOffer = reusableAssignedOffers.find((offer) => offer.offerState === 'sent');
+
+    assert(reusableAssignedOffer, 'Expected a reusable-slot candidate offer.');
+    assert(reusableAssignedOffer.slots?.length === 3, 'Expected reusable candidate offer to contain 3 slots.');
+
+    const firstOfferAfterReuse = await documents(strapi, 'api::interview-slot-offer.interview-slot-offer').findMany({
+      filters: {
+        documentId: firstFixture.offer.documentId,
+      },
+      limit: 1,
+    });
+
+    assert(
+      Array.isArray(firstOfferAfterReuse[0]?.metadata?.historicalSlotsSnapshot),
+      'Expected reusable reassignment to preserve historical slot snapshot on the original offer.'
+    );
+
+    created.fixtures[created.fixtures.length - 1].offer = reusableAssignedOffer;
+
+    const topUpArea = await documents(strapi, 'api::class-area.class-area').create({
+      data: {
+        name: `Candidate Interview Top Up Area ${runId}`,
+        slug: `candidate-interview-top-up-area-${runId}`.replace(/[^a-zA-Z0-9-]/g, '-'),
+        state: 'active',
+      },
+    });
+    const topUpSector = await documents(strapi, 'api::work-sector.work-sector').create({
+      data: {
+        name: `Candidate Interview Top Up Sector ${runId}`,
+        slug: `candidate-interview-top-up-sector-${runId}`.replace(/[^a-zA-Z0-9-]/g, '-'),
+        state: 'active',
+      },
+    });
+    const topUpClass = await documents(strapi, 'api::class.class').create({
+      data: {
+        capacity: 1,
+        classArea: connect(topUpArea),
+        currency: 'GBP',
+        displayTitle: `Candidate Interview Top Up Class ${runId}`,
+        interviewsGuaranteed: 1,
+        name: `Candidate Interview Top Up Class ${runId}`,
+        officialClassCode: `CIT-${runId}`.slice(0, 40),
+        state: 'interview_window',
+        workSector: connect(topUpSector),
+        year: 2026,
+      },
+      populate: ['classArea', 'workSector'],
+    });
+    const topUpEmployer = await documents(strapi, 'api::employer.employer').create({
+      data: {
+        commitmentMode: 'global',
+        companyName: `Candidate Interview Top Up Employer ${runId}`,
+        dashboardOnboardingState: 'complete',
+        employerState: 'active',
+        interviewCommitmentCadence: 'quarterly',
+        interviewCommitmentVolume: 5,
+        operatingRegions: connect(topUpArea),
+      },
+      populate: ['operatingRegions'],
+    });
+    const topUpContact = await documents(strapi, 'api::employer-contact.employer-contact').create({
+      data: {
+        accountCreatedAt: now,
+        authIdentityId: `auth0|candidate-interview-top-up-employer-${runId}`,
+        authProvider: 'auth0',
+        contactRole: 'lead_contact',
+        contactState: 'active',
+        coverageConfirmedAt: now,
+        coverageRegions: connect(topUpArea),
+        email: `candidate-interview-top-up-employer-${runId}@example.test`,
+        employer: connect(topUpEmployer),
+        firstName: 'Top',
+        lastName: 'Up',
+      },
+      populate: ['coverageRegions', 'employer'],
+    });
+
+    created.extraClassAreas.push(topUpArea);
+    created.extraWorkSectors.push(topUpSector);
+    created.extraClassRecords.push(topUpClass);
+    created.extraEmployers.push(topUpEmployer);
+    created.extraContacts.push(topUpContact);
+
+    const topUpSourceCandidate = await documents(strapi, 'api::candidate.candidate').create({
+      data: {
+        accountOnboardingCompletedAt: now,
+        accountRestrictionStatus: 'active',
+        authIdentityId: `auth0|candidate-interview-top-up-source-${runId}`,
+        authProvider: 'auth0',
+        candidateState: 'enrolled',
+        email: `candidate-interview-top-up-source-${runId}@example.test`,
+        firstName: 'Top',
+        lastName: 'Source',
+        marketingConsentState: 'opted_out',
+        preferredCommunicationChannel: 'email',
+      },
+    });
+    const topUpSourceEnrollment = await documents(strapi, 'api::enrollment.enrollment').create({
+      data: {
+        beganClassAt: now,
+        candidate: connect(topUpSourceCandidate),
+        class: connect(topUpClass),
+        completionStatus: 'completed',
+        enrollmentState: 'interview_phase',
+        passStatus: 'passed',
+        paymentStatus: 'paid',
+      },
+      populate: ['candidate', 'class'],
+    });
+
+    created.extraCandidates.push(topUpSourceCandidate);
+    created.extraEnrollments.push(topUpSourceEnrollment);
+
+    const topUpSource = await createOfferFixture({
+      candidate: topUpSourceCandidate,
+      classArea: topUpArea,
+      classRecord: topUpClass,
+      contact: topUpContact,
+      employer: topUpEmployer,
+      enrollment: topUpSourceEnrollment,
+      runId,
+      strapi,
+      suffix: 'top-up-source',
+      workSector: topUpSector,
+    });
+    created.fixtures.push(topUpSource);
+
+    await Promise.all(
+      topUpSource.slots.slice(0, 2).map((slot) =>
+        documents(strapi, 'api::interview-slot.interview-slot').update({
+          documentId: slot.documentId,
+          data: {
+            slotState: 'available',
+          },
+        })
+      )
+    );
+    await documents(strapi, 'api::interview-slot.interview-slot').update({
+      documentId: topUpSource.slots[2].documentId,
+      data: {
+        slotState: 'expired',
+      },
+    });
+
+    const topUpTarget = await createCandidateRequestFixture({
+      classArea: topUpArea,
+      classRecord: topUpClass,
+      runId,
+      strapi,
+      suffix: 'top-up-target',
+    });
+    created.extraCandidates.push(topUpTarget.candidate);
+    created.extraEnrollments.push(topUpTarget.enrollment);
+    created.fixtures.push({
+      claim: null,
+      offer: null,
+      request: topUpTarget.request,
+      slots: [],
+    });
+
+    const topUpClaimSummary = await interviewRequestService.reconcileReusableInterviewSlots(25, {
+      requestId: `candidate-interview-smoke-top-up-${runId}`,
+    });
+
+    assert(topUpClaimSummary.topUpClaims >= 1, 'Expected reusable slots to create a top-up claim.');
+
+    const topUpClaims = await documents(strapi, 'api::employer-capacity-claim.employer-capacity-claim').findMany({
+      filters: {
+        interviewRequest: {
+          documentId: topUpTarget.request.documentId,
+        },
+      },
+      limit: 5,
+    });
+    const topUpClaim = topUpClaims.find((claim) => claim.requiredSlotCount === 1);
+
+    assert(topUpClaim, 'Expected a 1-slot top-up claim.');
+
+    created.fixtures[created.fixtures.length - 1].claim = topUpClaim;
+
+    const employerDashboardServiceForTopUp = strapi.service('api::employer-dashboard.employer-dashboard');
+    const topUpStart = addWorkingDays(9, 14);
+    const topUpEnd = new Date(topUpStart);
+
+    topUpEnd.setUTCMinutes(topUpEnd.getUTCMinutes() + 45);
+
+    await employerDashboardServiceForTopUp.createInterviewSlotOffer(
+      {
+        authIdentityId: topUpContact.authIdentityId,
+        capacityClaimDocumentId: topUpClaim.documentId,
+        candidateDocumentId: topUpTarget.candidate.documentId,
+        email: topUpContact.email,
+        enrollmentDocumentId: topUpTarget.enrollment.documentId,
+        interviewRequestDocumentId: topUpTarget.request.documentId,
+        slots: [
+          {
+            employerContactDocumentId: topUpContact.documentId,
+            endTime: topUpEnd.toISOString(),
+            locationType: 'online',
+            startTime: topUpStart,
+          },
+        ],
+      },
+      {
+        requestId: `candidate-interview-smoke-top-up-submit-${runId}`,
+      }
+    );
+
+    const topUpAssignedOffers = await documents(
+      strapi,
+      'api::interview-slot-offer.interview-slot-offer'
+    ).findMany({
+      filters: {
+        interviewRequest: {
+          documentId: topUpTarget.request.documentId,
+        },
+        offerState: 'sent',
+      },
+      limit: 5,
+      populate: ['slots'],
+    });
+
+    assert(topUpAssignedOffers.length === 1, 'Expected top-up submission to assemble one candidate offer.');
+    assert(topUpAssignedOffers[0].slots?.length === 3, 'Expected assembled top-up offer to contain 3 slots.');
+    created.fixtures[created.fixtures.length - 1].offer = topUpAssignedOffers[0];
+
     const secondFixture = await createOfferFixture({
       candidate: created.candidate,
       classArea: created.classArea,
@@ -757,6 +1094,12 @@ const main = async () => {
 
     await deleteNotificationEventsForEmail(strapi, created.candidate?.email);
     await deleteNotificationEventsForEmail(strapi, created.contact?.email);
+    for (const candidate of created.extraCandidates) {
+      await deleteNotificationEventsForEmail(strapi, candidate?.email);
+    }
+    for (const contact of created.extraContacts) {
+      await deleteNotificationEventsForEmail(strapi, contact?.email);
+    }
 
     const strikes = created.candidate?.documentId
       ? await documents(strapi, 'api::candidate-interview-strike.candidate-interview-strike').findMany({
@@ -811,6 +1154,28 @@ const main = async () => {
       }
 
       await deleteDocument(strapi, 'api::interview-request.interview-request', fixture.request?.documentId);
+    }
+
+    for (const enrollment of created.extraEnrollments.reverse()) {
+      await deleteDocument(strapi, 'api::enrollment.enrollment', enrollment?.documentId);
+    }
+    for (const contact of created.extraContacts.reverse()) {
+      await deleteDocument(strapi, 'api::employer-contact.employer-contact', contact?.documentId);
+    }
+    for (const employer of created.extraEmployers.reverse()) {
+      await deleteDocument(strapi, 'api::employer.employer', employer?.documentId);
+    }
+    for (const candidate of created.extraCandidates.reverse()) {
+      await deleteDocument(strapi, 'api::candidate.candidate', candidate?.documentId);
+    }
+    for (const classRecord of created.extraClassRecords.reverse()) {
+      await deleteDocument(strapi, 'api::class.class', classRecord?.documentId);
+    }
+    for (const workSector of created.extraWorkSectors.reverse()) {
+      await deleteDocument(strapi, 'api::work-sector.work-sector', workSector?.documentId);
+    }
+    for (const classArea of created.extraClassAreas.reverse()) {
+      await deleteDocument(strapi, 'api::class-area.class-area', classArea?.documentId);
     }
 
     await deleteDocument(strapi, 'api::enrollment.enrollment', created.enrollment?.documentId);

@@ -107,6 +107,7 @@ type DocumentRecord = Record<string, unknown> & {
   region?: string;
   regionCommitments?: DocumentRecord[];
   requestedDetailsAt?: string;
+  requiredSlotCount?: number;
   releaseNote?: string;
   releaseReason?: string;
   revocationReason?: string;
@@ -126,6 +127,7 @@ type DocumentRecord = Record<string, unknown> & {
   title?: string;
   updatedAt?: string;
   version?: string;
+  workSector?: DocumentRecord;
 };
 
 type DocumentCollection = {
@@ -147,6 +149,7 @@ type AuditEventService = {
 
 type InterviewRequestService = {
   markSlotOptionsSubmitted(input: unknown, context: RequestContext): Promise<unknown>;
+  reconcileReusableInterviewSlots(limit?: number, context?: RequestContext): Promise<unknown>;
   releaseCapacityClaim(input: unknown, context: RequestContext): Promise<unknown>;
 };
 
@@ -227,7 +230,7 @@ const createInterviewSlotOfferSchema = identitySchema
     enrollmentDocumentId: z.string().trim().min(1).max(80),
     internalNote: z.string().trim().max(1000).optional().transform((value) => value || undefined),
     interviewRequestDocumentId: z.string().trim().min(1).max(120).optional(),
-    slots: z.array(slotSchema).length(3, 'Exactly 3 slot options are required.'),
+    slots: z.array(slotSchema).min(1).max(3),
   })
   .strict();
 
@@ -501,6 +504,9 @@ const positiveIntegerValue = (value: unknown, fallback = 0) => {
 
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
 };
+
+const boundedSlotCount = (value: unknown, fallback = 3) =>
+  Math.min(3, Math.max(1, positiveIntegerValue(value, fallback) || fallback));
 
 const profileImageFormats = ['webp', 'avif'] as const;
 
@@ -2792,6 +2798,7 @@ const availabilityRequestPayload = (claim: DocumentRecord) => {
     earliestSlotLabel: '4 working days notice required',
     enrollmentDocumentId: getDocumentId(request?.enrollment) || null,
     interviewRequestDocumentId: getDocumentId(request) || null,
+    requiredSlotCount: boundedSlotCount(claim.requiredSlotCount),
     responseLabel: claim.expiresAt ? formatDateTime(claim.expiresAt) : '2 working days',
     statusLabel: humanize(String(claim.claimState || request?.requestState || 'notified')),
   };
@@ -3526,6 +3533,7 @@ const progressionPayload = (offer: DocumentRecord) => ({
 });
 
 const claimOpenLockMinutes = 15;
+const reusableSlotTopUpPurpose = 'reusable_slot_top_up';
 
 const addMinutes = (date: Date, minutes: number) => {
   const next = new Date(date);
@@ -3616,7 +3624,10 @@ const capacityClaimDetailPayload = async (
     )
   );
   const lockedByOther = Boolean(activeClaimOpenLock(claim, contactDocumentId));
-  const openClaimStates = ['held', 'notified', 'accepted', 'fulfilled'];
+  const isReusableTopUpClaim = objectValue(claim.metadata).purpose === reusableSlotTopUpPurpose;
+  const openClaimStates = isReusableTopUpClaim
+    ? ['held', 'notified', 'accepted']
+    : ['held', 'notified', 'accepted', 'fulfilled'];
 
   return {
     assignedContact: claim.employerContact
@@ -3640,6 +3651,7 @@ const capacityClaimDetailPayload = async (
       'Region not recorded',
     releaseNote: claim.releaseNote || null,
     releaseReason: claim.releaseReason || null,
+    requiredSlotCount: boundedSlotCount(claim.requiredSlotCount),
     responseLabel: claim.expiresAt ? formatDateTime(claim.expiresAt) : '2 working days',
     slotOffers: (Array.isArray(claim.slotOffers) ? claim.slotOffers : []).map(slotOfferPayload),
     state: claim.claimState || 'notified',
@@ -3689,7 +3701,9 @@ const findScopedCapacityClaim = async (
       interviewRequest: {
         populate: {
           candidate: true,
-          class: true,
+          class: {
+            populate: ['workSector'],
+          },
           enrollment: true,
           region: true,
         },
@@ -3760,7 +3774,9 @@ const openCapacityClaimForContact = async (
       interviewRequest: {
         populate: {
           candidate: true,
-          class: true,
+          class: {
+            populate: ['workSector'],
+          },
           enrollment: true,
           region: true,
         },
@@ -5864,7 +5880,12 @@ export default ({ strapi }) => ({
           },
           employerContact: true,
           interviewRequest: {
-            populate: ['region'],
+            populate: {
+              class: {
+                populate: ['workSector'],
+              },
+              region: true,
+            },
           },
           region: true,
           slotOffers: {
@@ -5915,6 +5936,17 @@ export default ({ strapi }) => ({
       documentRecordValue(capacityClaim?.region) ||
         documentRecordValue(capacityClaim?.interviewRequest?.region)
     );
+    const workSectorDocumentId = getDocumentId(
+      documentRecordValue(documentRecordValue(capacityClaim?.interviewRequest?.class)?.workSector)
+    );
+    const requiredSlotCount = boundedSlotCount(capacityClaim?.requiredSlotCount);
+    const capacityClaimPurpose = String(objectValue(capacityClaim?.metadata).purpose || '');
+    const isReusableTopUpClaim = capacityClaimPurpose === reusableSlotTopUpPurpose;
+
+    if (isReusableTopUpClaim && capacityClaim?.claimState === 'fulfilled') {
+      throw new ValidationError('Reusable slot top-up options have already been submitted.');
+    }
+
     const employerContactMap = contactMapForEmployer(capacityClaim?.employer || contact.employer);
     const normalizedSlots = body.slots.map((slot) => {
       const startTime = assertIsoDate(slot.startTime, 'Slot start time is invalid.');
@@ -5947,6 +5979,12 @@ export default ({ strapi }) => ({
 
     if (uniqueStarts.size !== normalizedSlots.length) {
       throw new ValidationError('Slot options must use different start times.');
+    }
+
+    if (normalizedSlots.length !== requiredSlotCount) {
+      throw new ValidationError(
+        `This request needs exactly ${requiredSlotCount} slot option${requiredSlotCount === 1 ? '' : 's'}.`
+      );
     }
 
     if (capacityClaim) {
@@ -5986,10 +6024,12 @@ export default ({ strapi }) => ({
         earliestAllowedStartTime: earliestAllowed.toISOString(),
         interviewRequestDocumentId: interviewRequestDocumentId || null,
         requestId: requestContext.requestId,
+        reusableSlotTopUp: isReusableTopUpClaim,
         source: 'employer_dashboard',
         submittedByEmployerContactDocumentId: contactDocumentId,
       },
-      offerState: 'submitted',
+      offerState: isReusableTopUpClaim ? 'draft' : 'submitted',
+      requiredSlotCount,
     };
     const offer = await documents(strapi, 'api::interview-slot-offer.interview-slot-offer').create({
       data: offerData,
@@ -6022,14 +6062,69 @@ export default ({ strapi }) => ({
             slotOffer: {
               connect: [{ documentId: offerDocumentId }],
             },
-            slotState: 'offered',
+            ...(regionDocumentId
+              ? {
+                  region: {
+                    connect: [{ documentId: regionDocumentId }],
+                  },
+                }
+              : {}),
+            slotState: isReusableTopUpClaim ? 'available' : 'offered',
             startTime: slot.startTime,
+            ...(workSectorDocumentId
+              ? {
+                  workSector: {
+                    connect: [{ documentId: workSectorDocumentId }],
+                  },
+                }
+              : {}),
           },
         })
       )
     );
 
-    if (body.capacityClaimDocumentId) {
+    if (body.capacityClaimDocumentId && isReusableTopUpClaim) {
+      const now = new Date().toISOString();
+
+      await documents(strapi, 'api::employer-capacity-claim.employer-capacity-claim').update({
+        documentId: body.capacityClaimDocumentId,
+        data: {
+          claimState: 'fulfilled',
+          fulfilledAt: now,
+          releaseReason: 'slot_options_submitted',
+          metadata: {
+            ...objectValue(capacityClaim?.metadata),
+            fulfilledByEmployerContactDocumentId: contactDocumentId,
+            fulfilledRequestId: requestContext.requestId,
+            fulfilledSource: 'employer_dashboard_reusable_slot_top_up',
+            reusableSlotDocumentIds: slots.map((slot) => getDocumentId(slot)).filter(Boolean),
+          },
+        },
+      });
+      await auditEvents(strapi).record({
+        actorDisplayName: contactDisplayName(contact),
+        actorId: contactDocumentId,
+        actorType: 'employer_contact',
+        eventCategory: 'interview',
+        eventType: 'interview_request.reusable_slot_top_up_submitted',
+        metadata: {
+          capacityClaimDocumentId: body.capacityClaimDocumentId,
+          interviewSlotOfferDocumentId: offerDocumentId,
+          requestId: requestContext.requestId,
+          reusableSlotDocumentIds: slots.map((slot) => getDocumentId(slot)).filter(Boolean),
+        },
+        requestId: requestContext.requestId,
+        serviceName: requestContext.serviceName,
+        severity: 'info',
+        source: 'employer_dashboard',
+        subjectId: interviewRequestDocumentId || body.capacityClaimDocumentId,
+        subjectType: interviewRequestDocumentId ? 'interview_request' : 'employer_capacity_claim',
+      });
+      await interviewRequestService(strapi).reconcileReusableInterviewSlots(25, {
+        ...requestContext,
+        serviceName: requestContext.serviceName || 'employer-dashboard-top-up',
+      });
+    } else if (body.capacityClaimDocumentId) {
       await interviewRequestService(strapi).markSlotOptionsSubmitted(
         {
           capacityClaimDocumentId: body.capacityClaimDocumentId,
@@ -6048,7 +6143,7 @@ export default ({ strapi }) => ({
           documentId: getDocumentId(slot),
           endTime: slot.endTime,
           locationLabel: locationLabel(slot),
-          slotState: slot.slotState || 'offered',
+          slotState: slot.slotState || (isReusableTopUpClaim ? 'available' : 'offered'),
           startTime: slot.startTime,
         })),
       },

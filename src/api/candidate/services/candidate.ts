@@ -208,6 +208,7 @@ type AuditEventService = {
 
 type InterviewRequestService = {
   ensureForEnrollment(input: unknown, context: RequestContext): Promise<unknown>;
+  reconcileReusableInterviewSlots(limit?: number, context?: RequestContext): Promise<unknown>;
 };
 
 type SupportCaseService = {
@@ -2512,16 +2513,21 @@ const candidateInterviewSlotOfferPopulate = {
     populate: ['class'],
   },
   interviewRequest: {
-    populate: ['class', 'region'],
+    populate: {
+      class: {
+        populate: ['workSector'],
+      },
+      region: true,
+    },
   },
   selectedInterview: {
-    populate: ['employerContact'],
+    populate: ['employer', 'employerContact'],
   },
   selectedSlot: {
     populate: ['employerContact'],
   },
   slots: {
-    populate: ['employerContact'],
+    populate: ['employer', 'employerContact'],
   },
 };
 
@@ -2546,6 +2552,35 @@ const sortSlotsByStartTime = (slots: unknown) =>
   (Array.isArray(slots) ? slots : [])
     .filter((slot): slot is DocumentRecord => Boolean(slot && typeof slot === 'object'))
     .sort((left, right) => String(left.startTime || '').localeCompare(String(right.startTime || '')));
+
+const snapshotInterviewSlot = (slot: DocumentRecord) => ({
+  documentId: slot.documentId || null,
+  endTime: slot.endTime || null,
+  locationDetails: slot.locationDetails || null,
+  locationType: slot.locationType || 'to_be_confirmed',
+  meetingUrl: slot.meetingUrl || null,
+  slotState: slot.slotState || null,
+  startTime: slot.startTime || null,
+});
+
+const reusableSlotRelationData = (slot: DocumentRecord, offer: DocumentRecord) => {
+  const interviewRequest = documentRecordValue(offer.interviewRequest);
+  const region = documentRecordValue(interviewRequest?.region);
+  const workSector = documentRecordValue(documentRecordValue(interviewRequest?.class)?.workSector);
+
+  return {
+    ...(slot.region || !region?.documentId ? {} : { region: relationConnect(region) }),
+    ...(slot.workSector || !workSector?.documentId ? {} : { workSector: relationConnect(workSector) }),
+  };
+};
+
+const historicalSlotSnapshot = (offer?: DocumentRecord | null) => {
+  const snapshot = objectValue(offer?.metadata).historicalSlotsSnapshot;
+
+  return Array.isArray(snapshot)
+    ? snapshot.filter((slot): slot is DocumentRecord => Boolean(slot && typeof slot === 'object'))
+    : [];
+};
 
 const publicLocationTypeLabel = (value?: unknown) => {
   const rawValue = String(value || '').trim();
@@ -2672,7 +2707,9 @@ const sanitizeCandidateInterviewSlotOffer = (
     selectedInterviewDocumentId ? feedbackByInterviewId.get(selectedInterviewDocumentId) : null
   );
   const detailsVisible = selectedInterview?.detailsPending === false;
-  const employer = documentRecordValue(offer.employer);
+  const employer = detailsVisible
+    ? documentRecordValue(selectedInterviewRecord?.employer) || documentRecordValue(offer.employer)
+    : null;
   const selectedSlot = documentRecordValue(offer.selectedSlot);
   const candidateResponseDeadline =
     typeof offer.candidateResponseDeadline === 'string'
@@ -2698,7 +2735,10 @@ const sanitizeCandidateInterviewSlotOffer = (
     responseExpired: Boolean(isPastDate(candidateResponseDeadline || undefined)),
     selectedInterview,
     selectedSlot: sanitizeCandidateInterviewSlot(selectedSlot, detailsVisible),
-    slots: sortSlotsByStartTime(offer.slots).map((slot) => sanitizeCandidateInterviewSlot(slot, false)),
+    slots: (sortSlotsByStartTime(offer.slots).length
+      ? sortSlotsByStartTime(offer.slots)
+      : historicalSlotSnapshot(offer)
+    ).map((slot) => sanitizeCandidateInterviewSlot(slot, false)),
   };
 };
 
@@ -3143,6 +3183,21 @@ const releaseCandidateDeclinedSlotOfferSlots = async ({
 }) => {
   const reusableThreshold = addWorkingDays(new Date(), 4);
   const slots = sortSlotsByStartTime(offer.slots);
+  const existingMetadata = objectValue(offer.metadata);
+
+  if (offer.documentId && !Array.isArray(existingMetadata.historicalSlotsSnapshot)) {
+    await documents(strapi, 'api::interview-slot-offer.interview-slot-offer').update({
+      documentId: offer.documentId,
+      data: {
+        metadata: {
+          ...existingMetadata,
+          historicalSlotsSnapshot: slots.map(snapshotInterviewSlot),
+          historicalSlotsSnapshotAt: new Date().toISOString(),
+          historicalSlotsSnapshotRequestId: requestContext.requestId,
+        },
+      },
+    });
+  }
 
   await Promise.all(
     slots.map((slot) => {
@@ -3159,6 +3214,7 @@ const releaseCandidateDeclinedSlotOfferSlots = async ({
             previousOfferDocumentId: offer.documentId,
             requestId: requestContext.requestId,
           },
+          ...reusableSlotRelationData(slot, offer),
           slotState: reusable ? 'available' : 'expired',
         },
       });
@@ -3380,6 +3436,14 @@ const applyCandidateSlotOfferMissedOrDeclined = async ({
     requestContext,
     strapi,
   });
+  void interviewRequestService(strapi)
+    .reconcileReusableInterviewSlots(25, {
+      ...requestContext,
+      serviceName: requestContext.serviceName || 'candidate-slot-outcome',
+    })
+    .catch((error) => {
+      strapi.log?.error?.('Reusable interview slot assignment failed after candidate slot outcome.', error);
+    });
   await auditEvents(strapi).record({
     actorId: candidate.documentId,
     actorType: outcome === 'expired' ? 'system' : 'candidate',
@@ -6630,6 +6694,9 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
     }
 
     const now = new Date().toISOString();
+    const selectedSlotEmployer =
+      documentRecordValue(selectedSlot.employer) ||
+      documentRecordValue(offer.employer);
     const employerContact =
       documentRecordValue(selectedSlot.employerContact) ||
       documentRecordValue(offer.employerContact);
@@ -6637,7 +6704,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       data: {
         candidate: relationConnect(existingCandidate),
         countsTowardGuarantee: false,
-        employer: relationConnect(offer.employer),
+        employer: relationConnect(selectedSlotEmployer),
         employerContact: relationConnect(employerContact),
         enrollment: relationConnect(offer.enrollment),
         interviewSlot: relationConnect(selectedSlot),
@@ -6669,20 +6736,25 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
     await Promise.all(
       sortSlotsByStartTime(offer.slots)
         .filter((slot) => slot.documentId && slot.documentId !== selectedSlot.documentId)
-        .map((slot) =>
-          documents(strapi, 'api::interview-slot.interview-slot').update({
+        .map((slot) => {
+          const reusableThreshold = addWorkingDays(new Date(), 4);
+          const startTime = slot.startTime ? new Date(String(slot.startTime)) : undefined;
+          const reusable = Boolean(startTime && startTime >= reusableThreshold);
+
+          return documents(strapi, 'api::interview-slot.interview-slot').update({
             documentId: slot.documentId,
             data: {
               metadata: {
                 ...(objectValue(slot.metadata)),
-                cancelledBecauseCandidateSelectedSlotDocumentId: selectedSlot.documentId,
+                releasedBecauseCandidateSelectedSlotDocumentId: selectedSlot.documentId,
                 candidateOutcomeAt: now,
                 requestId: requestContext.requestId,
               },
-              slotState: 'cancelled',
+              ...reusableSlotRelationData(slot, offer),
+              slotState: reusable ? 'available' : 'expired',
             },
-          })
-        )
+          });
+        })
     );
     const updatedOffer = await documents(strapi, 'api::interview-slot-offer.interview-slot-offer').update({
       documentId: offer.documentId,
@@ -6715,6 +6787,14 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
         },
       });
     }
+    void interviewRequestService(strapi)
+      .reconcileReusableInterviewSlots(25, {
+        ...requestContext,
+        serviceName: requestContext.serviceName || 'candidate-slot-acceptance',
+      })
+      .catch((error) => {
+        strapi.log?.error?.('Reusable interview slot assignment failed after candidate slot acceptance.', error);
+      });
 
     await auditEvents(strapi).record({
       actorId: existingCandidate.documentId,

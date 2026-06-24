@@ -30,6 +30,8 @@ type DocumentRecord = Record<string, unknown> & {
   employerDetailsReminderCount?: number;
   employerResponseReminderCount?: number;
   employerState?: string;
+  endTime?: string;
+  enrollment?: DocumentRecord;
   expiresAt?: string;
   firstName?: string;
   fulfilledInterviewCount?: number;
@@ -56,15 +58,22 @@ type DocumentRecord = Record<string, unknown> & {
   region?: DocumentRecord;
   regionCommitments?: DocumentRecord[];
   requestState?: string;
+  requiredSlotCount?: number;
   responseSlaWorkingDays?: number;
   releaseNote?: string;
   releaseReason?: string;
   scheduledStartTime?: string;
   slug?: string;
+  slotOffer?: DocumentRecord;
+  slotOffers?: DocumentRecord[];
+  slots?: DocumentRecord[];
+  slotState?: string;
+  startTime?: string;
   title?: string;
   updatedAt?: string;
   availability?: string;
   completedAt?: string;
+  workSector?: DocumentRecord;
 };
 
 type DocumentCollection = {
@@ -168,6 +177,9 @@ const openRequestStates = [
   'candidate_selected',
   'manual_review',
 ];
+const openCandidateOfferStates = ['submitted', 'sent'];
+const reusableSlotTopUpPurpose = 'reusable_slot_top_up';
+const reusableSlotAssignmentSource = 'reusable_slot_pool';
 
 const documents = (strapi: StrapiDocumentService, uid: string) =>
   strapi.documents(uid) as unknown as DocumentCollection;
@@ -187,6 +199,11 @@ const documentRecordValue = (value: unknown): DocumentRecord | undefined =>
   value && typeof value === 'object' && !Array.isArray(value)
     ? (value as DocumentRecord)
     : undefined;
+
+const sortSlotsByStartTime = (slots: unknown) =>
+  (Array.isArray(slots) ? slots : [])
+    .filter((slot): slot is DocumentRecord => Boolean(slot && typeof slot === 'object'))
+    .sort((left, right) => String(left.startTime || '').localeCompare(String(right.startTime || '')));
 
 const relationConnect = (record?: unknown) => {
   const documentRecord = documentRecordValue(record);
@@ -234,6 +251,9 @@ const integerValue = (value: unknown, fallback = 0) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : fallback;
 };
+
+const boundedInteger = (value: unknown, fallback: number, min: number, max: number) =>
+  Math.min(max, Math.max(min, integerValue(value, fallback) || fallback));
 
 const displayName = (record?: DocumentRecord | null) =>
   [record?.firstName, record?.lastName].filter(Boolean).join(' ').trim() ||
@@ -381,6 +401,44 @@ const leadContact = (contacts: DocumentRecord[]) =>
 
 const operatingRegionIds = (employer: DocumentRecord) => regionDocumentIds(employer.operatingRegions);
 
+const snapshotSlot = (slot: DocumentRecord) => ({
+  assignedContactDocumentId: getDocumentId(slot.employerContact) || null,
+  documentId: getDocumentId(slot) || null,
+  endTime: slot.endTime || null,
+  locationDetails: slot.locationDetails || null,
+  locationType: slot.locationType || 'to_be_confirmed',
+  meetingUrl: slot.meetingUrl || null,
+  slotState: slot.slotState || null,
+  startTime: slot.startTime || null,
+});
+
+const snapshotOfferSlots = async (
+  strapi: StrapiDocumentService,
+  offer?: DocumentRecord | null,
+  requestContext: RequestContext = {}
+) => {
+  const offerDocumentId = getDocumentId(offer);
+  const existingMetadata = objectValue(offer?.metadata);
+
+  if (!offerDocumentId || Array.isArray(existingMetadata.historicalSlotsSnapshot)) {
+    return;
+  }
+
+  const slots = sortSlotsByStartTime(offer?.slots);
+
+  await documents(strapi, 'api::interview-slot-offer.interview-slot-offer').update({
+    documentId: offerDocumentId,
+    data: {
+      metadata: {
+        ...existingMetadata,
+        historicalSlotsSnapshot: slots.map(snapshotSlot),
+        historicalSlotsSnapshotAt: new Date().toISOString(),
+        historicalSlotsSnapshotRequestId: requestContext.requestId,
+      },
+    },
+  });
+};
+
 const commitmentForEmployer = (employer: DocumentRecord, regionDocumentId: string) => {
   if (employer.commitmentMode === 'per_region') {
     const commitment = (employer.regionCommitments || []).find(
@@ -514,6 +572,27 @@ const findAllClaimsForRequest = async (
     populate: ['employer', 'employerContact', 'region'],
     sort: ['createdAt:asc'],
   });
+
+const activeTopUpClaimsForRequest = async (
+  strapi: StrapiDocumentService,
+  requestDocumentId: string
+) => {
+  const claims = await documents(strapi, 'api::employer-capacity-claim.employer-capacity-claim').findMany({
+    filters: {
+      claimState: {
+        $in: ['held', 'notified', 'accepted'],
+      },
+      interviewRequest: {
+        documentId: requestDocumentId,
+      },
+    },
+    limit: 25,
+    populate: ['employer', 'employerContact', 'region'],
+    sort: ['createdAt:asc'],
+  });
+
+  return claims.filter((claim) => objectValue(claim.metadata).purpose === reusableSlotTopUpPurpose);
+};
 
 const findSlotOfferForNotification = async (
   strapi: StrapiDocumentService,
@@ -678,6 +757,211 @@ const queueCandidateSlotOfferNotification = async ({
     emailQueued: emailQueueResult?.data?.queued === true,
     smsQueued: smsQueueResult?.data?.queued === true,
   };
+};
+
+const classWorkSectorDocumentId = (request?: DocumentRecord | null) =>
+  getDocumentId(documentRecordValue(documentRecordValue(request?.class)?.workSector));
+
+const interviewReadySortValue = (request: DocumentRecord) => {
+  const metadata = objectValue(request.metadata);
+  const lastEnsureAt = typeof metadata.lastEnsureAt === 'string' ? Date.parse(metadata.lastEnsureAt) : Number.NaN;
+  const lastRoutedAt = request.lastRoutedAt ? Date.parse(String(request.lastRoutedAt)) : Number.NaN;
+  const createdAt = request.createdAt ? Date.parse(String(request.createdAt)) : Number.NaN;
+
+  if (!Number.isNaN(lastEnsureAt)) {
+    return lastEnsureAt;
+  }
+
+  if (!Number.isNaN(lastRoutedAt)) {
+    return lastRoutedAt;
+  }
+
+  return Number.isNaN(createdAt) ? Number.MAX_SAFE_INTEGER : createdAt;
+};
+
+const guaranteeDeadlineSortValue = (request: DocumentRecord) => {
+  const enrollment = documentRecordValue(request.enrollment);
+  const candidates = [
+    enrollment?.interviewGuaranteeDeadline,
+    documentRecordValue(request.class)?.interviewGuaranteeDeadline,
+  ]
+    .map((value) => (value ? Date.parse(String(value)) : Number.NaN))
+    .filter((value) => !Number.isNaN(value));
+
+  return candidates.length ? Math.min(...candidates) : Number.MAX_SAFE_INTEGER;
+};
+
+const requestHasOpenCandidateOffer = (request: DocumentRecord) =>
+  (Array.isArray(request.slotOffers) ? request.slotOffers : []).some((offer) =>
+    openCandidateOfferStates.includes(String(offer.offerState || ''))
+  );
+
+const selectedEmployerIdsForRequest = async (
+  strapi: StrapiDocumentService,
+  request: DocumentRecord
+) => {
+  const candidateDocumentId = getDocumentId(request.candidate);
+  const enrollmentDocumentId = getDocumentId(request.enrollment);
+
+  if (!candidateDocumentId) {
+    return new Set<string>();
+  }
+
+  const interviews = await documents(strapi, 'api::interview.interview').findMany({
+    filters: {
+      candidate: {
+        documentId: candidateDocumentId,
+      },
+      ...(enrollmentDocumentId
+        ? {
+            enrollment: {
+              documentId: enrollmentDocumentId,
+            },
+          }
+        : {}),
+      interviewState: {
+        $in: ['awaiting_employer_details', 'candidate_selected', 'confirmed', 'completed'],
+      },
+    },
+    limit: 100,
+    populate: ['employer'],
+  });
+
+  return new Set(
+    interviews
+      .map((interview) => getDocumentId(interview.employer))
+      .filter((documentId): documentId is string => Boolean(documentId))
+  );
+};
+
+const reusableSlotFilters = (regionDocumentId: string, workSectorDocumentId?: string) => ({
+  region: {
+    documentId: regionDocumentId,
+  },
+  slotState: 'available',
+  startTime: {
+    $gte: addWorkingDays(new Date(), 4).toISOString(),
+  },
+  ...(workSectorDocumentId
+    ? {
+        workSector: {
+          documentId: workSectorDocumentId,
+        },
+      }
+    : {}),
+});
+
+const findReusableSlots = async ({
+  excludedCandidateId,
+  excludedEmployerIds = new Set<string>(),
+  excludedRequestId,
+  limit = 100,
+  regionDocumentId,
+  strapi,
+  workSectorDocumentId,
+}: {
+  excludedCandidateId?: string;
+  excludedEmployerIds?: Set<string>;
+  excludedRequestId?: string;
+  limit?: number;
+  regionDocumentId: string;
+  strapi: StrapiDocumentService;
+  workSectorDocumentId?: string;
+}) => {
+  const slots = await documents(strapi, 'api::interview-slot.interview-slot').findMany({
+    filters: reusableSlotFilters(regionDocumentId, workSectorDocumentId),
+    limit,
+    populate: {
+      employer: true,
+      employerContact: true,
+      region: true,
+      slotOffer: {
+        populate: ['candidate', 'interviewRequest', 'slots'],
+      },
+      workSector: true,
+    },
+    sort: ['startTime:asc', 'createdAt:asc'],
+  });
+  const seenStartTimes = new Set<string>();
+  const reusableSlots: DocumentRecord[] = [];
+
+  for (const slot of slots) {
+    const employerDocumentId = getDocumentId(slot.employer);
+    const startTime = String(slot.startTime || '');
+    const sourceOffer = documentRecordValue(slot.slotOffer);
+    const sourceOfferMetadata = objectValue(sourceOffer?.metadata);
+    const sourceIsReusableTopUp =
+      sourceOfferMetadata.reusableSlotTopUp === true ||
+      sourceOfferMetadata.purpose === reusableSlotTopUpPurpose;
+    const sourceCandidateDocumentId = getDocumentId(sourceOffer?.candidate);
+    const sourceRequestDocumentId = getDocumentId(sourceOffer?.interviewRequest);
+
+    if (
+      !employerDocumentId ||
+      excludedEmployerIds.has(employerDocumentId) ||
+      (!sourceIsReusableTopUp && excludedCandidateId && sourceCandidateDocumentId === excludedCandidateId) ||
+      (!sourceIsReusableTopUp && excludedRequestId && sourceRequestDocumentId === excludedRequestId) ||
+      seenStartTimes.has(startTime)
+    ) {
+      continue;
+    }
+
+    seenStartTimes.add(startTime);
+    reusableSlots.push(slot);
+  }
+
+  return reusableSlots;
+};
+
+const findReusableSlotCandidateRequests = async ({
+  limit,
+  regionDocumentId,
+  strapi,
+  workSectorDocumentId,
+}: {
+  limit: number;
+  regionDocumentId: string;
+  strapi: StrapiDocumentService;
+  workSectorDocumentId?: string;
+}) => {
+  const requests = await documents(strapi, 'api::interview-request.interview-request').findMany({
+    filters: {
+      candidateVisibleState: {
+        $in: ['arranging_interviews', 'blocked'],
+      },
+      region: {
+        documentId: regionDocumentId,
+      },
+      requestState: {
+        $in: ['pending_capacity', 'capacity_claimed', 'employer_notified', 'slot_options_submitted'],
+      },
+    },
+    limit,
+    populate: {
+      candidate: true,
+      class: {
+        populate: ['workSector'],
+      },
+      enrollment: true,
+      region: true,
+      slotOffers: true,
+    },
+  });
+
+  return requests
+    .filter((request) =>
+      workSectorDocumentId ? classWorkSectorDocumentId(request) === workSectorDocumentId : true
+    )
+    .filter((request) => !requestHasOpenCandidateOffer(request))
+    .sort((left, right) => {
+      const deadlineDiff = guaranteeDeadlineSortValue(left) - guaranteeDeadlineSortValue(right);
+
+      if (deadlineDiff !== 0) {
+        return deadlineDiff;
+      }
+
+      return interviewReadySortValue(left) - interviewReadySortValue(right);
+    });
 };
 
 const activeEmployerContacts = (employer?: DocumentRecord | null) =>
@@ -1097,6 +1381,242 @@ const recordCapacityShortfall = async ({
   });
 };
 
+const createReusableSlotOffer = async ({
+  request,
+  requestContext,
+  slots,
+  strapi,
+}: {
+  request: DocumentRecord;
+  requestContext: RequestContext;
+  slots: DocumentRecord[];
+  strapi: StrapiDocumentService;
+}) => {
+  const requestDocumentId = getDocumentId(request);
+  const candidateDocumentId = getDocumentId(request.candidate);
+  const enrollmentDocumentId = getDocumentId(request.enrollment);
+  const firstSlot = slots[0];
+  const firstEmployer = documentRecordValue(firstSlot?.employer);
+  const firstEmployerContact = documentRecordValue(firstSlot?.employerContact);
+
+  if (!requestDocumentId || !candidateDocumentId || !enrollmentDocumentId || !firstEmployer?.documentId) {
+    return null;
+  }
+
+  const nowDate = new Date();
+  const now = nowDate.toISOString();
+  const responseDeadline = addWorkingDays(nowDate, 2).toISOString();
+  const offer = await documents(strapi, 'api::interview-slot-offer.interview-slot-offer').create({
+    data: {
+      candidate: {
+        connect: [{ documentId: candidateDocumentId }],
+      },
+      candidateNotifiedAt: now,
+      candidateResponseDeadline: responseDeadline,
+      employer: relationConnect(firstEmployer),
+      employerContact: relationConnect(firstEmployerContact),
+      enrollment: {
+        connect: [{ documentId: enrollmentDocumentId }],
+      },
+      interviewRequest: {
+        connect: [{ documentId: requestDocumentId }],
+      },
+      metadata: {
+        requestId: requestContext.requestId,
+        reusableSlotDocumentIds: slots.map(getDocumentId).filter(Boolean),
+        source: reusableSlotAssignmentSource,
+      },
+      offerState: 'sent',
+      requiredSlotCount: 3,
+    },
+  });
+  const offerDocumentId = getDocumentId(offer);
+
+  if (!offerDocumentId) {
+    return null;
+  }
+
+  for (const slot of slots) {
+    await snapshotOfferSlots(strapi, documentRecordValue(slot.slotOffer), requestContext);
+    await documents(strapi, 'api::interview-slot.interview-slot').update({
+      documentId: getDocumentId(slot),
+      data: {
+        metadata: {
+          ...objectValue(slot.metadata),
+          reassignedAt: now,
+          reassignedFromOfferDocumentId: getDocumentId(slot.slotOffer) || null,
+          reassignedRequestId: requestContext.requestId,
+          reassignedToOfferDocumentId: offerDocumentId,
+          reassignmentSource: reusableSlotAssignmentSource,
+        },
+        slotOffer: {
+          connect: [{ documentId: offerDocumentId }],
+        },
+        slotState: 'offered',
+      },
+    });
+  }
+
+  await documents(strapi, 'api::interview-request.interview-request').update({
+    documentId: requestDocumentId,
+    data: {
+      candidateVisibleState: 'reviewing_options',
+      insufficientCapacityDetectedAt: null,
+      insufficientCapacityReason: null,
+      lastCapacityCheckAt: now,
+      requestState: 'slot_options_submitted',
+    },
+  });
+
+  await auditEvents(strapi).record({
+    actorType: 'system',
+    eventCategory: 'interview',
+    eventType: 'interview_request.reusable_slots_assigned',
+    ipAddress: requestContext.ipAddress,
+    metadata: {
+      interviewSlotOfferDocumentId: offerDocumentId,
+      reusableSlotDocumentIds: slots.map(getDocumentId).filter(Boolean),
+      requestId: requestContext.requestId,
+      source: reusableSlotAssignmentSource,
+    },
+    requestId: requestContext.requestId,
+    serviceName: requestContext.serviceName,
+    severity: 'info',
+    source: 'core_api',
+    subjectDisplayName: displayName(request.candidate) || 'Interview request',
+    subjectId: requestDocumentId,
+    subjectType: 'interview_request',
+    userAgent: requestContext.userAgent,
+  });
+
+  await queueCandidateSlotOfferNotification({
+    offerDocumentId,
+    requestContext,
+    responseDeadline,
+    strapi,
+  });
+
+  return offerDocumentId;
+};
+
+const createReusableSlotTopUpClaim = async ({
+  availableReusableSlotCount,
+  missingSlotCount,
+  request,
+  requestContext,
+  strapi,
+}: {
+  availableReusableSlotCount: number;
+  missingSlotCount: number;
+  request: DocumentRecord;
+  requestContext: RequestContext;
+  strapi: StrapiDocumentService;
+}) => {
+  const requestDocumentId = getDocumentId(request);
+  const regionDocumentId = getDocumentId(request.region);
+
+  if (!requestDocumentId || !regionDocumentId || missingSlotCount <= 0) {
+    return null;
+  }
+
+  const existingTopUps = await activeTopUpClaimsForRequest(strapi, requestDocumentId);
+
+  if (existingTopUps.length) {
+    return null;
+  }
+
+  const existingClaims = await findAllClaimsForRequest(strapi, requestDocumentId);
+  const activeEmployerIds = new Set(
+    existingClaims
+      .filter((claim) => ['held', 'notified', 'accepted', 'fulfilled'].includes(String(claim.claimState || '')))
+      .map((claim) => getDocumentId(claim.employer))
+      .filter((documentId): documentId is string => Boolean(documentId))
+  );
+  const availableEmployers = (await eligibleEmployerCapacity(strapi, regionDocumentId)).filter(
+    (capacity) => !activeEmployerIds.has(capacity.employerDocumentId)
+  );
+
+  if (!availableEmployers.length) {
+    await recordCapacityShortfall({
+      available: availableReusableSlotCount,
+      reason: `Only ${availableReusableSlotCount} reusable interview slot option(s) are available and no employer capacity is available to top up to 3 options.`,
+      request,
+      requestContext,
+      required: 3,
+      strapi,
+    });
+    return null;
+  }
+
+  const now = new Date();
+  const deadline = addWorkingDays(now, integerValue(request.responseSlaWorkingDays, 2)) || now;
+  const capacity = availableEmployers[0];
+
+  const claim = await documents(strapi, 'api::employer-capacity-claim.employer-capacity-claim').create({
+    data: {
+      assignmentSource: 'automatic',
+      claimCount: 1,
+      claimState: 'notified',
+      employer: {
+        connect: [{ documentId: capacity.employerDocumentId }],
+      },
+      employerContact: {
+        connect: [{ documentId: capacity.contactDocumentId }],
+      },
+      expiresAt: deadline.toISOString(),
+      interviewRequest: {
+        connect: [{ documentId: requestDocumentId }],
+      },
+      metadata: {
+        availableReusableSlotCount,
+        commitmentCadence: capacity.commitment.cadence,
+        commitmentMode: capacity.commitment.mode,
+        purpose: reusableSlotTopUpPurpose,
+        requestId: requestContext.requestId,
+        source: 'reusable_slot_pool_top_up',
+      },
+      notifiedAt: now.toISOString(),
+      region: {
+        connect: [{ documentId: regionDocumentId }],
+      },
+      requiredSlotCount: Math.min(3, Math.max(1, missingSlotCount)),
+    },
+  });
+
+  await documents(strapi, 'api::interview-request.interview-request').update({
+    documentId: requestDocumentId,
+    data: {
+      candidateVisibleState: 'arranging_interviews',
+      lastCapacityCheckAt: now.toISOString(),
+      requestState: 'employer_notified',
+    },
+  });
+
+  await auditEvents(strapi).record({
+    actorType: 'system',
+    eventCategory: 'interview',
+    eventType: 'interview_request.reusable_slot_top_up_requested',
+    ipAddress: requestContext.ipAddress,
+    metadata: {
+      availableReusableSlotCount,
+      capacityClaimDocumentId: getDocumentId(claim),
+      missingSlotCount,
+      requestId: requestContext.requestId,
+      source: reusableSlotAssignmentSource,
+    },
+    requestId: requestContext.requestId,
+    serviceName: requestContext.serviceName,
+    severity: 'info',
+    source: 'core_api',
+    subjectDisplayName: displayName(request.candidate) || 'Interview request',
+    subjectId: requestDocumentId,
+    subjectType: 'interview_request',
+    userAgent: requestContext.userAgent,
+  });
+
+  return claim;
+};
+
 const routeInterviewRequest = async (
   strapi: StrapiDocumentService,
   request: DocumentRecord,
@@ -1190,6 +1710,7 @@ const routeInterviewRequest = async (
           region: {
             connect: [{ documentId: regionDocumentId }],
           },
+          requiredSlotCount: 3,
         },
       })
     )
@@ -1229,6 +1750,120 @@ const routeInterviewRequest = async (
 };
 
 export default factories.createCoreService('api::interview-request.interview-request', ({ strapi }) => ({
+  async reconcileReusableInterviewSlots(limit = 100, requestContext: RequestContext = {}) {
+    const reusableSlots = await documents(strapi, 'api::interview-slot.interview-slot').findMany({
+      filters: {
+        slotState: 'available',
+        startTime: {
+          $gte: addWorkingDays(new Date(), 4).toISOString(),
+        },
+      },
+      limit,
+      populate: ['region', 'workSector'],
+      sort: ['startTime:asc', 'createdAt:asc'],
+    });
+    const poolKeys = Array.from(
+      new Set(
+        reusableSlots
+          .map((slot) => {
+            const regionDocumentId = getDocumentId(slot.region);
+            const workSectorDocumentId = getDocumentId(slot.workSector);
+
+            return regionDocumentId ? `${regionDocumentId}:${workSectorDocumentId || ''}` : null;
+          })
+          .filter((value): value is string => Boolean(value))
+      )
+    );
+    const summary = {
+      assignedOffers: 0,
+      checkedPools: poolKeys.length,
+      errors: [] as Array<{ error: string; poolKey?: string; requestDocumentId?: string }>,
+      skipped: 0,
+      topUpClaims: 0,
+    };
+
+    for (const poolKey of poolKeys) {
+      const [regionDocumentId, workSectorDocumentIdRaw] = poolKey.split(':');
+      const workSectorDocumentId = workSectorDocumentIdRaw || undefined;
+
+      try {
+        const requests = await findReusableSlotCandidateRequests({
+          limit,
+          regionDocumentId,
+          strapi,
+          workSectorDocumentId,
+        });
+
+        for (const request of requests) {
+          const requestDocumentId = getDocumentId(request);
+
+          try {
+            const excludedEmployerIds = await selectedEmployerIdsForRequest(strapi, request);
+            const availableSlots = await findReusableSlots({
+              excludedCandidateId: getDocumentId(request.candidate) || undefined,
+              excludedEmployerIds,
+              excludedRequestId: requestDocumentId || undefined,
+              limit: 25,
+              regionDocumentId,
+              strapi,
+              workSectorDocumentId,
+            });
+
+            if (availableSlots.length >= 3) {
+              const offerDocumentId = await createReusableSlotOffer({
+                request,
+                requestContext,
+                slots: availableSlots.slice(0, 3),
+                strapi,
+              });
+
+              if (offerDocumentId) {
+                summary.assignedOffers += 1;
+              } else {
+                summary.skipped += 1;
+              }
+
+              continue;
+            }
+
+            if (availableSlots.length > 0) {
+              const claim = await createReusableSlotTopUpClaim({
+                availableReusableSlotCount: availableSlots.length,
+                missingSlotCount: 3 - availableSlots.length,
+                request,
+                requestContext,
+                strapi,
+              });
+
+              if (claim) {
+                summary.topUpClaims += 1;
+              } else {
+                summary.skipped += 1;
+              }
+
+              break;
+            } else {
+              summary.skipped += 1;
+            }
+          } catch (error) {
+            summary.errors.push({
+              error: error instanceof Error ? error.message : String(error),
+              poolKey,
+              requestDocumentId,
+            });
+          }
+        }
+      } catch (error) {
+        summary.errors.push({
+          error: error instanceof Error ? error.message : String(error),
+          poolKey,
+        });
+      }
+    }
+
+    return summary;
+  },
+
   async reconcileEmployerCapacityClaims(limit = 100, requestContext: RequestContext = {}) {
     const now = Date.now();
     const reminderIntervalMs = employerCapacityClaimReminderIntervalMs();
