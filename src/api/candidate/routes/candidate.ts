@@ -145,6 +145,45 @@ export default {
     },
     {
       method: 'GET',
+      path: '/candidates/me/interview-readiness',
+      handler: 'candidate.interviewReadiness',
+      config: {
+        auth: false,
+        middlewares: [
+          {
+            name: 'global::auth0-jwt',
+          },
+        ],
+      },
+    },
+    {
+      method: 'PATCH',
+      path: '/candidates/me/interview-readiness',
+      handler: 'candidate.updateInterviewReadiness',
+      config: {
+        auth: false,
+        middlewares: [
+          {
+            name: 'global::auth0-jwt',
+          },
+        ],
+      },
+    },
+    {
+      method: 'POST',
+      path: '/candidates/me/interview-readiness/autofill',
+      handler: 'candidate.autofillInterviewReadiness',
+      config: {
+        auth: false,
+        middlewares: [
+          {
+            name: 'global::auth0-jwt',
+          },
+        ],
+      },
+    },
+    {
+      method: 'GET',
       path: '/candidates/me/interview-slot-offers',
       handler: 'candidate.interviewSlotOffers',
       config: {

@@ -30,10 +30,49 @@
     "summary": {
       "type": "text"
     },
+    "targetSector": {
+      "type": "string"
+    },
+    "targetSectorLabel": {
+      "type": "string"
+    },
+    "targetRoleTitle": {
+      "type": "string"
+    },
+    "targetRoleType": {
+      "type": "enumeration",
+      "enum": [
+        "full_time",
+        "part_time",
+        "apprenticeship_internship",
+        "flexible"
+      ]
+    },
+    "preferredWorkStyle": {
+      "type": "enumeration",
+      "enum": [
+        "in_person",
+        "hybrid",
+        "remote",
+        "no_preference"
+      ]
+    },
+    "earliestStartDate": {
+      "type": "date"
+    },
+    "linkedinUrl": {
+      "type": "string"
+    },
+    "portfolioUrl": {
+      "type": "string"
+    },
     "education": {
       "type": "json"
     },
     "experience": {
+      "type": "json"
+    },
+    "projects": {
       "type": "json"
     },
     "skills": {
@@ -48,6 +87,29 @@
     "availability": {
       "type": "string"
     },
+    "unavailableDates": {
+      "type": "json"
+    },
+    "availabilityNote": {
+      "type": "text"
+    },
+    "availabilityConfirmedAt": {
+      "type": "datetime"
+    },
+    "availabilityExpiresAt": {
+      "type": "datetime"
+    },
+    "interviewFormatPreference": {
+      "type": "enumeration",
+      "enum": [
+        "in_person_preferred",
+        "remote_acceptable",
+        "no_preference"
+      ]
+    },
+    "readinessOverviewAcknowledgedAt": {
+      "type": "datetime"
+    },
     "recruitmentPlatformVisibility": {
       "type": "enumeration",
       "enum": [
@@ -57,6 +119,9 @@
       ],
       "default": "not_set",
       "required": true
+    },
+    "recruitmentVisibilityWordingVersion": {
+      "type": "string"
     },
     "generatedCvFile": {
       "type": "relation",

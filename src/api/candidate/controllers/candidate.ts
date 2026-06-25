@@ -29,6 +29,11 @@ type CandidateService = {
     input: unknown,
     context: RequestContext
   ): Promise<unknown>;
+  autofillCurrentCandidateInterviewReadinessFromCv(
+    auth: unknown,
+    file: unknown,
+    context: RequestContext
+  ): Promise<unknown>;
   cancelCurrentCandidateClassReservation(
     auth: unknown,
     reservationDocumentId: string,
@@ -73,6 +78,7 @@ type CandidateService = {
   getCandidatePreferenceOptions(auth: unknown): Promise<unknown>;
   getCurrentCandidateClassInterest(auth: unknown): Promise<unknown>;
   getCurrentCandidateCourse(auth: unknown): Promise<unknown>;
+  getCurrentCandidateInterviewReadiness(auth: unknown): Promise<unknown>;
   getCurrentCandidateInterviewSlotOffers(auth: unknown, context: RequestContext): Promise<unknown>;
   getCurrentCandidateClassReservation(
     auth: unknown,
@@ -103,6 +109,7 @@ type CandidateService = {
   ): Promise<unknown>;
   syncCurrentCandidate(auth: unknown, input: unknown, context: RequestContext): Promise<unknown>;
   updateCurrentCandidateAccount(auth: unknown, input: unknown, context: RequestContext): Promise<unknown>;
+  updateCurrentCandidateInterviewReadiness(auth: unknown, input: unknown, context: RequestContext): Promise<unknown>;
   updateCurrentCandidateProfileImage(auth: unknown, file: unknown, context: RequestContext): Promise<unknown>;
   withdrawCurrentCandidateClassInterest(auth: unknown, input: unknown, context: RequestContext): Promise<CreatedResponse>;
 };
@@ -118,6 +125,11 @@ const getForwardedClientIp = (ctx) =>
 
 const getUploadedProfileImage = (files) => {
   const file = files?.profileImage || files?.image || files?.file;
+  return Array.isArray(file) ? file[0] : file;
+};
+
+const getUploadedCvFile = (files) => {
+  const file = files?.cv || files?.cvFile || files?.file;
   return Array.isArray(file) ? file[0] : file;
 };
 
@@ -351,6 +363,49 @@ export default factories.createCoreController('api::candidate.candidate', ({ str
   async interviewSlotOffers(ctx) {
     const result = await candidateService(strapi).getCurrentCandidateInterviewSlotOffers(
       ctx.state?.hireflipAuth,
+      {
+        ipAddress: getForwardedClientIp(ctx),
+        requestId: ctx.state?.requestId,
+        userAgent: ctx.request.get('x-hireflip-client-user-agent') || ctx.request.get('user-agent'),
+      }
+    );
+
+    ctx.body = {
+      data: result,
+    };
+  },
+
+  async interviewReadiness(ctx) {
+    const result = await candidateService(strapi).getCurrentCandidateInterviewReadiness(
+      ctx.state?.hireflipAuth
+    );
+
+    ctx.body = {
+      data: result,
+    };
+  },
+
+  async updateInterviewReadiness(ctx) {
+    const result = await candidateService(strapi).updateCurrentCandidateInterviewReadiness(
+      ctx.state?.hireflipAuth,
+      ctx.request.body,
+      {
+        ipAddress: getForwardedClientIp(ctx),
+        requestId: ctx.state?.requestId,
+        userAgent: ctx.request.get('x-hireflip-client-user-agent') || ctx.request.get('user-agent'),
+      }
+    );
+
+    ctx.body = {
+      data: result,
+    };
+  },
+
+  async autofillInterviewReadiness(ctx) {
+    const file = getUploadedCvFile(ctx.request.files);
+    const result = await candidateService(strapi).autofillCurrentCandidateInterviewReadinessFromCv(
+      ctx.state?.hireflipAuth,
+      file,
       {
         ipAddress: getForwardedClientIp(ctx),
         requestId: ctx.state?.requestId,

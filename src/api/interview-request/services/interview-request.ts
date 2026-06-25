@@ -79,9 +79,23 @@ type DocumentRecord = Record<string, unknown> & {
   title?: string;
   updatedAt?: string;
   availability?: string;
+  availabilityConfirmedAt?: string;
+  availabilityExpiresAt?: string;
   completedAt?: string;
+  education?: unknown;
+  experience?: unknown;
   feedbackDueAt?: string;
   feedbackOverdueDetectedAt?: string;
+  interviewFormatPreference?: string;
+  preferredWorkStyle?: string;
+  projects?: unknown;
+  readinessOverviewAcknowledgedAt?: string;
+  recruitmentPlatformVisibility?: string;
+  skills?: unknown;
+  summary?: string;
+  targetRoleTitle?: string;
+  targetRoleType?: string;
+  targetSector?: string;
   workSector?: DocumentRecord;
 };
 
@@ -212,6 +226,71 @@ const objectValue = (value: unknown) =>
   value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+
+const arrayValue = (value: unknown) => (Array.isArray(value) ? value : []);
+
+const cleanReadinessItems = (items: unknown) =>
+  arrayValue(items).filter((item) => {
+    const record = objectValue(item);
+    return Object.values(record).some((value) => {
+      if (typeof value === 'string') {
+        return value.trim().length > 0;
+      }
+
+      if (typeof value === 'boolean') {
+        return value;
+      }
+
+      if (value && typeof value === 'object') {
+        return Object.keys(objectValue(value)).length > 0;
+      }
+
+      return false;
+    });
+  });
+
+const normalizedReadinessSkills = (skills: unknown) => {
+  const record = objectValue(skills);
+  const normalizeList = (value: unknown) =>
+    arrayValue(value).filter(
+      (item): item is string => typeof item === 'string' && item.trim().length > 0
+    );
+
+  return {
+    strengths: normalizeList(record.strengths),
+  };
+};
+
+const profileAvailabilityIsFresh = (profile?: DocumentRecord | null, now = new Date()) =>
+  Boolean(
+    profile?.availabilityConfirmedAt &&
+      profile.availabilityExpiresAt &&
+      Date.parse(profile.availabilityExpiresAt) > now.getTime()
+  );
+
+const profileStructuredReadinessComplete = (profile?: DocumentRecord | null) => {
+  const skills = normalizedReadinessSkills(profile?.skills);
+  const hasStructuredHistory =
+    cleanReadinessItems(profile?.education).length > 0 ||
+    cleanReadinessItems(profile?.experience).length > 0 ||
+    cleanReadinessItems(profile?.projects).length > 0;
+
+  return Boolean(
+    profile &&
+      profile.profileState === 'completed' &&
+      String(profile.targetSector || '').trim() &&
+      String(profile.targetRoleTitle || '').trim() &&
+      profile.targetRoleType &&
+      profile.preferredWorkStyle &&
+      String(profile.summary || '').trim().length >= 80 &&
+      hasStructuredHistory &&
+      skills.strengths.length > 0 &&
+      profile.interviewFormatPreference &&
+      profile.readinessOverviewAcknowledgedAt &&
+      profile.recruitmentPlatformVisibility &&
+      profile.recruitmentPlatformVisibility !== 'not_set'
+  );
+};
 
 const documentRecordValue = (value: unknown): DocumentRecord | undefined =>
   value && typeof value === 'object' && !Array.isArray(value)
@@ -603,8 +682,8 @@ const candidatePrerequisites = async (
   const profile = profiles[0];
 
   return {
-    availabilitySubmitted: Boolean(String(profile?.availability || '').trim()),
-    profileComplete: Boolean(profile),
+    availabilitySubmitted: profileAvailabilityIsFresh(profile),
+    profileComplete: profileStructuredReadinessComplete(profile),
   };
 };
 

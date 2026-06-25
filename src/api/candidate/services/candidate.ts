@@ -1,10 +1,12 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { factories } from '@strapi/strapi';
 import { errors, validateZodSchema, z } from '@strapi/utils';
 import { parsePhoneNumberFromString } from 'libphonenumber-js/max';
+import mammoth from 'mammoth';
+import { PDFParse } from 'pdf-parse';
 import sharp from 'sharp';
 import {
   allocateClassPlace,
@@ -51,6 +53,10 @@ type DocumentRecord = Record<string, unknown> & {
   accountCreatedAt?: string;
   accountOnboardingCompletedAt?: string;
   accountRestrictionStatus?: string;
+  availability?: string;
+  availabilityConfirmedAt?: string;
+  availabilityExpiresAt?: string;
+  availabilityNote?: string;
   amountPence?: number;
   announcementState?: string;
   appealState?: string;
@@ -103,11 +109,14 @@ type DocumentRecord = Record<string, unknown> & {
   displayTitle?: string;
   documentId?: string;
   deliveryState?: string;
+  education?: unknown;
   email?: string;
   enrollment?: DocumentRecord;
   enrollmentState?: string;
+  earliestStartDate?: string;
   expiredAt?: string;
   expiresAt?: string;
+  experience?: unknown;
   firstName?: string;
   dateOfBirth?: string;
   gender?: string;
@@ -115,6 +124,7 @@ type DocumentRecord = Record<string, unknown> & {
   id?: number;
   interestRegisteredAt?: string;
   interestType?: string;
+  interviewFormatPreference?: string;
   invitedToJoinAt?: string;
   introCopy?: string;
   lastName?: string;
@@ -143,12 +153,15 @@ type DocumentRecord = Record<string, unknown> & {
   policyKey?: string;
   policyState?: string;
   policyType?: string;
+  preferredWorkStyle?: string;
   priority?: string;
   pricePence?: number;
   discountedPricePence?: number;
   preferredCommunicationChannel?: (typeof communicationChannels)[number];
   profileImage?: DocumentRecord;
+  profileState?: string;
   profileSettings?: unknown;
+  projects?: unknown;
   providerCheckoutSessionId?: string;
   providerCustomerId?: string;
   providerPaymentIntentId?: string;
@@ -159,6 +172,9 @@ type DocumentRecord = Record<string, unknown> & {
   questionState?: string;
   questionType?: string;
   registeredInterestAt?: string;
+  recruitmentPlatformVisibility?: string;
+  recruitmentVisibilityWordingVersion?: string;
+  readinessOverviewAcknowledgedAt?: string;
   required?: boolean;
   requiredCompletionPercentage?: number;
   retryEligibilityState?: string;
@@ -174,6 +190,7 @@ type DocumentRecord = Record<string, unknown> & {
   scoringRubric?: unknown;
   sector?: string;
   sectionState?: string;
+  skills?: unknown;
   skippedAt?: string;
   slug?: string;
   sortOrder?: number;
@@ -186,9 +203,15 @@ type DocumentRecord = Record<string, unknown> & {
   submittedAt?: string;
   suggestedValue?: string;
   supersededAt?: string;
+  summary?: string;
+  targetRoleTitle?: string;
+  targetRoleType?: string;
+  targetSector?: string;
+  targetSectorLabel?: string;
   testState?: string;
   title?: string;
   updatedAt?: string;
+  unavailableDates?: unknown;
   version?: string;
   visibleFrom?: string;
   waitingListPosition?: number;
@@ -248,6 +271,22 @@ const candidateGenderValues = [
   'self_describe',
   'prefer_not_to_say',
 ] as const;
+const candidateInterviewReadinessActions = ['save_draft', 'complete'] as const;
+const candidateRecruitmentVisibilityValues = ['not_set', 'visible', 'hidden'] as const;
+const candidateRoleTypeValues = [
+  'full_time',
+  'part_time',
+  'apprenticeship_internship',
+  'flexible',
+] as const;
+const candidateWorkStyleValues = ['in_person', 'hybrid', 'remote', 'no_preference'] as const;
+const candidateInterviewFormatPreferenceValues = [
+  'in_person_preferred',
+  'remote_acceptable',
+  'no_preference',
+] as const;
+const candidateReadinessAvailabilityWindowDays = 30;
+const candidateReadinessWordingVersion = 'candidate-interview-readiness-v1';
 const notListedPreferenceValue = 'not_listed';
 const unlistedInterestTypes = ['class_area', 'work_sector'] as const;
 const unlistedInterestSources = ['class_page', 'onboarding', 'settings'] as const;
@@ -561,6 +600,230 @@ const updateCandidateAccountSchema = z
   }));
 
 const validateUpdateCandidateAccount = validateZodSchema(updateCandidateAccountSchema);
+
+const candidateReadinessText = (maxLength: number) =>
+  z
+    .preprocess(
+      (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+      z.string().trim().max(maxLength).optional()
+    )
+    .transform((value) => value || '');
+
+const candidateDateOnlySchema = z
+  .string()
+  .trim()
+  .refine((value) => Boolean(parseDateOnly(value)), {
+    message: 'Enter a valid date.',
+  });
+
+const candidateReadinessHistoryDateSchema = z
+  .object({
+    month: z.number().int().min(1).max(12).optional(),
+    year: z.number().int().min(1950).max(2100).optional(),
+  })
+  .strict()
+  .optional();
+
+const candidateReadinessEducationSchema = z
+  .object({
+    end: candidateReadinessHistoryDateSchema,
+    grade: candidateReadinessText(120),
+    institution: candidateReadinessText(180),
+    level: candidateReadinessText(120),
+    notes: candidateReadinessText(700),
+    qualification: candidateReadinessText(180),
+    start: candidateReadinessHistoryDateSchema,
+    subject: candidateReadinessText(180),
+  })
+  .strict();
+
+const candidateReadinessExperienceSchema = z
+  .object({
+    achievements: candidateReadinessText(900),
+    current: z.boolean().default(false),
+    end: candidateReadinessHistoryDateSchema,
+    employmentType: candidateReadinessText(120),
+    location: candidateReadinessText(160),
+    organisation: candidateReadinessText(180),
+    responsibilities: candidateReadinessText(900),
+    skillsUsed: candidateReadinessText(500),
+    start: candidateReadinessHistoryDateSchema,
+    title: candidateReadinessText(180),
+  })
+  .strict();
+
+const candidateReadinessProjectSchema = z
+  .object({
+    context: candidateReadinessText(240),
+    description: candidateReadinessText(900),
+    link: candidateReadinessText(300),
+    outcome: candidateReadinessText(700),
+    skillsUsed: candidateReadinessText(500),
+    title: candidateReadinessText(180),
+  })
+  .strict();
+
+const candidateReadinessSkillsSchema = z
+  .object({
+    certifications: z.array(candidateReadinessText(140)).max(20).default([]),
+    languages: z.array(candidateReadinessText(80)).max(12).default([]),
+    strengths: z.array(candidateReadinessText(120)).max(20).default([]),
+    tools: z.array(candidateReadinessText(120)).max(30).default([]),
+  })
+  .strict()
+  .default({
+    certifications: [],
+    languages: [],
+    strengths: [],
+    tools: [],
+  })
+  .transform((value) => ({
+    certifications: value.certifications.filter(Boolean),
+    languages: value.languages.filter(Boolean),
+    strengths: value.strengths.filter(Boolean),
+    tools: value.tools.filter(Boolean),
+  }));
+
+const candidateInterviewReadinessSchema = z
+  .object({
+    action: z.enum(candidateInterviewReadinessActions).default('save_draft'),
+    profile: z
+      .object({
+        availabilityConfirmed: z.boolean().default(false),
+        availabilityNote: candidateReadinessText(700),
+        characterStatement: candidateReadinessText(1200),
+        currentLocation: candidateReadinessText(160),
+        earliestStartDate: candidateDateOnlySchema.optional(),
+        education: z.array(candidateReadinessEducationSchema).max(12).default([]),
+        experience: z.array(candidateReadinessExperienceSchema).max(12).default([]),
+        interviewFormatPreference: z.enum(candidateInterviewFormatPreferenceValues).optional(),
+        linkedinUrl: candidateReadinessText(300),
+        overviewAcknowledged: z.boolean().default(false),
+        portfolioUrl: candidateReadinessText(300),
+        preferredWorkStyle: z.enum(candidateWorkStyleValues).optional(),
+        projects: z.array(candidateReadinessProjectSchema).max(12).default([]),
+        recruitmentPlatformVisibility: z.enum(candidateRecruitmentVisibilityValues).optional(),
+        skills: candidateReadinessSkillsSchema,
+        targetRoleTitle: candidateReadinessText(160),
+        targetRoleType: z.enum(candidateRoleTypeValues).optional(),
+        targetSector: candidateReadinessText(120),
+        targetSectorLabel: candidateReadinessText(160),
+        unavailableDates: z
+          .array(candidateDateOnlySchema)
+          .max(candidateReadinessAvailabilityWindowDays)
+          .default([])
+          .transform((value) => Array.from(new Set(value)).sort()),
+      })
+      .strict(),
+  })
+  .strict();
+
+const validateCandidateInterviewReadiness = validateZodSchema(candidateInterviewReadinessSchema);
+
+const aiAutofillHistoryDateSchema = z
+  .object({
+    month: z.number().int().min(1).max(12).nullable(),
+    year: z.number().int().min(1950).max(2100).nullable(),
+  })
+  .strict();
+
+const aiCandidateProfileAutofillProfileSchema = z
+  .object({
+    characterStatement: z.string().trim().max(1200).default(''),
+    currentLocation: z.string().trim().max(160).default(''),
+    earliestStartDate: z.string().trim().max(20).default(''),
+    education: z
+      .array(
+        z
+          .object({
+            end: aiAutofillHistoryDateSchema,
+            grade: z.string().trim().max(120).default(''),
+            institution: z.string().trim().max(180).default(''),
+            level: z.string().trim().max(120).default(''),
+            notes: z.string().trim().max(700).default(''),
+            qualification: z.string().trim().max(180).default(''),
+            start: aiAutofillHistoryDateSchema,
+            subject: z.string().trim().max(180).default(''),
+          })
+          .strict()
+      )
+      .max(12)
+      .default([]),
+    experience: z
+      .array(
+        z
+          .object({
+            achievements: z.string().trim().max(900).default(''),
+            current: z.boolean().default(false),
+            employmentType: z.string().trim().max(120).default(''),
+            end: aiAutofillHistoryDateSchema,
+            location: z.string().trim().max(160).default(''),
+            organisation: z.string().trim().max(180).default(''),
+            responsibilities: z.string().trim().max(900).default(''),
+            skillsUsed: z.string().trim().max(500).default(''),
+            start: aiAutofillHistoryDateSchema,
+            title: z.string().trim().max(180).default(''),
+          })
+          .strict()
+      )
+      .max(12)
+      .default([]),
+    interviewFormatPreference: z.enum(['', ...candidateInterviewFormatPreferenceValues]).default(''),
+    linkedinUrl: z.string().trim().max(300).default(''),
+    portfolioUrl: z.string().trim().max(300).default(''),
+    preferredWorkStyle: z.enum(['', ...candidateWorkStyleValues]).default(''),
+    projects: z
+      .array(
+        z
+          .object({
+            context: z.string().trim().max(240).default(''),
+            description: z.string().trim().max(900).default(''),
+            link: z.string().trim().max(300).default(''),
+            outcome: z.string().trim().max(700).default(''),
+            skillsUsed: z.string().trim().max(500).default(''),
+            title: z.string().trim().max(180).default(''),
+          })
+          .strict()
+      )
+      .max(12)
+      .default([]),
+    skills: z
+      .object({
+        certifications: z.array(z.string().trim().max(140)).max(20).default([]),
+        languages: z.array(z.string().trim().max(80)).max(12).default([]),
+        strengths: z.array(z.string().trim().max(120)).max(20).default([]),
+        tools: z.array(z.string().trim().max(120)).max(30).default([]),
+      })
+      .strict()
+      .default({ certifications: [], languages: [], strengths: [], tools: [] }),
+    targetRoleTitle: z.string().trim().max(160).default(''),
+    targetRoleType: z.enum(['', ...candidateRoleTypeValues]).default(''),
+    targetSector: z.string().trim().max(120).default(''),
+    targetSectorLabel: z.string().trim().max(160).default(''),
+  })
+  .strict();
+
+const aiCandidateProfileAutofillResponseSchema = z
+  .object({
+    data: z
+      .object({
+        metadata: z
+          .object({
+            extractedTextCharacterCount: z.number().optional(),
+            providerRequestId: z.string().nullable().optional(),
+            providerUsage: z.unknown().optional(),
+            validationPassed: z.boolean().optional(),
+          })
+          .passthrough()
+          .optional(),
+        model: z.string().optional(),
+        profile: aiCandidateProfileAutofillProfileSchema,
+        promptVersion: z.string().optional(),
+        provider: z.string().optional(),
+      })
+      .strict(),
+  })
+  .strict();
 
 const registerClassInterestSchema = z
   .object({
@@ -956,6 +1219,243 @@ const objectValue = (value: unknown) => {
   }
 
   return {};
+};
+
+const arrayValue = (value: unknown) => (Array.isArray(value) ? value : []);
+
+const dateOnlyToUtcStartMs = (value: string) => {
+  const parsedDate = parseDateOnly(value);
+
+  if (!parsedDate) {
+    return undefined;
+  }
+
+  return Date.UTC(parsedDate.year, parsedDate.month - 1, parsedDate.day);
+};
+
+const dateOnlyFromDate = (date: Date) => date.toISOString().slice(0, 10);
+
+const addCalendarDays = (date: Date, days: number) => {
+  const next = new Date(date);
+  next.setUTCDate(next.getUTCDate() + days);
+  return next;
+};
+
+const candidateUnavailableDatesInsideWindow = (dates: string[], now = new Date()) => {
+  const todayMs = dateOnlyToUtcStartMs(dateOnlyFromDate(now));
+  const maxMs = dateOnlyToUtcStartMs(
+    dateOnlyFromDate(addCalendarDays(now, candidateReadinessAvailabilityWindowDays))
+  );
+
+  if (typeof todayMs !== 'number' || typeof maxMs !== 'number') {
+    return false;
+  }
+
+  return dates.every((date) => {
+    const dateMs = dateOnlyToUtcStartMs(date);
+    return typeof dateMs === 'number' && dateMs >= todayMs && dateMs <= maxMs;
+  });
+};
+
+const candidateAvailabilityIsFresh = (profile?: DocumentRecord | null, now = new Date()) => {
+  if (!profile?.availabilityConfirmedAt || !profile.availabilityExpiresAt) {
+    return false;
+  }
+
+  return Date.parse(profile.availabilityExpiresAt) > now.getTime();
+};
+
+const candidateCvAutofillEnabled = () =>
+  Boolean(process.env.AI_SERVICE_URL && process.env.AI_SERVICE_TOKEN);
+
+const candidateCvAutofillMaxBytes = () =>
+  getIntegerEnv('CANDIDATE_CV_AUTOFILL_MAX_BYTES', 6 * 1024 * 1024);
+
+const candidateCvAutofillMinCharacters = () =>
+  getIntegerEnv('CANDIDATE_CV_AUTOFILL_MIN_CHARACTERS', 200);
+
+const candidateCvAutofillMaxCharacters = () =>
+  getIntegerEnv('CANDIDATE_CV_AUTOFILL_MAX_CHARACTERS', 60000);
+
+const candidateCvAutofillAllowedExtensions = new Set(['.docx', '.pdf', '.txt']);
+const candidateCvAutofillAllowedMimeTypes = new Set([
+  'application/pdf',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'text/plain',
+]);
+
+const normalizeExtractedCvText = (value: string) =>
+  value.replace(/\u0000/g, '').replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+
+const normalizeAiAutofillDate = (value: unknown) => {
+  const record = objectValue(value);
+  const month = typeof record.month === 'number' ? record.month : undefined;
+  const year = typeof record.year === 'number' ? record.year : undefined;
+
+  return month || year
+    ? {
+        ...(month ? { month } : {}),
+        ...(year ? { year } : {}),
+      }
+    : undefined;
+};
+
+const normalizeAiAutofillProfile = (
+  profile: z.infer<typeof aiCandidateProfileAutofillProfileSchema>
+) => {
+  const normalizeEducation = (items: typeof profile.education) =>
+    items.map((item) => ({
+      end: normalizeAiAutofillDate(item.end),
+      grade: item.grade,
+      institution: item.institution,
+      level: item.level,
+      notes: item.notes,
+      qualification: item.qualification,
+      start: normalizeAiAutofillDate(item.start),
+      subject: item.subject,
+    }));
+  const normalizeExperience = (items: typeof profile.experience) =>
+    items.map((item) => ({
+      achievements: item.achievements,
+      current: item.current,
+      employmentType: item.employmentType,
+      end: normalizeAiAutofillDate(item.end),
+      location: item.location,
+      organisation: item.organisation,
+      responsibilities: item.responsibilities,
+      skillsUsed: item.skillsUsed,
+      start: normalizeAiAutofillDate(item.start),
+      title: item.title,
+    }));
+
+  return {
+    characterStatement: profile.characterStatement,
+    currentLocation: profile.currentLocation,
+    earliestStartDate: profile.earliestStartDate,
+    education: normalizeEducation(profile.education),
+    experience: normalizeExperience(profile.experience),
+    interviewFormatPreference: profile.interviewFormatPreference,
+    linkedinUrl: profile.linkedinUrl,
+    portfolioUrl: profile.portfolioUrl,
+    preferredWorkStyle: profile.preferredWorkStyle,
+    projects: profile.projects,
+    skills: profile.skills,
+    targetRoleTitle: profile.targetRoleTitle,
+    targetRoleType: profile.targetRoleType,
+    targetSector: profile.targetSector,
+    targetSectorLabel: profile.targetSectorLabel,
+  };
+};
+
+const extractCandidateCvText = async (file?: UploadedFile) => {
+  const filePath = getUploadedFilePath(file);
+
+  if (!filePath) {
+    throw new ValidationError('A CV file is required.');
+  }
+
+  const size = typeof file?.size === 'number' ? file.size : 0;
+
+  if (size > candidateCvAutofillMaxBytes()) {
+    throw new ValidationError('CV file is too large.');
+  }
+
+  const extension = path.extname(file.originalFilename || filePath).toLowerCase();
+  const mimetype = String(file.mimetype || '').toLowerCase();
+
+  if (
+    !candidateCvAutofillAllowedExtensions.has(extension) &&
+    !candidateCvAutofillAllowedMimeTypes.has(mimetype)
+  ) {
+    throw new ValidationError('Upload a PDF, DOCX, or TXT CV file.');
+  }
+
+  const buffer = await readFile(filePath);
+  let text = '';
+
+  if (extension === '.pdf' || mimetype === 'application/pdf') {
+    const parser = new PDFParse({ data: buffer });
+
+    try {
+      const result = await parser.getText();
+      text = result.text || '';
+    } finally {
+      await parser.destroy();
+    }
+  } else if (
+    extension === '.docx' ||
+    mimetype === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  ) {
+    const result = await mammoth.extractRawText({ buffer });
+    text = result.value || '';
+  } else {
+    text = buffer.toString('utf8');
+  }
+
+  const normalized = normalizeExtractedCvText(text).slice(0, candidateCvAutofillMaxCharacters());
+
+  if (normalized.length < candidateCvAutofillMinCharacters()) {
+    throw new ValidationError('CV text could not be extracted. Try a PDF, DOCX, or TXT file with selectable text.');
+  }
+
+  return {
+    characterCount: normalized.length,
+    text: normalized,
+  };
+};
+
+const requestAiCandidateProfileAutofill = async ({
+  candidate,
+  cvText,
+  requestContext,
+  workSectors,
+}: {
+  candidate: DocumentRecord;
+  cvText: string;
+  requestContext: RequestContext;
+  workSectors: Array<{ label: string; value: string }>;
+}) => {
+  const baseUrl = process.env.AI_SERVICE_URL;
+  const serviceToken = process.env.AI_SERVICE_TOKEN;
+
+  if (!baseUrl || !serviceToken) {
+    throw new ValidationError('AI service is not configured for CV autofill.');
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), getIntegerEnv('AI_SERVICE_TIMEOUT_MS', 30000));
+
+  try {
+    const response = await fetch(`${trimTrailingSlash(baseUrl)}/api/internal/candidate-profiles/autofill`, {
+      body: JSON.stringify({
+        candidate: {
+          displayName: candidateMessageDisplayName(candidate),
+          region: candidate.region || '',
+          sector: candidate.sector || '',
+        },
+        correlationId: `candidate-profile-autofill:${candidate.documentId}:${Date.now()}`,
+        cvText,
+        workSectors,
+      }),
+      headers: {
+        'content-type': 'application/json',
+        'x-hireflip-service-name': 'core-api',
+        'x-hireflip-service-token': serviceToken,
+      },
+      method: 'POST',
+      signal: controller.signal,
+    });
+    const responseBody = await response.json().catch(() => null);
+    const parsed = aiCandidateProfileAutofillResponseSchema.safeParse(responseBody);
+
+    if (!response.ok || !parsed.success) {
+      throw new ValidationError('AI service could not parse the uploaded CV.');
+    }
+
+    return parsed.data.data;
+  } finally {
+    clearTimeout(timeout);
+  }
 };
 
 const candidateInterviewDeclineReasons = [
@@ -2949,6 +3449,342 @@ const findCandidateCompletedProfile = async (
   return profiles[0] || null;
 };
 
+const findCandidateLatestProfile = async (
+  strapi: StrapiDocumentService,
+  candidate: DocumentRecord
+) => {
+  const profiles = await documents(strapi, 'api::candidate-profile.candidate-profile').findMany({
+    filters: {
+      candidate: {
+        documentId: candidate.documentId,
+      },
+      profileState: {
+        $ne: 'archived',
+      },
+    },
+    limit: 1,
+    sort: ['updatedAt:desc', 'completedAt:desc', 'createdAt:desc'],
+  });
+
+  return profiles[0] || null;
+};
+
+const cleanReadinessItems = (items: unknown) =>
+  arrayValue(items).filter((item) => {
+    const record = objectValue(item);
+    return Object.values(record).some((value) => {
+      if (typeof value === 'string') {
+        return value.trim().length > 0;
+      }
+
+      if (typeof value === 'boolean') {
+        return value;
+      }
+
+      if (value && typeof value === 'object') {
+        return Object.keys(objectValue(value)).length > 0;
+      }
+
+      return false;
+    });
+  });
+
+const normalizedCandidateProfileSkills = (skills: unknown) => {
+  const record = objectValue(skills);
+  const normalizeList = (value: unknown) =>
+    arrayValue(value)
+      .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+      .map((item) => item.trim());
+
+  return {
+    certifications: normalizeList(record.certifications),
+    languages: normalizeList(record.languages),
+    strengths: normalizeList(record.strengths),
+    tools: normalizeList(record.tools),
+  };
+};
+
+const candidateProfileReadinessMissingRequirements = (
+  profile?: DocumentRecord | null,
+  now = new Date()
+) => {
+  const missing: string[] = [];
+  const skills = normalizedCandidateProfileSkills(profile?.skills);
+  const hasStructuredHistory =
+    cleanReadinessItems(profile?.education).length > 0 ||
+    cleanReadinessItems(profile?.experience).length > 0 ||
+    cleanReadinessItems(profile?.projects).length > 0;
+  const characterStatement = String(profile?.summary || '').trim();
+
+  if (!profile || profile.profileState !== 'completed') {
+    missing.push('Mark the interview CV/profile as complete.');
+  }
+
+  if (!String(profile?.targetSector || '').trim()) {
+    missing.push('Choose a target sector.');
+  }
+
+  if (!String(profile?.targetRoleTitle || '').trim()) {
+    missing.push('Add a target role/title.');
+  }
+
+  if (!profile?.targetRoleType) {
+    missing.push('Choose a preferred role type.');
+  }
+
+  if (!profile?.preferredWorkStyle) {
+    missing.push('Choose a preferred work style.');
+  }
+
+  if (characterStatement.length < 80) {
+    missing.push('Write a character statement of at least 80 characters.');
+  }
+
+  if (!hasStructuredHistory) {
+    missing.push('Add at least one education, experience, or project item.');
+  }
+
+  if (skills.strengths.length === 0) {
+    missing.push('Add at least one key strength.');
+  }
+
+  if (!profile?.interviewFormatPreference) {
+    missing.push('Choose an interview format preference.');
+  }
+
+  if (!candidateAvailabilityIsFresh(profile, now)) {
+    missing.push('Confirm unavailable dates for the next 30 days.');
+  }
+
+  if (!profile?.readinessOverviewAcknowledgedAt) {
+    missing.push('Confirm the interview journey overview.');
+  }
+
+  if (
+    !profile?.recruitmentPlatformVisibility ||
+    profile.recruitmentPlatformVisibility === 'not_set'
+  ) {
+    missing.push('Choose Recruitment Partners visibility.');
+  }
+
+  return missing;
+};
+
+const candidateProfileIsInterviewReady = (profile?: DocumentRecord | null, now = new Date()) =>
+  candidateProfileReadinessMissingRequirements(profile, now).length === 0;
+
+const sanitizeCandidateInterviewReadiness = ({
+  candidate,
+  profile,
+}: {
+  candidate: DocumentRecord;
+  profile?: DocumentRecord | null;
+}) => {
+  const now = new Date();
+  const missingRequirements = candidateProfileReadinessMissingRequirements(profile, now);
+  const availabilitySubmitted = candidateAvailabilityIsFresh(profile, now);
+  const profileMissingRequirements = missingRequirements.filter(
+    (requirement) => requirement !== 'Confirm unavailable dates for the next 30 days.'
+  );
+  const profileComplete = Boolean(profile) && profileMissingRequirements.length === 0;
+  const metadata = objectValue(profile?.metadata);
+
+  return {
+    candidate: {
+      documentId: candidate.documentId || null,
+      email: candidate.email || null,
+      firstName: candidate.firstName || '',
+      lastName: candidate.lastName || '',
+      phone: candidate.phone || '',
+      region: candidate.region || '',
+      sector: candidate.sector || '',
+    },
+    completion: {
+      availabilitySubmitted,
+      missingRequirements,
+      profileComplete,
+      readyForInterviewRouting: profileComplete && availabilitySubmitted,
+    },
+    generatedAt: now.toISOString(),
+    profile: {
+      availabilityConfirmedAt: profile?.availabilityConfirmedAt || null,
+      availabilityExpiresAt: profile?.availabilityExpiresAt || null,
+      availabilityNote: profile?.availabilityNote || '',
+      characterStatement: profile?.summary || '',
+      completedAt: profile?.completedAt || null,
+      currentLocation: profile?.location || candidate.region || '',
+      documentId: profile?.documentId || null,
+      earliestStartDate: profile?.earliestStartDate || '',
+      education: cleanReadinessItems(profile?.education),
+      experience: cleanReadinessItems(profile?.experience),
+      interviewFormatPreference: profile?.interviewFormatPreference || '',
+      linkedinUrl: profile?.linkedinUrl || '',
+      overviewAcknowledged: Boolean(profile?.readinessOverviewAcknowledgedAt),
+      portfolioUrl: profile?.portfolioUrl || '',
+      preferredWorkStyle: profile?.preferredWorkStyle || '',
+      profileState: profile?.profileState || 'draft',
+      projects: cleanReadinessItems(profile?.projects),
+      recruitmentPlatformVisibility:
+        profile?.recruitmentPlatformVisibility ||
+        candidate.recruitmentPlatformVisibility ||
+        'not_set',
+      recruitmentVisibilityWordingVersion:
+        profile?.recruitmentVisibilityWordingVersion ||
+        (typeof metadata.recruitmentVisibilityWordingVersion === 'string'
+          ? metadata.recruitmentVisibilityWordingVersion
+          : candidateReadinessWordingVersion),
+      skills: normalizedCandidateProfileSkills(profile?.skills),
+      targetRoleTitle: profile?.targetRoleTitle || '',
+      targetRoleType: profile?.targetRoleType || '',
+      targetSector: profile?.targetSector || candidate.sector || '',
+      targetSectorLabel: profile?.targetSectorLabel || candidate.sector || '',
+      unavailableDates: arrayValue(profile?.unavailableDates).filter(
+        (date): date is string => typeof date === 'string'
+      ),
+    },
+    rules: {
+      availabilityWindowDays: candidateReadinessAvailabilityWindowDays,
+      characterStatementMinLength: 80,
+      cvUploadAutofillEnabled: candidateCvAutofillEnabled(),
+      recruitmentVisibilityWordingVersion: candidateReadinessWordingVersion,
+    },
+  };
+};
+
+const candidateReadinessProfileData = ({
+  existingProfile,
+  now,
+  payload,
+}: {
+  existingProfile?: DocumentRecord | null;
+  now: Date;
+  payload: ReturnType<typeof validateCandidateInterviewReadiness>;
+}) => {
+  const profile = payload.profile;
+  const nowIso = now.toISOString();
+  const previousUnavailableDates = arrayValue(existingProfile?.unavailableDates).filter(
+    (date): date is string => typeof date === 'string'
+  );
+  const unavailableDatesChanged =
+    JSON.stringify(previousUnavailableDates.sort()) !== JSON.stringify([...profile.unavailableDates].sort()) ||
+    String(existingProfile?.availabilityNote || '') !== profile.availabilityNote;
+  const availabilityConfirmedAt = profile.availabilityConfirmed
+    ? unavailableDatesChanged
+      ? nowIso
+      : existingProfile?.availabilityConfirmedAt || nowIso
+    : existingProfile?.availabilityConfirmedAt;
+  const availabilityExpiresAt = availabilityConfirmedAt
+    ? addCalendarDays(new Date(availabilityConfirmedAt), candidateReadinessAvailabilityWindowDays).toISOString()
+    : existingProfile?.availabilityExpiresAt;
+  const readinessOverviewAcknowledgedAt = profile.overviewAcknowledged
+    ? existingProfile?.readinessOverviewAcknowledgedAt || nowIso
+    : undefined;
+  const recruitmentVisibility =
+    profile.recruitmentPlatformVisibility ||
+    existingProfile?.recruitmentPlatformVisibility ||
+    'not_set';
+
+  return {
+    availability: profile.unavailableDates.join(', '),
+    availabilityConfirmedAt,
+    availabilityExpiresAt,
+    availabilityNote: profile.availabilityNote,
+    completedAt:
+      payload.action === 'complete'
+        ? existingProfile?.completedAt || nowIso
+        : existingProfile?.completedAt,
+    earliestStartDate: profile.earliestStartDate,
+    education: profile.education,
+    experience: profile.experience,
+    interviewFormatPreference: profile.interviewFormatPreference,
+    linkedinUrl: profile.linkedinUrl,
+    location: profile.currentLocation,
+    metadata: {
+      ...objectValue(existingProfile?.metadata),
+      lastReadinessAction: payload.action,
+      lastReadinessUpdatedAt: nowIso,
+      recruitmentVisibilityWordingVersion: candidateReadinessWordingVersion,
+      source: 'candidate_dashboard_interview_readiness',
+    },
+    portfolioUrl: profile.portfolioUrl,
+    preferredWorkStyle: profile.preferredWorkStyle,
+    profileState:
+      payload.action === 'complete'
+        ? 'completed'
+        : existingProfile?.profileState === 'completed'
+          ? 'completed'
+          : 'draft',
+    projects: profile.projects,
+    readinessOverviewAcknowledgedAt,
+    recruitmentPlatformVisibility: recruitmentVisibility,
+    recruitmentVisibilityWordingVersion: candidateReadinessWordingVersion,
+    skills: profile.skills,
+    summary: profile.characterStatement,
+    targetRoleTitle: profile.targetRoleTitle,
+    targetRoleType: profile.targetRoleType,
+    targetSector: profile.targetSector,
+    targetSectorLabel: profile.targetSectorLabel,
+    unavailableDates: profile.unavailableDates,
+    visibilityUpdatedAt:
+      recruitmentVisibility !== existingProfile?.recruitmentPlatformVisibility
+        ? nowIso
+        : existingProfile?.visibilityUpdatedAt,
+    workPreferences: {
+      earliestStartDate: profile.earliestStartDate,
+      interviewFormatPreference: profile.interviewFormatPreference,
+      preferredWorkStyle: profile.preferredWorkStyle,
+      targetRoleTitle: profile.targetRoleTitle,
+      targetRoleType: profile.targetRoleType,
+      targetSector: profile.targetSector,
+      targetSectorLabel: profile.targetSectorLabel,
+    },
+  };
+};
+
+const ensureCandidateInterviewRequestsAfterReadiness = async ({
+  candidate,
+  requestContext,
+  strapi,
+}: {
+  candidate: DocumentRecord;
+  requestContext: RequestContext;
+  strapi: StrapiDocumentService;
+}) => {
+  if (!candidate.documentId) {
+    return;
+  }
+
+  const enrollments = await documents(strapi, 'api::enrollment.enrollment').findMany({
+    filters: {
+      candidate: {
+        documentId: candidate.documentId,
+      },
+      enrollmentState: 'interview_phase',
+      passStatus: 'passed',
+    },
+    limit: 20,
+    sort: ['updatedAt:desc'],
+  });
+
+  await Promise.all(
+    enrollments
+      .filter((enrollment) => Boolean(enrollment.documentId))
+      .map((enrollment) =>
+        interviewRequestService(strapi)
+          .ensureForEnrollment(
+            {
+              enrollmentDocumentId: enrollment.documentId,
+              source: 'candidate_interview_readiness_completed',
+            },
+            requestContext
+          )
+          .catch((error) => {
+            strapi.log?.error?.('Interview request routing failed after readiness completion.', error);
+          })
+      )
+  );
+};
+
 const findCandidateInterviewStrikes = async (
   strapi: StrapiDocumentService,
   candidate: DocumentRecord
@@ -3050,8 +3886,12 @@ const buildCandidateInterviewJourneySummary = async ({
     requestedFromRequests,
     positiveNumber(classRecord?.interviewsGuaranteed, 0)
   );
-  const profileComplete = Boolean(profile);
-  const availabilitySubmitted = Boolean(String(profile?.availability || '').trim());
+  const missingReadinessRequirements = candidateProfileReadinessMissingRequirements(profile);
+  const availabilitySubmitted = candidateAvailabilityIsFresh(profile);
+  const profileMissingRequirements = missingReadinessRequirements.filter(
+    (requirement) => requirement !== 'Confirm unavailable dates for the next 30 days.'
+  );
+  const profileComplete = Boolean(profile) && profileMissingRequirements.length === 0;
   const requestVisibleStates = requests.map((request) => String(request.candidateVisibleState || ''));
   const requestStates = requests.map((request) => String(request.requestState || ''));
   const hasRequest = requests.length > 0;
@@ -3126,15 +3966,15 @@ const buildCandidateInterviewJourneySummary = async ({
       readyForInterviewRouting,
       requirements: [
         {
-          detail: 'Complete your interview CV/profile so HireFlip can route you to suitable employers.',
-          href: '/settings',
+          detail: 'Complete your structured CV profile so HireFlip can route you to suitable employers.',
+          href: '/interviews/readiness',
           key: 'profile',
           label: 'CV profile',
           state: profileComplete ? 'complete' : 'required',
         },
         {
-          detail: 'Submit your first interview availability so HireFlip can match you to realistic slots.',
-          href: '/settings',
+          detail: 'Confirm any days you cannot interview in the next 30 days.',
+          href: '/interviews/readiness',
           key: 'availability',
           label: 'First availability',
           state: availabilitySubmitted ? 'complete' : 'required',
@@ -8318,6 +9158,228 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       replied: true,
       supportCase,
     };
+  },
+
+  async getCurrentCandidateInterviewReadiness(auth: Auth0State | undefined) {
+    if (!auth || auth.type !== 'auth0' || !auth.subject) {
+      throw new UnauthorizedError('Auth0 authentication is required.');
+    }
+
+    const existingCandidate = await findCandidateByAuthIdentity(strapi, auth.subject);
+
+    if (!existingCandidate?.documentId) {
+      throw new ValidationError('Candidate account must be synced before interview readiness can be viewed.');
+    }
+
+    const profile = await findCandidateLatestProfile(strapi, existingCandidate);
+
+    return sanitizeCandidateInterviewReadiness({
+      candidate: existingCandidate,
+      profile,
+    });
+  },
+
+  async autofillCurrentCandidateInterviewReadinessFromCv(
+    auth: Auth0State | undefined,
+    file: UploadedFile | undefined,
+    requestContext: RequestContext = {}
+  ) {
+    if (!auth || auth.type !== 'auth0' || !auth.subject) {
+      throw new UnauthorizedError('Auth0 authentication is required.');
+    }
+
+    const existingCandidate = await findCandidateByAuthIdentity(strapi, auth.subject);
+
+    if (!existingCandidate?.documentId) {
+      throw new ValidationError('Candidate account must be synced before interview readiness can be autofilled.');
+    }
+
+    const filePath = getUploadedFilePath(file);
+    let extracted: Awaited<ReturnType<typeof extractCandidateCvText>>;
+
+    try {
+      extracted = await extractCandidateCvText(file);
+    } finally {
+      if (filePath) {
+        await rm(filePath, { force: true }).catch((error) => {
+          strapi.log?.error?.('Temporary CV autofill upload could not be removed.', error);
+        });
+      }
+    }
+
+    const workSectors = await getVisiblePreferenceOptions(strapi, 'api::work-sector.work-sector');
+    const aiResult = await requestAiCandidateProfileAutofill({
+      candidate: existingCandidate,
+      cvText: extracted.text,
+      requestContext,
+      workSectors: workSectors.map((option) => ({
+        label: option.label,
+        value: option.value,
+      })),
+    });
+    const now = new Date().toISOString();
+
+    await auditEvents(strapi).record({
+      actorEmail: existingCandidate.email,
+      actorId: auth.subject,
+      actorType: 'candidate',
+      eventCategory: 'candidate',
+      eventType: 'candidate.interview_readiness_cv_autofilled',
+      ipAddress: requestContext.ipAddress,
+      metadata: {
+        extractedTextCharacterCount: extracted.characterCount,
+        model: aiResult.model,
+        provider: aiResult.provider,
+        providerRequestId: aiResult.metadata?.providerRequestId,
+      },
+      newState: {
+        suggestedProfile: normalizeAiAutofillProfile(aiResult.profile),
+      },
+      occurredAt: now,
+      requestId: requestContext.requestId,
+      source: 'candidate_dashboard',
+      subjectDisplayName: existingCandidate.email,
+      subjectId: existingCandidate.documentId,
+      subjectType: 'candidate',
+      userAgent: requestContext.userAgent,
+    });
+
+    return {
+      generatedAt: now,
+      metadata: {
+        extractedTextCharacterCount: extracted.characterCount,
+        model: aiResult.model,
+        provider: aiResult.provider,
+        promptVersion: aiResult.promptVersion,
+      },
+      profile: normalizeAiAutofillProfile(aiResult.profile),
+    };
+  },
+
+  async updateCurrentCandidateInterviewReadiness(
+    auth: Auth0State | undefined,
+    input: unknown,
+    requestContext: RequestContext = {}
+  ) {
+    if (!auth || auth.type !== 'auth0' || !auth.subject) {
+      throw new UnauthorizedError('Auth0 authentication is required.');
+    }
+
+    const payload = validateCandidateInterviewReadiness(input ?? {});
+    const existingCandidate = await findCandidateByAuthIdentity(strapi, auth.subject);
+
+    if (!existingCandidate?.documentId) {
+      throw new ValidationError('Candidate account must be synced before interview readiness can be updated.');
+    }
+
+    if (!candidateUnavailableDatesInsideWindow(payload.profile.unavailableDates)) {
+      throw new ValidationError('Unavailable dates must be inside the next 30 days.');
+    }
+
+    const existingProfile = await findCandidateLatestProfile(strapi, existingCandidate);
+    const now = new Date();
+    const data = candidateReadinessProfileData({
+      existingProfile,
+      now,
+      payload,
+    });
+    const candidateConnection = {
+      candidate: {
+        connect: [{ documentId: existingCandidate.documentId }],
+      },
+    };
+    const profileForValidation = {
+      ...existingProfile,
+      ...data,
+    } as DocumentRecord;
+    const missingRequirements = candidateProfileReadinessMissingRequirements(
+      profileForValidation,
+      now
+    );
+
+    if (payload.action === 'complete' && missingRequirements.length > 0) {
+      throw new ValidationError(
+        `Complete these interview readiness items before continuing: ${missingRequirements.join(' ')}`
+      );
+    }
+
+    const savedProfile = existingProfile?.documentId
+      ? await documents(strapi, 'api::candidate-profile.candidate-profile').update({
+          documentId: existingProfile.documentId,
+          data,
+        })
+      : await documents(strapi, 'api::candidate-profile.candidate-profile').create({
+          data: {
+            ...data,
+            ...candidateConnection,
+          },
+        });
+
+    const recruitmentPlatformVisibility =
+      typeof savedProfile.recruitmentPlatformVisibility === 'string'
+        ? savedProfile.recruitmentPlatformVisibility
+        : existingCandidate.recruitmentPlatformVisibility;
+
+    if (
+      recruitmentPlatformVisibility &&
+      recruitmentPlatformVisibility !== existingCandidate.recruitmentPlatformVisibility
+    ) {
+      await documents(strapi, 'api::candidate.candidate').update({
+        documentId: existingCandidate.documentId,
+        data: {
+          recruitmentPlatformVisibility,
+        },
+        populate: candidatePopulate,
+      });
+    }
+
+    const readinessComplete = candidateProfileIsInterviewReady(savedProfile, now);
+
+    await auditEvents(strapi).record({
+      actorEmail: existingCandidate.email,
+      actorId: auth.subject,
+      actorType: 'candidate',
+      eventCategory: 'candidate',
+      eventType: readinessComplete
+        ? 'candidate.interview_readiness_completed'
+        : 'candidate.interview_readiness_updated',
+      ipAddress: requestContext.ipAddress,
+      metadata: {
+        action: payload.action,
+        availabilityExpiresAt: savedProfile.availabilityExpiresAt,
+        missingRequirements: candidateProfileReadinessMissingRequirements(savedProfile, now),
+      },
+      newState: sanitizeCandidateInterviewReadiness({
+        candidate: existingCandidate,
+        profile: savedProfile,
+      }),
+      occurredAt: now.toISOString(),
+      previousState: existingProfile
+        ? sanitizeCandidateInterviewReadiness({
+            candidate: existingCandidate,
+            profile: existingProfile,
+          })
+        : null,
+      requestId: requestContext.requestId,
+      source: 'candidate_dashboard',
+      subjectDisplayName: existingCandidate.email,
+      subjectId: savedProfile.documentId,
+      subjectType: 'candidate_profile',
+      userAgent: requestContext.userAgent,
+    });
+
+    if (readinessComplete) {
+      await ensureCandidateInterviewRequestsAfterReadiness({
+        candidate: existingCandidate,
+        requestContext,
+        strapi,
+      });
+    }
+
+    return sanitizeCandidateInterviewReadiness({
+      candidate: existingCandidate,
+      profile: savedProfile,
+    });
   },
 
   async updateCurrentCandidateAccount(
