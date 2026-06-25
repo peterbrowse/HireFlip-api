@@ -839,19 +839,11 @@ const queueCandidateAmendmentNote = async ({
     correlationId: requestContext.requestId,
     subject,
     template: {
-      key: 'generic_branded_message',
+      key: 'candidate_profile_amendment_note',
       variables: {
-        bodyLines: [
-          `Hi ${candidate.firstName || 'there'},`,
-          'A member of the HireFlip team has made an update to your profile.',
-          note,
-          'You can review your dashboard at any time.',
-        ],
-        ctaLabel: 'Open your dashboard',
-        ctaUrl: trimTrailingSlash(process.env.CANDIDATE_DASHBOARD_BASE_URL || 'http://localhost:3001'),
-        heading: subject,
-        preheader: 'A HireFlip team member has updated your profile.',
-        subject,
+        candidateFirstName: candidate.firstName || 'there',
+        dashboardUrl: trimTrailingSlash(process.env.CANDIDATE_DASHBOARD_BASE_URL || 'http://localhost:3001'),
+        note,
       },
     },
     text,
@@ -877,7 +869,7 @@ const queueCandidateAmendmentNote = async ({
       recipientType: 'candidate',
       relatedId: candidateDocumentId,
       relatedType: 'candidate',
-      templateKey: 'generic_branded_message',
+      templateKey: 'candidate_profile_amendment_note',
     },
   });
 
