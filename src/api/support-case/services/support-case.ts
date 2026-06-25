@@ -182,6 +182,19 @@ const ensureFeedbackReportConcernCaseSchema = z
   })
   .strict();
 
+const ensureInterviewStrikeDisputeCaseSchema = z
+  .object({
+    appealedAt: z.string().datetime(),
+    candidate: z.unknown(),
+    reason: z.string().trim().min(10).max(4000),
+    source: sourceSchema.default('candidate_dashboard'),
+    strikeDocumentId: z.string().trim().min(1).max(160),
+    strikeNumber: z.number().int().positive().optional(),
+    summary: z.string().trim().max(1000).optional(),
+    title: z.string().trim().min(1).max(180).optional(),
+  })
+  .strict();
+
 const addMessageSchema = z
   .object({
     body: z.string().trim().min(1).max(12000),
@@ -231,6 +244,9 @@ const assignCaseSchema = z
 const validateEnsureRefundCase = validateZodSchema(ensureRefundCaseSchema);
 const validateEnsureFeedbackReportConcernCase = validateZodSchema(
   ensureFeedbackReportConcernCaseSchema
+);
+const validateEnsureInterviewStrikeDisputeCase = validateZodSchema(
+  ensureInterviewStrikeDisputeCaseSchema
 );
 const validateAddMessage = validateZodSchema(addMessageSchema);
 const validateUpdateCaseState = validateZodSchema(updateCaseStateSchema);
@@ -561,6 +577,9 @@ const supportCaseKeyForRefund = (refund: DocumentRecord) =>
 const supportCaseKeyForFeedbackReportConcern = (feedbackDocumentId: string) =>
   `interview-feedback-report:${feedbackDocumentId}:candidate-concern`;
 
+const supportCaseKeyForInterviewStrikeDispute = (strikeDocumentId: string) =>
+  `candidate-interview-strike:${strikeDocumentId}:dispute`;
+
 const relationConnect = (record?: DocumentRecord | null) =>
   getDocumentId(record) ? { connect: [{ documentId: getDocumentId(record) }] } : undefined;
 
@@ -730,6 +749,79 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
         lastMessageAt: body.flaggedAt,
         metadata,
         openedAt: body.flaggedAt,
+        openedByDisplayName: candidateName,
+        openedByEmail: candidate.email,
+        openedByType: 'candidate',
+        priority: 'high',
+        source: body.source,
+        summary,
+        title,
+      },
+      populate: ['candidate', 'refund', 'payment', 'enrollment'],
+    });
+
+    return {
+      created: true,
+      supportCase,
+    };
+  },
+
+  async ensureInterviewStrikeDisputeCase(input: unknown) {
+    const body = validateEnsureInterviewStrikeDisputeCase(input);
+    const candidate = body.candidate as DocumentRecord;
+    const caseKey = supportCaseKeyForInterviewStrikeDispute(body.strikeDocumentId);
+    const existingCase = await findCaseByKey(strapi, caseKey);
+    const candidateName = candidateDisplayName(candidate);
+    const strikeLabel = body.strikeNumber ? `strike ${body.strikeNumber}` : 'interview strike';
+    const title = body.title || (candidateName
+      ? `Interview strike dispute for ${candidateName}`
+      : 'Interview strike dispute');
+    const summary =
+      body.summary ||
+      `Candidate has disputed ${strikeLabel}.`;
+    const metadata = {
+      appealedAt: body.appealedAt,
+      kind: 'candidate_interview_strike_dispute',
+      reason: body.reason,
+      strikeDocumentId: body.strikeDocumentId,
+      strikeNumber: body.strikeNumber || null,
+    };
+
+    if (existingCase) {
+      const shouldReopen = ['closed', 'resolved'].includes(String(existingCase.caseState || ''));
+      const supportCase = shouldReopen && existingCase.documentId
+        ? await documents(strapi, 'api::support-case.support-case').update({
+            documentId: existingCase.documentId,
+            data: {
+              caseState: 'awaiting_staff',
+              closedAt: null,
+              lastMessageAt: body.appealedAt,
+              metadata: {
+                ...objectValue(existingCase.metadata),
+                ...metadata,
+                reopenedAt: body.appealedAt,
+              },
+              resolvedAt: null,
+            },
+            populate: ['candidate', 'refund', 'payment', 'enrollment'],
+          })
+        : existingCase;
+
+      return {
+        created: false,
+        supportCase,
+      };
+    }
+
+    const supportCase = await documents(strapi, 'api::support-case.support-case').create({
+      data: {
+        candidate: relationConnect(candidate),
+        caseKey,
+        caseState: 'awaiting_staff',
+        caseType: 'interview',
+        lastMessageAt: body.appealedAt,
+        metadata,
+        openedAt: body.appealedAt,
         openedByDisplayName: candidateName,
         openedByEmail: candidate.email,
         openedByType: 'candidate',

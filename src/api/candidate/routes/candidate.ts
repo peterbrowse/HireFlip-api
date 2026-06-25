@@ -196,6 +196,19 @@ export default {
       },
     },
     {
+      method: 'POST',
+      path: '/candidates/me/interview-strikes/:strikeDocumentId/dispute',
+      handler: 'candidate.disputeInterviewStrike',
+      config: {
+        auth: false,
+        middlewares: [
+          {
+            name: 'global::auth0-jwt',
+          },
+        ],
+      },
+    },
+    {
       method: 'GET',
       path: '/candidates/me/support-cases',
       handler: 'candidate.supportCases',

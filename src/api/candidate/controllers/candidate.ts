@@ -48,6 +48,12 @@ type CandidateService = {
     input: unknown,
     context: RequestContext
   ): Promise<unknown>;
+  disputeCurrentCandidateInterviewStrike(
+    auth: unknown,
+    strikeDocumentId: string,
+    input: unknown,
+    context: RequestContext
+  ): Promise<unknown>;
   declineCurrentCandidateWaitingListOffer(
     auth: unknown,
     offerDocumentId: string,
@@ -395,6 +401,23 @@ export default factories.createCoreController('api::candidate.candidate', ({ str
     const result = await candidateService(strapi).flagCurrentCandidateInterviewFeedbackReport(
       ctx.state?.hireflipAuth,
       ctx.params?.interviewDocumentId,
+      ctx.request.body,
+      {
+        ipAddress: getForwardedClientIp(ctx),
+        requestId: ctx.state?.requestId,
+        userAgent: ctx.request.get('x-hireflip-client-user-agent') || ctx.request.get('user-agent'),
+      }
+    );
+
+    ctx.body = {
+      data: result,
+    };
+  },
+
+  async disputeInterviewStrike(ctx) {
+    const result = await candidateService(strapi).disputeCurrentCandidateInterviewStrike(
+      ctx.state?.hireflipAuth,
+      ctx.params?.strikeDocumentId,
       ctx.request.body,
       {
         ipAddress: getForwardedClientIp(ctx),

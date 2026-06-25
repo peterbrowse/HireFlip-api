@@ -220,6 +220,10 @@ type SupportCaseService = {
     created: boolean;
     supportCase: DocumentRecord;
   }>;
+  ensureInterviewStrikeDisputeCase(input: unknown): Promise<{
+    created: boolean;
+    supportCase: DocumentRecord;
+  }>;
   getCaseForCandidate(input: {
     candidateDocumentId: string;
     supportCaseDocumentId: string;
@@ -610,6 +614,14 @@ const feedbackReportConcernSchema = z
   .strict();
 
 const validateFeedbackReportConcern = validateZodSchema(feedbackReportConcernSchema);
+
+const interviewStrikeDisputeSchema = z
+  .object({
+    reason: z.string().trim().min(10).max(4000),
+  })
+  .strict();
+
+const validateInterviewStrikeDispute = validateZodSchema(interviewStrikeDisputeSchema);
 
 const materialProgressSchema = z
   .object({
@@ -2902,6 +2914,246 @@ const findCandidateFeedbackReportForInterview = async ({
   });
 
   return feedbackRecords[0] || null;
+};
+
+const findCandidateInterviewRequests = async (
+  strapi: StrapiDocumentService,
+  candidate: DocumentRecord
+) =>
+  documents(strapi, 'api::interview-request.interview-request').findMany({
+    filters: {
+      candidate: {
+        documentId: candidate.documentId,
+      },
+    },
+    limit: 25,
+    populate: ['candidate', 'class', 'enrollment', 'region'],
+    sort: ['createdAt:desc'],
+  });
+
+const findCandidateCompletedProfile = async (
+  strapi: StrapiDocumentService,
+  candidate: DocumentRecord
+) => {
+  const profiles = await documents(strapi, 'api::candidate-profile.candidate-profile').findMany({
+    filters: {
+      candidate: {
+        documentId: candidate.documentId,
+      },
+      profileState: 'completed',
+    },
+    limit: 1,
+    sort: ['completedAt:desc', 'updatedAt:desc', 'createdAt:desc'],
+  });
+
+  return profiles[0] || null;
+};
+
+const findCandidateInterviewStrikes = async (
+  strapi: StrapiDocumentService,
+  candidate: DocumentRecord
+) =>
+  documents(strapi, 'api::candidate-interview-strike.candidate-interview-strike').findMany({
+    filters: {
+      candidate: {
+        documentId: candidate.documentId,
+      },
+    },
+    limit: 50,
+    populate: ['candidate', 'enrollment', 'interview'],
+    sort: ['appliedAt:desc', 'createdAt:desc'],
+  });
+
+const findCandidateInterviewDisputeSupportCases = async (
+  strapi: StrapiDocumentService,
+  candidate: DocumentRecord
+) => {
+  const cases = await documents(strapi, 'api::support-case.support-case').findMany({
+    filters: {
+      candidate: {
+        documentId: candidate.documentId,
+      },
+      caseType: 'interview',
+    },
+    limit: 100,
+    sort: ['lastMessageAt:desc', 'createdAt:desc'],
+  });
+  const casesByStrikeDocumentId = new Map<string, DocumentRecord>();
+
+  cases.forEach((supportCase) => {
+    const metadata = objectValue(supportCase.metadata);
+    const strikeDocumentId =
+      typeof metadata.strikeDocumentId === 'string' ? metadata.strikeDocumentId : null;
+
+    if (metadata.kind === 'candidate_interview_strike_dispute' && strikeDocumentId) {
+      casesByStrikeDocumentId.set(strikeDocumentId, supportCase);
+    }
+  });
+
+  return casesByStrikeDocumentId;
+};
+
+const firstClassRecordFromInterviewData = (
+  requests: DocumentRecord[],
+  offers: DocumentRecord[]
+) => {
+  const requestClass = requests
+    .map((request) => documentRecordValue(request.class))
+    .find(Boolean);
+
+  if (requestClass) {
+    return requestClass;
+  }
+
+  return offers
+    .map((offer) => documentRecordValue(documentRecordValue(offer.enrollment)?.class))
+    .find(Boolean);
+};
+
+const sanitizeCandidateInterviewStrike = (
+  strike: DocumentRecord,
+  disputeCase?: DocumentRecord
+) => ({
+  appliedAt: strike.appliedAt || strike.createdAt || null,
+  appealedAt: strike.appealedAt || null,
+  disputeSupportCaseDocumentId: disputeCase?.documentId || null,
+  documentId: strike.documentId || null,
+  reason: strike.reason || null,
+  reviewDecision: strike.reviewDecision || null,
+  reviewedAt: strike.reviewedAt || null,
+  strikeNumber: positiveNumber(strike.strikeNumber, 0) || null,
+  strikeState: strike.strikeState || 'active',
+});
+
+const buildCandidateInterviewJourneySummary = async ({
+  candidate,
+  offers,
+  requests,
+  strapi,
+}: {
+  candidate: DocumentRecord;
+  offers: DocumentRecord[];
+  requests: DocumentRecord[];
+  strapi: StrapiDocumentService;
+}) => {
+  const [profile, strikes, disputeCasesByStrikeDocumentId] = await Promise.all([
+    findCandidateCompletedProfile(strapi, candidate),
+    findCandidateInterviewStrikes(strapi, candidate),
+    findCandidateInterviewDisputeSupportCases(strapi, candidate),
+  ]);
+  const classRecord = firstClassRecordFromInterviewData(requests, offers);
+  const requestedFromRequests = Math.max(
+    0,
+    ...requests.map((request) => positiveNumber(request.requestedInterviewCount, 0))
+  );
+  const guaranteedCount = Math.max(
+    requestedFromRequests,
+    positiveNumber(classRecord?.interviewsGuaranteed, 0)
+  );
+  const profileComplete = Boolean(profile);
+  const availabilitySubmitted = Boolean(String(profile?.availability || '').trim());
+  const requestVisibleStates = requests.map((request) => String(request.candidateVisibleState || ''));
+  const requestStates = requests.map((request) => String(request.requestState || ''));
+  const hasRequest = requests.length > 0;
+  const readyForInterviewRouting =
+    hasRequest &&
+    profileComplete &&
+    availabilitySubmitted &&
+    !requestStates.includes('pending_profile') &&
+    !requestStates.includes('pending_availability');
+  const selectedOffers = offers.filter((offer) => offer.offerState === 'candidate_selected');
+  const interviews = offers
+    .map((offer) => documentRecordValue(offer.selectedInterview))
+    .filter((interview): interview is DocumentRecord => Boolean(interview));
+  const completedCount = interviews.filter(
+    (interview) =>
+      interview.interviewState === 'completed' && Boolean(interview.countsTowardGuarantee)
+  ).length;
+  const confirmedCount = interviews.filter((interview) =>
+    ['confirmed', 'completed'].includes(String(interview.interviewState || ''))
+  ).length;
+  const pendingDetailsCount = interviews.filter(
+    (interview) => interview.interviewState === 'awaiting_employer_details'
+  ).length;
+  const openOfferCount = offers.filter((offer) =>
+    openInterviewSlotOfferStates.has(String(offer.offerState || ''))
+  ).length;
+  const activeStrikes = strikes.filter((strike) =>
+    ['active', 'appealed', 'upheld'].includes(String(strike.strikeState || ''))
+  );
+  const sanitizedStrikes = strikes.map((strike) =>
+    sanitizeCandidateInterviewStrike(
+      strike,
+      strike.documentId ? disputeCasesByStrikeDocumentId.get(strike.documentId) : undefined
+    )
+  );
+
+  let currentState = 'not_started';
+
+  if (!hasRequest && guaranteedCount === 0 && offers.length === 0) {
+    currentState = 'not_started';
+  } else if (!readyForInterviewRouting) {
+    currentState = 'interview_onboarding';
+  } else if (openOfferCount > 0 || requestVisibleStates.includes('reviewing_options')) {
+    currentState = 'reviewing_options';
+  } else if (pendingDetailsCount > 0) {
+    currentState = 'awaiting_employer_details';
+  } else if (confirmedCount > completedCount) {
+    currentState = 'confirmed';
+  } else if (completedCount < guaranteedCount) {
+    currentState = requestVisibleStates.includes('blocked') ? 'blocked' : 'arranging_interviews';
+  } else {
+    currentState = 'complete';
+  }
+
+  return {
+    currentState,
+    generatedAt: new Date().toISOString(),
+    guarantee: {
+      acceptedCount: selectedOffers.length,
+      completedCount,
+      confirmedCount,
+      guaranteedCount,
+      offeredCount: offers.filter((offer) =>
+        ['sent', 'submitted', 'candidate_selected', 'completed'].includes(String(offer.offerState || ''))
+      ).length,
+      pendingDetailsCount,
+      remainingCount: Math.max(0, guaranteedCount - completedCount),
+    },
+    onboarding: {
+      availabilitySubmitted,
+      profileComplete,
+      readyForInterviewRouting,
+      requirements: [
+        {
+          detail: 'Complete your interview CV/profile so HireFlip can route you to suitable employers.',
+          href: '/settings/profile',
+          key: 'profile',
+          label: 'CV profile',
+          state: profileComplete ? 'complete' : 'required',
+        },
+        {
+          detail: 'Submit your first interview availability so HireFlip can match you to realistic slots.',
+          href: '/settings/profile',
+          key: 'availability',
+          label: 'First availability',
+          state: availabilitySubmitted ? 'complete' : 'required',
+        },
+      ],
+    },
+    requests: requests.map((request) => ({
+      candidateVisibleState: request.candidateVisibleState || null,
+      documentId: request.documentId || null,
+      region: documentRecordValue(request.region)?.name || documentRecordValue(request.region)?.title || null,
+      requestState: request.requestState || null,
+      requestedInterviewCount: positiveNumber(request.requestedInterviewCount, 0),
+    })),
+    strikes: {
+      activeCount: activeStrikes.length,
+      items: sanitizedStrikes,
+      totalCount: strikes.length,
+    },
+  };
 };
 
 const hasPriorCandidateSlotWarning = async (
@@ -6633,7 +6885,10 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       throw new ValidationError('Candidate account must be synced before interview offers can be checked.');
     }
 
-    const offers = await findCandidateInterviewSlotOffers(strapi, existingCandidate);
+    const [offers, requests] = await Promise.all([
+      findCandidateInterviewSlotOffers(strapi, existingCandidate),
+      findCandidateInterviewRequests(strapi, existingCandidate),
+    ]);
     const resolvedOffers: DocumentRecord[] = [];
 
     for (const offer of offers) {
@@ -6685,6 +6940,12 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
         firstName: existingCandidate.firstName,
       },
       generatedAt: new Date().toISOString(),
+      journey: await buildCandidateInterviewJourneySummary({
+        candidate: existingCandidate,
+        offers: resolvedOffers,
+        requests,
+        strapi,
+      }),
       offers: sanitizedOffers,
       rules: {
         candidateResponseSlaWorkingDays: 2,
@@ -7764,6 +8025,145 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
     return {
       feedbackReport: sanitizeCandidateFeedbackReport(updatedFeedback),
       flagged: true,
+      supportCase: candidateSupportCase,
+    };
+  },
+
+  async disputeCurrentCandidateInterviewStrike(
+    auth: Auth0State | undefined,
+    strikeDocumentId: string,
+    input: unknown,
+    requestContext: RequestContext = {}
+  ) {
+    if (!auth || auth.type !== 'auth0' || !auth.subject) {
+      throw new UnauthorizedError('Auth0 authentication is required.');
+    }
+
+    const existingCandidate = await findCandidateByAuthIdentity(strapi, auth.subject);
+
+    if (!existingCandidate?.documentId) {
+      throw new ValidationError('Candidate account must be synced before interview strikes can be disputed.');
+    }
+
+    const payload = validateInterviewStrikeDispute(input ?? {});
+    const strikes = await documents(strapi, 'api::candidate-interview-strike.candidate-interview-strike').findMany({
+      filters: {
+        candidate: {
+          documentId: existingCandidate.documentId,
+        },
+        documentId: strikeDocumentId,
+      },
+      limit: 1,
+      populate: ['candidate', 'enrollment', 'interview'],
+    });
+    const strike = strikes[0];
+
+    if (!strike?.documentId) {
+      throw new ValidationError('Interview strike could not be found.');
+    }
+
+    if (!['active', 'appealed', 'upheld'].includes(String(strike.strikeState || ''))) {
+      throw new ValidationError('This interview strike is not open for dispute.');
+    }
+
+    const now = new Date().toISOString();
+    const disputeCaseResult = await supportCaseService(strapi).ensureInterviewStrikeDisputeCase({
+      appealedAt: now,
+      candidate: existingCandidate,
+      reason: payload.reason,
+      strikeDocumentId: strike.documentId,
+      strikeNumber: positiveNumber(strike.strikeNumber, 0) || undefined,
+    });
+    const supportCase = disputeCaseResult.supportCase;
+
+    await supportCaseService(strapi).addMessage({
+      body: payload.reason,
+      candidate: existingCandidate,
+      direction: 'inbound',
+      messageType: 'candidate_message',
+      metadata: {
+        kind: 'candidate_interview_strike_dispute',
+        strikeDocumentId: strike.documentId,
+        strikeNumber: positiveNumber(strike.strikeNumber, 0) || null,
+      },
+      sender: {
+        displayName: candidateMessageDisplayName(existingCandidate),
+        email: existingCandidate.email,
+        id: existingCandidate.documentId,
+        type: 'candidate',
+      },
+      subject: 'Candidate interview strike dispute',
+      supportCase,
+      visibility: 'public',
+    });
+
+    const updatedStrike = await documents(strapi, 'api::candidate-interview-strike.candidate-interview-strike').update({
+      documentId: strike.documentId,
+      data: {
+        appealedAt: strike.appealedAt || now,
+        metadata: {
+          ...objectValue(strike.metadata),
+          lastDisputeReason: payload.reason,
+          lastDisputeRequestId: requestContext.requestId,
+          supportCaseDocumentId: supportCase.documentId || null,
+        },
+        strikeState: 'appealed',
+      },
+      populate: ['candidate', 'enrollment', 'interview'],
+    });
+
+    await auditEvents(strapi).record({
+      actorEmail: existingCandidate.email,
+      actorId: auth.subject,
+      actorType: 'candidate',
+      eventCategory: 'interview',
+      eventType: 'candidate.interview_strike_disputed',
+      ipAddress: requestContext.ipAddress,
+      metadata: {
+        strikeDocumentId: strike.documentId,
+        supportCaseCreated: disputeCaseResult.created,
+        supportCaseDocumentId: supportCase.documentId,
+      },
+      occurredAt: now,
+      requestId: requestContext.requestId,
+      source: 'candidate_dashboard',
+      subjectDisplayName: candidateMessageDisplayName(existingCandidate),
+      subjectId: strike.documentId,
+      subjectType: 'candidate_interview_strike',
+      userAgent: requestContext.userAgent,
+    });
+
+    await Promise.all([
+      publishAdminRealtimeEvent(
+        {
+          channels: ['support'],
+          resourceKey: supportCase.documentId,
+          resourceType: 'support_case',
+          type: 'support_cases_changed',
+        },
+        strapi.log
+      ),
+      publishAdminRealtimeEvent(
+        {
+          channels: ['operations'],
+          resourceKey: supportCase.documentId,
+          resourceType: 'support_case',
+          type: 'admin_tasks_changed',
+        },
+        strapi.log
+      ),
+    ]);
+
+    const candidateSupportCase = supportCase.documentId
+      ? await supportCaseService(strapi).getCaseForCandidate({
+          candidateDocumentId: existingCandidate.documentId,
+          supportCaseDocumentId: supportCase.documentId,
+        })
+      : null;
+
+    return {
+      disputed: true,
+      strike: sanitizeCandidateInterviewStrike(updatedStrike, supportCase),
       supportCase: candidateSupportCase,
     };
   },
