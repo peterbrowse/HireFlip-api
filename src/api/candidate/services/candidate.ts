@@ -3127,14 +3127,14 @@ const buildCandidateInterviewJourneySummary = async ({
       requirements: [
         {
           detail: 'Complete your interview CV/profile so HireFlip can route you to suitable employers.',
-          href: '/settings/profile',
+          href: '/settings',
           key: 'profile',
           label: 'CV profile',
           state: profileComplete ? 'complete' : 'required',
         },
         {
           detail: 'Submit your first interview availability so HireFlip can match you to realistic slots.',
-          href: '/settings/profile',
+          href: '/settings',
           key: 'availability',
           label: 'First availability',
           state: availabilitySubmitted ? 'complete' : 'required',
