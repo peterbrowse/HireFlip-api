@@ -173,6 +173,17 @@ export const getAuth0ManagementClient = () => {
       );
     },
 
+    async unblockUser(userId: string) {
+      await requestManagementApi<Auth0User>(
+        config,
+        `/users/${encodeURIComponent(userId)}`,
+        {
+          body: JSON.stringify({ blocked: false }),
+          method: 'PATCH',
+        }
+      );
+    },
+
     async createPasswordSetupTicket({
       inviteUrl,
       userId,

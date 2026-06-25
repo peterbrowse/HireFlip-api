@@ -1,4 +1,5 @@
 import { errors, validateZodSchema, z } from '@strapi/utils';
+import { getAuth0ManagementClient } from '../../../utils/auth0-management';
 
 const { ForbiddenError, ValidationError } = errors;
 
@@ -159,6 +160,13 @@ const candidateProfileUpdateSchema = candidateDetailSchema
   })
   .strict();
 
+const candidateAccountActionSchema = candidateDetailSchema
+  .extend({
+    action: z.enum(['archive', 'blacklist', 'reactivate', 'suspend']),
+    reasonNote: z.string().trim().min(3).max(4000),
+  })
+  .strict();
+
 const supportCreateSchema = candidateDetailSchema
   .extend({
     assignedTo: z
@@ -199,6 +207,7 @@ const strikeActionSchema = candidateDetailSchema
 
 const validateListCandidates = validateZodSchema(listCandidatesSchema);
 const validateCandidateDetail = validateZodSchema(candidateDetailSchema);
+const validateCandidateAccountAction = validateZodSchema(candidateAccountActionSchema);
 const validateCandidateProfileUpdate = validateZodSchema(candidateProfileUpdateSchema);
 const validateSupportCreate = validateZodSchema(supportCreateSchema);
 const validateStrikeAction = validateZodSchema(strikeActionSchema);
@@ -288,6 +297,7 @@ const candidatePermissions = (session: AdminSession) => ({
   canEditDateOfBirth: hasAnyRole(session, ['super_admin']),
   canEditProfile: hasAnyRole(session, ['admin', 'super_admin', 'support']),
   canExportGdpr: hasAnyRole(session, ['super_admin']),
+  canManageAccount: hasAnyRole(session, ['admin', 'super_admin']),
   canManageStrikes: hasAnyRole(session, ['admin', 'super_admin']),
   canViewSensitiveFields: hasAnyRole(session, ['admin', 'super_admin']),
   canViewAllCandidates: hasAnyRole(session, ['admin', 'super_admin', 'support']),
@@ -1086,6 +1096,115 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
     await assertCandidateAccess(strapi, session, body.candidateDocumentId);
 
     return buildCandidateDetail(strapi, session, candidate);
+  },
+
+  async accountAction(input: unknown, requestContext: RequestContext = {}) {
+    const body = validateCandidateAccountAction(input);
+    const session = await assertCandidateSession(strapi, body.sessionToken, requestContext);
+    const permissions = candidatePermissions(session);
+    const candidate = await findCandidateByDocumentId(strapi, body.candidateDocumentId);
+
+    if (!candidate) {
+      throw new ValidationError('Candidate could not be found.');
+    }
+
+    await assertCandidateAccess(strapi, session, body.candidateDocumentId);
+
+    if (!permissions.canManageAccount) {
+      throw new ForbiddenError('Admin or Super Admin access is required to manage candidate accounts.');
+    }
+
+    const previousState = {
+      accountRestrictionStatus: candidate.accountRestrictionStatus || 'active',
+      candidateState: candidate.candidateState || null,
+    };
+    const now = new Date().toISOString();
+    const actionStateMap = {
+      archive: {
+        accountRestrictionStatus: 'suspended',
+        candidateState: 'archived',
+        eventType: 'admin.candidate_account_archived',
+        shouldBlockAuth0: true,
+      },
+      blacklist: {
+        accountRestrictionStatus: 'blacklisted',
+        candidateState: candidate.candidateState || 'account_created',
+        eventType: 'admin.candidate_account_blacklisted',
+        shouldBlockAuth0: true,
+      },
+      reactivate: {
+        accountRestrictionStatus: 'active',
+        candidateState:
+          ['archived', 'blacklisted', 'suspended'].includes(String(candidate.candidateState || ''))
+            ? 'account_created'
+            : candidate.candidateState || 'account_created',
+        eventType: 'admin.candidate_account_reactivated',
+        shouldBlockAuth0: false,
+      },
+      suspend: {
+        accountRestrictionStatus: 'suspended',
+        candidateState: candidate.candidateState || 'account_created',
+        eventType: 'admin.candidate_account_suspended',
+        shouldBlockAuth0: true,
+      },
+    }[body.action];
+
+    if (!actionStateMap) {
+      throw new ValidationError('Candidate account action is not supported.');
+    }
+
+    const authIdentityId = stringValue(candidate.authIdentityId);
+
+    if (authIdentityId) {
+      if (actionStateMap.shouldBlockAuth0) {
+        await getAuth0ManagementClient().blockUser(authIdentityId);
+      } else {
+        await getAuth0ManagementClient().unblockUser(authIdentityId);
+      }
+    }
+
+    const updatedCandidate = await documents(strapi, 'api::candidate.candidate').update({
+      documentId: body.candidateDocumentId,
+      data: {
+        accountRestrictionAppealStatus:
+          body.action === 'reactivate' ? 'not_applicable' : candidate.accountRestrictionAppealStatus || 'not_applicable',
+        accountRestrictedAt: body.action === 'reactivate' ? null : now,
+        accountRestrictedBy: body.action === 'reactivate' ? null : session.user.email,
+        accountRestrictionMessage: body.action === 'reactivate' ? null : body.reasonNote,
+        accountRestrictionReason: body.action === 'reactivate' ? null : body.action,
+        accountRestrictionStatus: actionStateMap.accountRestrictionStatus,
+        candidateState: actionStateMap.candidateState,
+      },
+      populate: ['profileImage'],
+    });
+
+    await recordAdminCandidateAudit(
+      strapi,
+      session,
+      updatedCandidate,
+      actionStateMap.eventType,
+      requestContext,
+      {
+        metadata: {
+          action: body.action,
+          auth0UserUpdated: Boolean(authIdentityId),
+          reasonNote: body.reasonNote,
+        },
+        newState: {
+          accountRestrictionStatus: updatedCandidate.accountRestrictionStatus || null,
+          candidateState: updatedCandidate.candidateState || null,
+        },
+        previousState,
+        severity: body.action === 'reactivate' ? 'info' : 'warning',
+      }
+    );
+
+    return {
+      action: body.action,
+      candidate: await buildCandidateDetail(strapi, session, updatedCandidate),
+      updated: true,
+      user: session.user,
+    };
   },
 
   async updateProfile(input: unknown, requestContext: RequestContext = {}) {

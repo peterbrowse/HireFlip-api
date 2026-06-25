@@ -36,6 +36,15 @@ export default {
     },
     {
       method: 'POST',
+      path: '/internal/admin/candidates/account/action',
+      handler: 'admin-candidate.accountAction',
+      config: {
+        auth: false,
+        policies: [adminDashboardServicePolicy],
+      },
+    },
+    {
+      method: 'POST',
       path: '/internal/admin/candidates/support/create',
       handler: 'admin-candidate.createSupportCase',
       config: {
