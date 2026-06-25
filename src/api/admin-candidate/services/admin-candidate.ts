@@ -831,11 +831,17 @@ const queueCandidateAmendmentNote = async ({
     template: {
       key: 'generic_branded_message',
       variables: {
-        body: note,
+        bodyLines: [
+          `Hi ${candidate.firstName || 'there'},`,
+          'A member of the HireFlip team has made an update to your profile.',
+          note,
+          'You can review your dashboard at any time.',
+        ],
         ctaLabel: 'Open your dashboard',
         ctaUrl: trimTrailingSlash(process.env.CANDIDATE_DASHBOARD_BASE_URL || 'http://localhost:3001'),
+        heading: subject,
         preheader: 'A HireFlip team member has updated your profile.',
-        title: subject,
+        subject,
       },
     },
     text,
