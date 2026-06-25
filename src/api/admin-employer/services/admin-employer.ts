@@ -88,6 +88,9 @@ type DocumentRecord = Record<string, unknown> & {
   region?: string;
   regionCommitments?: DocumentRecord[];
   roleTitle?: string;
+  salesOwnerStaffDisplayName?: string;
+  salesOwnerStaffEmail?: string;
+  salesOwnerStaffUserId?: string;
   slug?: string;
   sortOrder?: number;
   state?: string;
@@ -449,6 +452,11 @@ const publicEmployer = (employer: DocumentRecord, invites: DocumentRecord[] = []
     region: regionsLabel,
     regionNames: regionNames(regions),
     regions,
+    salesOwner: {
+      displayName: employer.salesOwnerStaffDisplayName || null,
+      email: employer.salesOwnerStaffEmail || null,
+      id: employer.salesOwnerStaffUserId || null,
+    },
     updatedAt: employer.updatedAt || null,
   };
 };
@@ -1280,6 +1288,9 @@ export default ({ strapi }) => ({
             connect: operatingRegionConnections,
           },
           region: primaryRegion,
+          salesOwnerStaffDisplayName: session.user.displayName,
+          salesOwnerStaffEmail: session.user.email,
+          salesOwnerStaffUserId: session.user.id,
         },
       });
     } else {
@@ -1301,6 +1312,9 @@ export default ({ strapi }) => ({
           interviewCommitmentVolume: body.interviewCommitmentVolume ?? null,
           operatingRegions: regionSetRelationData(operatingRegions),
           region: primaryRegion,
+          salesOwnerStaffDisplayName: employer.salesOwnerStaffDisplayName || session.user.displayName,
+          salesOwnerStaffEmail: employer.salesOwnerStaffEmail || session.user.email,
+          salesOwnerStaffUserId: employer.salesOwnerStaffUserId || session.user.id,
         },
       });
     }

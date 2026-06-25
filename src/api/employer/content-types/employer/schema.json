@@ -33,6 +33,18 @@
       "type": "string",
       "maxLength": 120
     },
+    "salesOwnerStaffUserId": {
+      "type": "string",
+      "maxLength": 160
+    },
+    "salesOwnerStaffEmail": {
+      "type": "email",
+      "maxLength": 254
+    },
+    "salesOwnerStaffDisplayName": {
+      "type": "string",
+      "maxLength": 240
+    },
     "operatingRegions": {
       "type": "relation",
       "relation": "manyToMany",
