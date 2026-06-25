@@ -984,9 +984,10 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
     const scopedCandidateIds = permissions.canViewAllCandidates
       ? null
       : await findSalesScopedCandidateIds(strapi, session);
+    const stateFilter = body.state || 'all';
     const candidates = await documents(strapi, 'api::candidate.candidate').findMany({
       filters: {
-        ...(body.state ? { candidateState: body.state } : {}),
+        ...(stateFilter !== 'all' ? { candidateState: stateFilter } : {}),
         ...(body.region ? { region: body.region } : {}),
         ...(body.sector ? { sector: body.sector } : {}),
       },
@@ -1008,6 +1009,10 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
       }
 
       visibleScopedCount += 1;
+
+      if (stateFilter === 'all' && candidate.candidateState === 'archived') {
+        continue;
+      }
 
       const [profile, enrollments, strikes, supportCases] = await Promise.all([
         latestCandidateProfile(strapi, candidateDocumentId),
