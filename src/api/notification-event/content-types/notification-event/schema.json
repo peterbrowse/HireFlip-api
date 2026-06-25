@@ -52,13 +52,19 @@
       "type": "enumeration",
       "enum": [
         "queued",
+        "processed",
         "scheduled",
         "sending",
         "sent",
         "delivered",
+        "deferred",
         "failed",
+        "bounced",
+        "dropped",
+        "blocked",
         "cancelled",
-        "suppressed"
+        "suppressed",
+        "spam_reported"
       ],
       "default": "queued",
       "required": true

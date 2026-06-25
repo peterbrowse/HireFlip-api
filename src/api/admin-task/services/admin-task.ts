@@ -776,6 +776,46 @@ const notificationTask = (event: DocumentRecord): AdminTaskDraft | null => {
   };
 };
 
+const notificationFailureStates = [
+  'failed',
+  'bounced',
+  'dropped',
+  'blocked',
+  'suppressed',
+  'spam_reported',
+];
+
+const isHighValueNotificationEvent = (event: DocumentRecord) => {
+  const haystack = [
+    event.eventType,
+    event.templateKey,
+    event.relatedType,
+    event.priority,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+
+  if (['high', 'urgent'].includes(String(event.priority || ''))) {
+    return true;
+  }
+
+  return [
+    '2fa',
+    'otp',
+    'staff',
+    'invite',
+    'support',
+    'refund',
+    'interview',
+    'feedback',
+    'appeal',
+    'amendment',
+    'payment',
+    'enrollment',
+  ].some((keyword) => haystack.includes(keyword));
+};
+
 const auditTask = (event: DocumentRecord): AdminTaskDraft | null => {
   const documentId = getDocumentId(event);
 
@@ -1194,13 +1234,18 @@ const collectAssessmentAppealTasks = async (strapi: StrapiDocumentService) => {
 const collectNotificationTasks = async (strapi: StrapiDocumentService) => {
   const events = await documents(strapi, 'api::notification-event.notification-event').findMany({
     filters: {
-      deliveryState: 'failed',
+      deliveryState: {
+        $in: notificationFailureStates,
+      },
     },
     limit: 100,
-    sort: ['failedAt:desc', 'createdAt:desc'],
+    sort: ['failedAt:desc', 'updatedAt:desc', 'createdAt:desc'],
   });
 
-  return events.map(notificationTask).filter((task): task is AdminTaskDraft => Boolean(task));
+  return events
+    .filter(isHighValueNotificationEvent)
+    .map(notificationTask)
+    .filter((task): task is AdminTaskDraft => Boolean(task));
 };
 
 const collectAuditTasks = async (strapi: StrapiDocumentService) => {

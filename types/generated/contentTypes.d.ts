@@ -596,6 +596,9 @@ export interface ApiAdminTaskAdminTask extends Struct.CollectionTypeSchema {
         'refund',
         'reservation',
         'enrollment',
+        'support_case',
+        'interview_feedback',
+        'interview',
         'notification_event',
         'audit_event',
       ]
@@ -617,8 +620,11 @@ export interface ApiAdminTaskAdminTask extends Struct.CollectionTypeSchema {
     taskType: Schema.Attribute.Enumeration<
       [
         'assessment_appeal',
+        'ai_feedback_review',
+        'interview_operation',
         'payment_review',
         'refund_review',
+        'support_case',
         'notification_failure',
         'system_alert',
       ]
@@ -867,6 +873,8 @@ export interface ApiCandidateInterviewStrikeCandidateInterviewStrike
       [
         'candidate_no_show',
         'candidate_declined_confirmed_interview',
+        'candidate_declined_all_slots',
+        'candidate_missed_slot_response_deadline',
         'admin_applied',
         'other',
       ]
@@ -901,6 +909,9 @@ export interface ApiCandidateProfileCandidateProfile
   };
   attributes: {
     availability: Schema.Attribute.String;
+    availabilityConfirmedAt: Schema.Attribute.DateTime;
+    availabilityExpiresAt: Schema.Attribute.DateTime;
+    availabilityNote: Schema.Attribute.Text;
     candidate: Schema.Attribute.Relation<
       'manyToOne',
       'api::candidate.candidate'
@@ -909,12 +920,17 @@ export interface ApiCandidateProfileCandidateProfile
     createdAt: Schema.Attribute.DateTime;
     createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
+    earliestStartDate: Schema.Attribute.Date;
     education: Schema.Attribute.JSON;
     experience: Schema.Attribute.JSON;
     generatedCvFile: Schema.Attribute.Relation<
       'oneToOne',
       'api::stored-file.stored-file'
     >;
+    interviewFormatPreference: Schema.Attribute.Enumeration<
+      ['in_person_preferred', 'remote_acceptable', 'no_preference']
+    >;
+    linkedinUrl: Schema.Attribute.String;
     locale: Schema.Attribute.String & Schema.Attribute.Private;
     localizations: Schema.Attribute.Relation<
       'oneToMany',
@@ -923,19 +939,33 @@ export interface ApiCandidateProfileCandidateProfile
       Schema.Attribute.Private;
     location: Schema.Attribute.String;
     metadata: Schema.Attribute.JSON;
+    portfolioUrl: Schema.Attribute.String;
+    preferredWorkStyle: Schema.Attribute.Enumeration<
+      ['in_person', 'hybrid', 'remote', 'no_preference']
+    >;
     profileState: Schema.Attribute.Enumeration<
       ['draft', 'in_review', 'completed', 'archived']
     > &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'draft'>;
+    projects: Schema.Attribute.JSON;
     publishedAt: Schema.Attribute.DateTime;
+    readinessOverviewAcknowledgedAt: Schema.Attribute.DateTime;
     recruitmentPlatformVisibility: Schema.Attribute.Enumeration<
       ['not_set', 'visible', 'hidden']
     > &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'not_set'>;
+    recruitmentVisibilityWordingVersion: Schema.Attribute.String;
     skills: Schema.Attribute.JSON;
     summary: Schema.Attribute.Text;
+    targetRoleTitle: Schema.Attribute.String;
+    targetRoleType: Schema.Attribute.Enumeration<
+      ['full_time', 'part_time', 'apprenticeship_internship', 'flexible']
+    >;
+    targetSector: Schema.Attribute.String;
+    targetSectorLabel: Schema.Attribute.String;
+    unavailableDates: Schema.Attribute.JSON;
     updatedAt: Schema.Attribute.DateTime;
     updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
@@ -2338,18 +2368,34 @@ export interface ApiEmployerCapacityClaimEmployerCapacityClaim
     createdAt: Schema.Attribute.DateTime;
     createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
+    currentlyOpenAt: Schema.Attribute.DateTime;
+    currentlyOpenByContact: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::employer-contact.employer-contact'
+    >;
+    currentlyOpenExpiresAt: Schema.Attribute.DateTime;
     declinedAt: Schema.Attribute.DateTime;
     employer: Schema.Attribute.Relation<'manyToOne', 'api::employer.employer'>;
     employerContact: Schema.Attribute.Relation<
       'manyToOne',
       'api::employer-contact.employer-contact'
     >;
+    employerResponseReminderCount: Schema.Attribute.Integer &
+      Schema.Attribute.Required &
+      Schema.Attribute.SetMinMax<
+        {
+          min: 0;
+        },
+        number
+      > &
+      Schema.Attribute.DefaultTo<0>;
     expiresAt: Schema.Attribute.DateTime;
     fulfilledAt: Schema.Attribute.DateTime;
     interviewRequest: Schema.Attribute.Relation<
       'manyToOne',
       'api::interview-request.interview-request'
     >;
+    lastEmployerResponseReminderSentAt: Schema.Attribute.DateTime;
     locale: Schema.Attribute.String & Schema.Attribute.Private;
     localizations: Schema.Attribute.Relation<
       'oneToMany',
@@ -2364,9 +2410,17 @@ export interface ApiEmployerCapacityClaimEmployerCapacityClaim
       'api::class-area.class-area'
     >;
     releasedAt: Schema.Attribute.DateTime;
+    releaseNote: Schema.Attribute.Text;
     releaseReason: Schema.Attribute.Enumeration<
       [
         'employer_declined',
+        'contact_reschedule_requested',
+        'no_availability',
+        'wrong_region',
+        'role_paused',
+        'contact_unavailable',
+        'capacity_changed',
+        'candidate_declined_slots',
         'expired',
         'admin_released',
         'slot_options_submitted',
@@ -2375,6 +2429,16 @@ export interface ApiEmployerCapacityClaimEmployerCapacityClaim
         'other',
       ]
     >;
+    requiredSlotCount: Schema.Attribute.Integer &
+      Schema.Attribute.Required &
+      Schema.Attribute.SetMinMax<
+        {
+          max: 3;
+          min: 1;
+        },
+        number
+      > &
+      Schema.Attribute.DefaultTo<3>;
     slotOffers: Schema.Attribute.Relation<
       'oneToMany',
       'api::interview-slot-offer.interview-slot-offer'
@@ -2625,6 +2689,125 @@ export interface ApiEmployerRegionCommitmentEmployerRegionCommitment
   };
 }
 
+export interface ApiEmployerReliabilityEventEmployerReliabilityEvent
+  extends Struct.CollectionTypeSchema {
+  collectionName: 'employer_reliability_events';
+  info: {
+    description: 'Operational warning and strike records for employer SLA reliability.';
+    displayName: 'Employer Reliability Event';
+    pluralName: 'employer-reliability-events';
+    singularName: 'employer-reliability-event';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    acknowledgedAt: Schema.Attribute.DateTime;
+    actionedByEmail: Schema.Attribute.Email &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 254;
+      }>;
+    actionedByName: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 180;
+      }>;
+    candidate: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::candidate.candidate'
+    >;
+    candidateNote: Schema.Attribute.Text;
+    candidateNoteSentAt: Schema.Attribute.DateTime;
+    capacityClaim: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::employer-capacity-claim.employer-capacity-claim'
+    >;
+    clearedAt: Schema.Attribute.DateTime;
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    employer: Schema.Attribute.Relation<'manyToOne', 'api::employer.employer'>;
+    employerContact: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::employer-contact.employer-contact'
+    >;
+    employerNotificationSentAt: Schema.Attribute.DateTime;
+    eventAt: Schema.Attribute.DateTime & Schema.Attribute.Required;
+    eventState: Schema.Attribute.Enumeration<
+      ['active', 'acknowledged', 'cleared', 'reset']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'active'>;
+    eventType: Schema.Attribute.Enumeration<
+      [
+        'capacity_claim_expired',
+        'interview_details_overdue',
+        'interview_details_released',
+        'feedback_overdue',
+        'employer_no_show',
+        'employer_cancelled',
+        'reschedule_requested',
+        'manual_warning',
+        'manual_strike',
+        'reliability_reset',
+      ]
+    > &
+      Schema.Attribute.Required;
+    internalNote: Schema.Attribute.Text;
+    interview: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::interview.interview'
+    >;
+    leadCcEmail: Schema.Attribute.Email &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 254;
+      }>;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::employer-reliability-event.employer-reliability-event'
+    > &
+      Schema.Attribute.Private;
+    metadata: Schema.Attribute.JSON;
+    outcome: Schema.Attribute.Enumeration<
+      ['warning', 'strike', 'note', 'reset']
+    > &
+      Schema.Attribute.Required;
+    publishedAt: Schema.Attribute.DateTime;
+    resetAt: Schema.Attribute.DateTime;
+    sourceDocumentId: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 160;
+      }>;
+    sourceType: Schema.Attribute.Enumeration<
+      [
+        'interview',
+        'employer_capacity_claim',
+        'interview_request',
+        'admin',
+        'system',
+      ]
+    > &
+      Schema.Attribute.Required;
+    strikeNumber: Schema.Attribute.Integer &
+      Schema.Attribute.SetMinMax<
+        {
+          min: 0;
+        },
+        number
+      > &
+      Schema.Attribute.DefaultTo<0>;
+    summary: Schema.Attribute.Text;
+    title: Schema.Attribute.String &
+      Schema.Attribute.Required &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 180;
+      }>;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+  };
+}
+
 export interface ApiEmployerEmployer extends Struct.CollectionTypeSchema {
   collectionName: 'employers';
   info: {
@@ -2748,7 +2931,23 @@ export interface ApiEmployerEmployer extends Struct.CollectionTypeSchema {
       'oneToMany',
       'api::employer-region-commitment.employer-region-commitment'
     >;
+    reliabilityEvents: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::employer-reliability-event.employer-reliability-event'
+    >;
     roleInterests: Schema.Attribute.JSON;
+    salesOwnerStaffDisplayName: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 240;
+      }>;
+    salesOwnerStaffEmail: Schema.Attribute.Email &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 254;
+      }>;
+    salesOwnerStaffUserId: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 160;
+      }>;
     sectorInterests: Schema.Attribute.JSON;
     updatedAt: Schema.Attribute.DateTime;
     updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
@@ -2873,6 +3072,88 @@ export interface ApiEnrollmentEnrollment extends Struct.CollectionTypeSchema {
   };
 }
 
+export interface ApiInterviewFeedbackInviteInterviewFeedbackInvite
+  extends Struct.CollectionTypeSchema {
+  collectionName: 'interview_feedback_invites';
+  info: {
+    description: 'One-time token-guarded invite for additional interview attendees to submit feedback.';
+    displayName: 'Interview Feedback Invite';
+    pluralName: 'interview-feedback-invites';
+    singularName: 'interview-feedback-invite';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    createdByEmployerContact: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::employer-contact.employer-contact'
+    >;
+    deliveryFailureMessage: Schema.Attribute.Text;
+    deliveryState: Schema.Attribute.Enumeration<
+      ['not_required', 'queued', 'failed']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'not_required'>;
+    employer: Schema.Attribute.Relation<'manyToOne', 'api::employer.employer'>;
+    expiresAt: Schema.Attribute.DateTime & Schema.Attribute.Required;
+    feedback: Schema.Attribute.Relation<
+      'oneToOne',
+      'api::interview-feedback.interview-feedback'
+    >;
+    interview: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::interview.interview'
+    >;
+    inviteEmail: Schema.Attribute.Email &
+      Schema.Attribute.Required &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 254;
+      }>;
+    inviteeName: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 160;
+      }>;
+    inviteeRoleTitle: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 160;
+      }>;
+    inviteState: Schema.Attribute.Enumeration<
+      ['pending', 'submitted', 'revoked', 'expired']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'pending'>;
+    lastSentAt: Schema.Attribute.DateTime;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::interview-feedback-invite.interview-feedback-invite'
+    > &
+      Schema.Attribute.Private;
+    metadata: Schema.Attribute.JSON;
+    notificationServiceJobId: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 160;
+      }>;
+    publishedAt: Schema.Attribute.DateTime;
+    revocationReason: Schema.Attribute.Text;
+    revokedAt: Schema.Attribute.DateTime;
+    submittedAt: Schema.Attribute.DateTime;
+    tokenHash: Schema.Attribute.String &
+      Schema.Attribute.Required &
+      Schema.Attribute.Unique &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 128;
+      }>;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+  };
+}
+
 export interface ApiInterviewFeedbackInterviewFeedback
   extends Struct.CollectionTypeSchema {
   collectionName: 'interview_feedback';
@@ -2886,10 +3167,76 @@ export interface ApiInterviewFeedbackInterviewFeedback
     draftAndPublish: false;
   };
   attributes: {
+    aiMetadata: Schema.Attribute.JSON;
+    aiModel: Schema.Attribute.String;
+    aiPromptVersion: Schema.Attribute.String;
+    aiProvider: Schema.Attribute.String;
+    candidateReportConcernFlaggedAt: Schema.Attribute.DateTime;
+    candidateReportConcernReason: Schema.Attribute.Text;
+    candidateReportConcernResolution: Schema.Attribute.Text;
+    candidateReportConcernResolvedAt: Schema.Attribute.DateTime;
+    candidateReportConcernResolvedByStaffEmail: Schema.Attribute.Email &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 254;
+      }>;
+    candidateReportConcernReviewedAt: Schema.Attribute.DateTime;
+    candidateReportConcernState: Schema.Attribute.Enumeration<
+      ['none', 'open', 'dismissed', 'resolved', 'regenerated']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'none'>;
+    candidateReportConcernSupportCase: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::support-case.support-case'
+    >;
+    candidateReportConclusion: Schema.Attribute.Text;
+    candidateReportFailureCategory: Schema.Attribute.Enumeration<
+      [
+        'configuration',
+        'input',
+        'provider',
+        'timeout',
+        'validation',
+        'service_unavailable',
+        'unknown',
+      ]
+    >;
+    candidateReportFailureFirstDetectedAt: Schema.Attribute.DateTime;
+    candidateReportFailureReason: Schema.Attribute.Text;
+    candidateReportGeneratedAt: Schema.Attribute.DateTime;
+    candidateReportImprovements: Schema.Attribute.Text;
+    candidateReportIntro: Schema.Attribute.Text;
+    candidateReportLastAttemptAt: Schema.Attribute.DateTime;
+    candidateReportManualDraftSavedAt: Schema.Attribute.DateTime;
+    candidateReportManualDraftSavedByStaffEmail: Schema.Attribute.Email &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 254;
+      }>;
+    candidateReportNextRetryAt: Schema.Attribute.DateTime;
+    candidateReportRetryCount: Schema.Attribute.Integer &
+      Schema.Attribute.SetMinMax<
+        {
+          min: 0;
+        },
+        number
+      > &
+      Schema.Attribute.DefaultTo<0>;
+    candidateReportState: Schema.Attribute.Enumeration<
+      ['pending', 'generated', 'failed', 'approved', 'manually_edited']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'pending'>;
+    candidateReportStrengths: Schema.Attribute.Text;
+    candidateReportTakeaways: Schema.Attribute.JSON;
+    candidateReportVisibleAt: Schema.Attribute.DateTime;
     concerns: Schema.Attribute.Text;
     createdAt: Schema.Attribute.DateTime;
     createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
+    feedbackInvite: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::interview-feedback-invite.interview-feedback-invite'
+    >;
     interview: Schema.Attribute.Relation<
       'manyToOne',
       'api::interview.interview'
@@ -2916,13 +3263,20 @@ export interface ApiInterviewFeedbackInterviewFeedback
     > &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'unknown'>;
+    previousTakeawayAssessment: Schema.Attribute.Text;
     publishedAt: Schema.Attribute.DateTime;
     rating: Schema.Attribute.Integer;
     strengths: Schema.Attribute.Text;
     submittedAt: Schema.Attribute.DateTime;
     submittedById: Schema.Attribute.String;
     submittedByType: Schema.Attribute.Enumeration<
-      ['candidate', 'employer_contact', 'admin', 'system']
+      [
+        'candidate',
+        'employer_contact',
+        'external_interviewer',
+        'admin',
+        'system',
+      ]
     > &
       Schema.Attribute.Required;
     updatedAt: Schema.Attribute.DateTime;
@@ -3073,9 +3427,27 @@ export interface ApiInterviewSlotOfferInterviewSlotOffer
       'manyToOne',
       'api::candidate.candidate'
     >;
+    candidateInterviewFormatPreference: Schema.Attribute.Enumeration<
+      ['in_person', 'remote', 'no_preference']
+    >;
     candidateNotifiedAt: Schema.Attribute.DateTime;
     candidateRespondedAt: Schema.Attribute.DateTime;
     candidateResponseDeadline: Schema.Attribute.DateTime;
+    candidateResponseReminderCount: Schema.Attribute.Integer &
+      Schema.Attribute.Required &
+      Schema.Attribute.SetMinMax<
+        {
+          min: 0;
+        },
+        number
+      > &
+      Schema.Attribute.DefaultTo<0>;
+    candidateWarningSentAt: Schema.Attribute.DateTime;
+    candidateWarningState: Schema.Attribute.Enumeration<
+      ['none', 'warning_sent', 'strike_applied']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'none'>;
     capacityClaim: Schema.Attribute.Relation<
       'manyToOne',
       'api::employer-capacity-claim.employer-capacity-claim'
@@ -3106,6 +3478,7 @@ export interface ApiInterviewSlotOfferInterviewSlotOffer
       'manyToOne',
       'api::interview-request.interview-request'
     >;
+    lastCandidateResponseReminderSentAt: Schema.Attribute.DateTime;
     locale: Schema.Attribute.String & Schema.Attribute.Private;
     localizations: Schema.Attribute.Relation<
       'oneToMany',
@@ -3129,6 +3502,16 @@ export interface ApiInterviewSlotOfferInterviewSlotOffer
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'submitted'>;
     publishedAt: Schema.Attribute.DateTime;
+    requiredSlotCount: Schema.Attribute.Integer &
+      Schema.Attribute.Required &
+      Schema.Attribute.SetMinMax<
+        {
+          max: 3;
+          min: 1;
+        },
+        number
+      > &
+      Schema.Attribute.DefaultTo<3>;
     selectedInterview: Schema.Attribute.Relation<
       'manyToOne',
       'api::interview.interview'
@@ -3187,6 +3570,10 @@ export interface ApiInterviewSlotInterviewSlot
     meetingUrl: Schema.Attribute.String;
     metadata: Schema.Attribute.JSON;
     publishedAt: Schema.Attribute.DateTime;
+    region: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::class-area.class-area'
+    >;
     slotOffer: Schema.Attribute.Relation<
       'manyToOne',
       'api::interview-slot-offer.interview-slot-offer'
@@ -3209,6 +3596,10 @@ export interface ApiInterviewSlotInterviewSlot
     updatedAt: Schema.Attribute.DateTime;
     updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
+    workSector: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::work-sector.work-sector'
+    >;
   };
 }
 
@@ -3224,10 +3615,12 @@ export interface ApiInterviewInterview extends Struct.CollectionTypeSchema {
     draftAndPublish: false;
   };
   attributes: {
+    arrivalInstructions: Schema.Attribute.Text;
     candidate: Schema.Attribute.Relation<
       'manyToOne',
       'api::candidate.candidate'
     >;
+    candidateInstructions: Schema.Attribute.Text;
     candidateStrikeApplied: Schema.Attribute.Boolean &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<false>;
@@ -3239,6 +3632,8 @@ export interface ApiInterviewInterview extends Struct.CollectionTypeSchema {
     createdAt: Schema.Attribute.DateTime;
     createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
+    detailsProvidedAt: Schema.Attribute.DateTime;
+    detailsUpdatedAt: Schema.Attribute.DateTime;
     employer: Schema.Attribute.Relation<'manyToOne', 'api::employer.employer'>;
     employerCancellation: Schema.Attribute.Boolean &
       Schema.Attribute.Required &
@@ -3247,10 +3642,39 @@ export interface ApiInterviewInterview extends Struct.CollectionTypeSchema {
       'manyToOne',
       'api::employer-contact.employer-contact'
     >;
+    employerDetailsDueAt: Schema.Attribute.DateTime;
+    employerDetailsEscalatedAt: Schema.Attribute.DateTime;
+    employerDetailsReleasedAt: Schema.Attribute.DateTime;
+    employerDetailsReleaseEligibleAt: Schema.Attribute.DateTime;
+    employerDetailsReleaseNotificationSentAt: Schema.Attribute.DateTime;
+    employerDetailsReleaseReason: Schema.Attribute.Enumeration<
+      ['employer_did_not_confirm', 'admin_released', 'other']
+    >;
+    employerDetailsReminderCount: Schema.Attribute.Integer &
+      Schema.Attribute.Required &
+      Schema.Attribute.SetMinMax<
+        {
+          min: 0;
+        },
+        number
+      > &
+      Schema.Attribute.DefaultTo<0>;
+    employerFeedbackReminderCount: Schema.Attribute.Integer &
+      Schema.Attribute.Required &
+      Schema.Attribute.SetMinMax<
+        {
+          min: 0;
+        },
+        number
+      > &
+      Schema.Attribute.DefaultTo<0>;
     enrollment: Schema.Attribute.Relation<
       'manyToOne',
       'api::enrollment.enrollment'
     >;
+    feedbackDueAt: Schema.Attribute.DateTime;
+    feedbackOverdueDetectedAt: Schema.Attribute.DateTime;
+    interviewerName: Schema.Attribute.String;
     interviewSlot: Schema.Attribute.Relation<
       'manyToOne',
       'api::interview-slot.interview-slot'
@@ -3259,6 +3683,7 @@ export interface ApiInterviewInterview extends Struct.CollectionTypeSchema {
       [
         'offered',
         'candidate_selected',
+        'awaiting_employer_details',
         'confirmed',
         'completed',
         'candidate_no_show',
@@ -3270,12 +3695,20 @@ export interface ApiInterviewInterview extends Struct.CollectionTypeSchema {
     > &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'offered'>;
+    lastEmployerDetailsReminderSentAt: Schema.Attribute.DateTime;
+    lastEmployerFeedbackReminderSentAt: Schema.Attribute.DateTime;
     locale: Schema.Attribute.String & Schema.Attribute.Private;
     localizations: Schema.Attribute.Relation<
       'oneToMany',
       'api::interview.interview'
     > &
       Schema.Attribute.Private;
+    locationDetails: Schema.Attribute.Text;
+    locationType: Schema.Attribute.Enumeration<
+      ['online', 'phone', 'in_person', 'to_be_confirmed']
+    > &
+      Schema.Attribute.DefaultTo<'to_be_confirmed'>;
+    meetingUrl: Schema.Attribute.String;
     metadata: Schema.Attribute.JSON;
     publishedAt: Schema.Attribute.DateTime;
     scheduledEndTime: Schema.Attribute.DateTime;
@@ -3313,13 +3746,19 @@ export interface ApiNotificationEventNotificationEvent
     deliveryState: Schema.Attribute.Enumeration<
       [
         'queued',
+        'processed',
         'scheduled',
         'sending',
         'sent',
         'delivered',
+        'deferred',
         'failed',
+        'bounced',
+        'dropped',
+        'blocked',
         'cancelled',
         'suppressed',
+        'spam_reported',
       ]
     > &
       Schema.Attribute.Required &
@@ -3577,6 +4016,50 @@ export interface ApiPaymentPayment extends Struct.CollectionTypeSchema {
     updatedAt: Schema.Attribute.DateTime;
     updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
+  };
+}
+
+export interface ApiPlatformSettingPlatformSetting
+  extends Struct.CollectionTypeSchema {
+  collectionName: 'platform_settings';
+  info: {
+    description: 'Operational settings owned by the core API.';
+    displayName: 'Platform Setting';
+    pluralName: 'platform-settings';
+    singularName: 'platform-setting';
+  };
+  options: {
+    draftAndPublish: false;
+  };
+  attributes: {
+    createdAt: Schema.Attribute.DateTime;
+    createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    description: Schema.Attribute.Text;
+    jsonValue: Schema.Attribute.JSON;
+    locale: Schema.Attribute.String & Schema.Attribute.Private;
+    localizations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::platform-setting.platform-setting'
+    > &
+      Schema.Attribute.Private;
+    numberValue: Schema.Attribute.Decimal;
+    publishedAt: Schema.Attribute.DateTime;
+    settingKey: Schema.Attribute.String &
+      Schema.Attribute.Required &
+      Schema.Attribute.Unique &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 160;
+        minLength: 1;
+      }>;
+    stringValue: Schema.Attribute.Text;
+    updatedAt: Schema.Attribute.DateTime;
+    updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
+      Schema.Attribute.Private;
+    updatedByStaffEmail: Schema.Attribute.Email &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 254;
+      }>;
   };
 }
 
@@ -5187,8 +5670,10 @@ declare module '@strapi/strapi' {
       'api::employer-contact.employer-contact': ApiEmployerContactEmployerContact;
       'api::employer-invite.employer-invite': ApiEmployerInviteEmployerInvite;
       'api::employer-region-commitment.employer-region-commitment': ApiEmployerRegionCommitmentEmployerRegionCommitment;
+      'api::employer-reliability-event.employer-reliability-event': ApiEmployerReliabilityEventEmployerReliabilityEvent;
       'api::employer.employer': ApiEmployerEmployer;
       'api::enrollment.enrollment': ApiEnrollmentEnrollment;
+      'api::interview-feedback-invite.interview-feedback-invite': ApiInterviewFeedbackInviteInterviewFeedbackInvite;
       'api::interview-feedback.interview-feedback': ApiInterviewFeedbackInterviewFeedback;
       'api::interview-request.interview-request': ApiInterviewRequestInterviewRequest;
       'api::interview-slot-offer.interview-slot-offer': ApiInterviewSlotOfferInterviewSlotOffer;
@@ -5198,6 +5683,7 @@ declare module '@strapi/strapi' {
       'api::offer.offer': ApiOfferOffer;
       'api::payment-webhook-event.payment-webhook-event': ApiPaymentWebhookEventPaymentWebhookEvent;
       'api::payment.payment': ApiPaymentPayment;
+      'api::platform-setting.platform-setting': ApiPlatformSettingPlatformSetting;
       'api::policy-document.policy-document': ApiPolicyDocumentPolicyDocument;
       'api::privacy-rights-request.privacy-rights-request': ApiPrivacyRightsRequestPrivacyRightsRequest;
       'api::public-interest-lead.public-interest-lead': ApiPublicInterestLeadPublicInterestLead;
