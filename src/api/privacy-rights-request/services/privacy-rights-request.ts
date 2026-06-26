@@ -1168,11 +1168,9 @@ const employerDataExport = async (
       populate: '*',
     }),
     documents(strapi, 'api::interview-feedback.interview-feedback').findMany({
-      filters: {
-        employerContact: {
-          documentId: contactDocumentId,
-        },
-      },
+      filters: includeCompany && employerDocumentId
+        ? { interview: { employer: { documentId: employerDocumentId } } }
+        : { interview: { employerContact: { documentId: contactDocumentId } } },
       limit: 1000,
       populate: '*',
     }),
