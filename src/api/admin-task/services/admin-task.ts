@@ -212,6 +212,8 @@ const supportCasePath = (supportCaseDocumentId: string) =>
   `/support/${encodeURIComponent(supportCaseDocumentId)}`;
 const aiFeedbackReviewPath = (feedbackDocumentId: string) =>
   `/support/ai-feedback/${encodeURIComponent(feedbackDocumentId)}`;
+const notificationIssuePath = (notificationEventDocumentId: string) =>
+  `/support/notification-issues/${encodeURIComponent(notificationEventDocumentId)}`;
 const interviewOperationsPath = (params?: Record<string, string | undefined>) => {
   const searchParams = new URLSearchParams();
 
@@ -742,11 +744,15 @@ const notificationTask = (event: DocumentRecord): AdminTaskDraft | null => {
     return null;
   }
 
+  if (objectValue(event.metadata).issueClearedAt) {
+    return null;
+  }
+
   const taskKey = `notification:${documentId}:failed`;
 
   return {
     actionLabel: 'Review event',
-    actionPath: taskDetailPath(taskKey),
+    actionPath: notificationIssuePath(documentId),
     metadata: {
       channel: event.channel,
       eventType: event.eventType,
@@ -757,6 +763,7 @@ const notificationTask = (event: DocumentRecord): AdminTaskDraft | null => {
       sourceDetectedAt: sourceTimestamp(event),
       sourceFailedAt: event.failedAt,
       templateKey: event.templateKey,
+      visibleRoleKeys: ['super_admin'],
     },
     priority: event.priority === 'urgent' ? 'urgent' : event.priority === 'high' ? 'high' : 'normal',
     relatedDocumentId: typeof event.relatedId === 'string' ? event.relatedId : undefined,
