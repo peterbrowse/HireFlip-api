@@ -33,6 +33,8 @@ type DocumentRecord = Record<string, unknown> & {
   companyName?: string;
   completedAt?: string;
   createdAt?: string;
+  candidateResponseDeadline?: string;
+  candidateRespondedAt?: string;
   documentId?: string;
   email?: string;
   employer?: DocumentRecord;
@@ -53,7 +55,10 @@ type DocumentRecord = Record<string, unknown> & {
   metadata?: unknown;
   name?: string;
   outcome?: string;
+  progressionState?: string;
+  progressionType?: string;
   region?: DocumentRecord;
+  requestedDetailsAt?: string;
   requestState?: string;
   scheduledEndTime?: string;
   scheduledStartTime?: string;
@@ -81,7 +86,8 @@ type OperationIssue =
   | 'details_pending'
   | 'details_released'
   | 'feedback_due'
-  | 'feedback_overdue';
+  | 'feedback_overdue'
+  | 'progression_expired';
 
 type OperationRow = {
   actionPath: string;
@@ -95,7 +101,7 @@ type OperationRow = {
   referenceAt: string | null;
   regionName: string | null;
   sourceDocumentId: string;
-  sourceType: 'interview' | 'interview_request';
+  sourceType: 'interview' | 'interview_request' | 'progression_request';
   statusLabel: string;
   summary: string;
   reliabilityEvent: {
@@ -122,6 +128,7 @@ const operationsSchema = z
         'details_released',
         'feedback_due',
         'feedback_overdue',
+        'progression_expired',
       ])
       .default('all'),
     search: z.string().trim().max(120).optional().transform((value) => value || undefined),
@@ -141,7 +148,7 @@ const actionSchema = z
     reliabilityEventDocumentId: z.string().trim().min(1).max(120).optional(),
     sessionToken: z.string().trim().min(32).max(512),
     sourceDocumentId: z.string().trim().min(1).max(160).optional(),
-    sourceType: z.enum(['admin', 'employer_capacity_claim', 'interview', 'interview_request', 'system']).optional(),
+    sourceType: z.enum(['admin', 'employer_capacity_claim', 'interview', 'interview_request', 'progression_request', 'system']).optional(),
     summary: z.string().trim().max(1000).optional().transform((value) => value || undefined),
     title: z.string().trim().max(180).optional().transform((value) => value || undefined),
   })
@@ -227,12 +234,14 @@ const issueLabels: Record<Exclude<OperationIssue, 'all'>, string> = {
   details_released: 'Details released',
   feedback_due: 'Feedback due',
   feedback_overdue: 'Feedback overdue',
+  progression_expired: 'Progression expired',
 };
 
 const reliabilityEventTypeByIssue: Partial<Record<Exclude<OperationIssue, 'all'>, string>> = {
   details_overdue: 'interview_details_overdue',
   details_released: 'interview_details_released',
   feedback_overdue: 'feedback_overdue',
+  progression_expired: 'candidate_progression_expired',
 };
 
 const priorityRank = {
@@ -323,6 +332,47 @@ const requestRow = (request: DocumentRecord): OperationRow | null => {
       request.insufficientCapacityReason || 'Insufficient employer interview capacity.',
       candidateName ? `Candidate: ${candidateName}` : null,
       typeof classRecord?.displayTitle === 'string' ? `Class: ${classRecord.displayTitle}` : null,
+    ].filter(Boolean).join(' / '),
+    reliabilityEvent: null,
+  };
+};
+
+const progressionRequestRow = (request: DocumentRecord): OperationRow | null => {
+  const documentId = getDocumentId(request);
+  const interview = documentRecordValue(request.interview);
+
+  if (!documentId) {
+    return null;
+  }
+
+  const candidateName = displayName(documentRecordValue(request.candidate));
+  const employer = employerName(request);
+  const referenceAt =
+    request.candidateRespondedAt ||
+    request.candidateResponseDeadline ||
+    request.requestedDetailsAt ||
+    request.updatedAt ||
+    request.createdAt ||
+    null;
+
+  return {
+    actionPath: `/interviews?issue=progression_expired&progression=${encodeURIComponent(documentId)}`,
+    candidateName,
+    dueAt: request.candidateResponseDeadline || null,
+    employerDocumentId: employerDocumentId(request),
+    employerName: employer,
+    issue: 'progression_expired',
+    issueLabel: issueLabels.progression_expired,
+    priority: 'high',
+    referenceAt,
+    regionName: interview ? regionName(interview) : null,
+    sourceDocumentId: documentId,
+    sourceType: 'progression_request',
+    statusLabel: 'No response received',
+    summary: [
+      'Candidate did not respond to employer progression request.',
+      candidateName ? `Candidate: ${candidateName}` : null,
+      employer ? `Employer: ${employer}` : null,
     ].filter(Boolean).join(' / '),
     reliabilityEvent: null,
   };
@@ -423,7 +473,7 @@ export default ({ strapi }) => ({
     const session = await assertSession(strapi, body.sessionToken, requestContext);
     const now = Date.now();
 
-    const [interviews, requests] = await Promise.all([
+    const [interviews, requests, progressionRequests] = await Promise.all([
       documents(strapi, 'api::interview.interview').findMany({
         filters: {
           interviewState: {
@@ -451,6 +501,21 @@ export default ({ strapi }) => ({
         limit: 100,
         populate: ['candidate', 'class', 'region'],
         sort: ['insufficientCapacityDetectedAt:desc', 'updatedAt:desc'],
+      }),
+      documents(strapi, 'api::offer.offer').findMany({
+        filters: {
+          progressionState: 'expired',
+        },
+        limit: 100,
+        populate: {
+          candidate: true,
+          employer: true,
+          interview: {
+            populate: ['interviewSlot'],
+          },
+          requestedByEmployerContact: true,
+        },
+        sort: ['candidateRespondedAt:desc', 'updatedAt:desc'],
       }),
     ]);
     const interviewDocumentIds = interviews
@@ -506,6 +571,7 @@ export default ({ strapi }) => ({
     }
 
     rows.push(...requests.map(requestRow));
+    rows.push(...progressionRequests.map(progressionRequestRow));
 
     const compactRows = rows.filter((row): row is OperationRow => Boolean(row));
     const reliabilitySourceDocumentIds = compactRows

@@ -33,11 +33,62 @@
         "requested",
         "candidate_notified",
         "details_released",
+        "accepted",
+        "declined",
+        "expired",
         "closed",
         "cancelled"
       ],
       "default": "requested",
       "required": true
+    },
+    "progressionType": {
+      "type": "enumeration",
+      "enum": [
+        "second_interview",
+        "final_interview",
+        "practical_task",
+        "introductory_call",
+        "offer_discussion",
+        "other"
+      ]
+    },
+    "candidateMessage": {
+      "type": "text"
+    },
+    "candidateResponse": {
+      "type": "enumeration",
+      "enum": [
+        "accepted",
+        "declined",
+        "expired"
+      ]
+    },
+    "candidateResponseDeadline": {
+      "type": "datetime"
+    },
+    "candidateRespondedAt": {
+      "type": "datetime"
+    },
+    "candidateDeclineReason": {
+      "type": "text"
+    },
+    "employerFollowUpDueAt": {
+      "type": "datetime"
+    },
+    "candidateFollowUpDueAt": {
+      "type": "datetime"
+    },
+    "followUpState": {
+      "type": "enumeration",
+      "enum": [
+        "not_due",
+        "due",
+        "sent",
+        "completed",
+        "cancelled"
+      ],
+      "default": "not_due"
     },
     "requestedByEmployerContact": {
       "type": "relation",

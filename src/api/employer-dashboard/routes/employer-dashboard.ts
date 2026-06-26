@@ -207,6 +207,24 @@ export default {
     },
     {
       method: 'POST',
+      path: '/internal/employer-dashboard/interviews/progression/detail',
+      handler: 'employer-dashboard.interviewProgressionDetail',
+      config: {
+        auth: false,
+        policies: [employerDashboardServicePolicy],
+      },
+    },
+    {
+      method: 'POST',
+      path: '/internal/employer-dashboard/interviews/progression/submit',
+      handler: 'employer-dashboard.submitInterviewProgression',
+      config: {
+        auth: false,
+        policies: [employerDashboardServicePolicy],
+      },
+    },
+    {
+      method: 'POST',
       path: '/internal/employer-dashboard/feedback/invites/create',
       handler: 'employer-dashboard.inviteInterviewFeedbackContributor',
       config: {

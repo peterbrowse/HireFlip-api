@@ -16,6 +16,7 @@ type EmployerDashboardService = {
   getCapacityClaim(input: unknown, context: RequestContext): Promise<unknown>;
   getInterviewFeedbackDetail(input: unknown, context: RequestContext): Promise<unknown>;
   getInterviewDetail(input: unknown, context: RequestContext): Promise<unknown>;
+  getInterviewProgressionDetail(input: unknown, context: RequestContext): Promise<unknown>;
   getOnboarding(input: unknown, context: RequestContext): Promise<unknown>;
   getOverview(input: unknown, context: RequestContext): Promise<unknown>;
   getSupportCase(input: unknown, context: RequestContext): Promise<unknown>;
@@ -29,6 +30,7 @@ type EmployerDashboardService = {
   updateProfileImage(input: unknown, file: unknown, context: RequestContext): Promise<unknown>;
   updateSettings(input: unknown, context: RequestContext): Promise<unknown>;
   submitInterviewFeedback(input: unknown, context: RequestContext): Promise<unknown>;
+  submitInterviewProgression(input: unknown, context: RequestContext): Promise<unknown>;
   submitInvitedInterviewFeedback(input: unknown, context: RequestContext): Promise<unknown>;
   validateInterviewFeedbackInvite(input: unknown, context: RequestContext): Promise<unknown>;
   validateInvite(input: unknown, context: RequestContext): Promise<unknown>;
@@ -142,6 +144,24 @@ export default ({ strapi }) => ({
 	  async submitInterviewFeedback(ctx) {
     ctx.body = {
       data: await employerDashboardService(strapi).submitInterviewFeedback(
+        ctx.request.body,
+        getRequestContext(ctx)
+      ),
+    };
+	  },
+
+	  async interviewProgressionDetail(ctx) {
+    ctx.body = {
+      data: await employerDashboardService(strapi).getInterviewProgressionDetail(
+        ctx.request.body,
+        getRequestContext(ctx)
+      ),
+    };
+	  },
+
+	  async submitInterviewProgression(ctx) {
+    ctx.body = {
+      data: await employerDashboardService(strapi).submitInterviewProgression(
         ctx.request.body,
         getRequestContext(ctx)
       ),

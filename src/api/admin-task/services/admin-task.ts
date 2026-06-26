@@ -49,6 +49,8 @@ type DocumentRecord = Record<string, unknown> & {
   candidateReportLastAttemptAt?: string;
   candidateReportRetryCount?: number;
   candidateReportState?: string;
+  candidateResponseDeadline?: string;
+  candidateRespondedAt?: string;
   class?: DocumentRecord;
   companyName?: string;
   completedAt?: string;
@@ -84,6 +86,7 @@ type DocumentRecord = Record<string, unknown> & {
   paymentState?: string;
   paymentStatus?: string;
   priority?: AdminTaskPriority;
+  progressionState?: string;
   refund?: DocumentRecord;
   refundState?: string;
   relatedDocumentId?: string;
@@ -92,6 +95,7 @@ type DocumentRecord = Record<string, unknown> & {
   reservation?: DocumentRecord;
   reservationState?: string;
   resolvedAt?: string | null;
+  requestedDetailsAt?: string;
   scheduledEndTime?: string;
   scheduledStartTime?: string;
   severity?: string;
@@ -131,6 +135,7 @@ type AdminTaskSourceType =
   | 'notification_event'
   | 'payment'
   | 'privacy_rights_request'
+  | 'progression_request'
   | 'refund'
   | 'reservation'
   | 'support_case';
@@ -1200,6 +1205,58 @@ const interviewFeedbackOverdueTask = (interview: DocumentRecord): AdminTaskDraft
   };
 };
 
+const interviewProgressionExpiredTask = (request: DocumentRecord): AdminTaskDraft | null => {
+  const documentId = getDocumentId(request);
+
+  if (!documentId || request.progressionState !== 'expired') {
+    return null;
+  }
+
+  const candidateName = candidateDisplayName(documentRecordValue(request.candidate));
+  const employerName =
+    typeof documentRecordValue(request.employer)?.companyName === 'string'
+      ? String(documentRecordValue(request.employer)?.companyName)
+      : undefined;
+  const referenceAt =
+    request.candidateRespondedAt ||
+    request.candidateResponseDeadline ||
+    request.requestedDetailsAt ||
+    request.updatedAt ||
+    request.createdAt;
+
+  return {
+    actionLabel: 'Review progression',
+    actionPath: interviewOperationsPath({
+      issue: 'progression_expired',
+      progression: documentId,
+    }),
+    metadata: {
+      candidateName,
+      employerName,
+      progressionRequestDocumentId: documentId,
+      sourceCreatedAt: request.createdAt,
+      sourceDetectedAt: referenceAt,
+      visibleRoleKeys: ['sales', 'admin', 'super_admin'],
+    },
+    priority: 'high',
+    relatedDocumentId: documentId,
+    relatedType: 'progression_request',
+    sourceDocumentId: documentId,
+    sourceType: 'progression_request',
+    summary: trimToLength(
+      [
+        'Candidate did not respond to an employer progression request.',
+        candidateName ? `Candidate: ${candidateName}.` : '',
+        employerName ? `Employer: ${employerName}.` : '',
+      ].filter(Boolean).join(' '),
+      500
+    ),
+    taskKey: `progression_request:${documentId}:expired`,
+    taskType: 'interview_operation',
+    title: 'Progression request expired',
+  };
+};
+
 const collectPaymentTasks = async (strapi: StrapiDocumentService) => {
   const payments = await documents(strapi, 'api::payment.payment').findMany({
     filters: {
@@ -1540,11 +1597,27 @@ const collectInterviewFeedbackTasks = async (strapi: StrapiDocumentService) => {
     .filter((task): task is AdminTaskDraft => Boolean(task));
 };
 
+const collectInterviewProgressionTasks = async (strapi: StrapiDocumentService) => {
+  const progressionRequests = await documents(strapi, 'api::offer.offer').findMany({
+    filters: {
+      progressionState: 'expired',
+    },
+    limit: 100,
+    populate: ['candidate', 'employer', 'interview', 'requestedByEmployerContact'],
+    sort: ['candidateRespondedAt:desc', 'updatedAt:desc', 'createdAt:desc'],
+  });
+
+  return progressionRequests
+    .map(interviewProgressionExpiredTask)
+    .filter((task): task is AdminTaskDraft => Boolean(task));
+};
+
 const collectTaskDrafts = async (strapi: StrapiDocumentService) => {
   const [
     assessmentAppeals,
     interviewDetails,
     interviewFeedback,
+    interviewProgression,
     payments,
     reservations,
     enrollments,
@@ -1558,6 +1631,7 @@ const collectTaskDrafts = async (strapi: StrapiDocumentService) => {
     collectAssessmentAppealTasks(strapi),
     collectInterviewDetailTasks(strapi),
     collectInterviewFeedbackTasks(strapi),
+    collectInterviewProgressionTasks(strapi),
     collectPaymentTasks(strapi),
     collectReservationTasks(strapi),
     collectEnrollmentTasks(strapi),
@@ -1573,6 +1647,7 @@ const collectTaskDrafts = async (strapi: StrapiDocumentService) => {
     ...assessmentAppeals,
     ...interviewDetails,
     ...interviewFeedback,
+    ...interviewProgression,
     ...payments,
     ...reservations,
     ...enrollments,

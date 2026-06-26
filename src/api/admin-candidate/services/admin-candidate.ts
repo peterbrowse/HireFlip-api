@@ -43,6 +43,8 @@ type DocumentRecord = Record<string, unknown> & {
   completedAt?: string;
   completionStatus?: string;
   createdAt?: string;
+  candidateResponse?: string;
+  candidateResponseDeadline?: string;
   dateOfBirth?: string;
   documentId?: string;
   email?: string;
@@ -67,7 +69,10 @@ type DocumentRecord = Record<string, unknown> & {
   phone?: string;
   priority?: string;
   profileImage?: DocumentRecord;
+  progressionState?: string;
+  progressionType?: string;
   profileState?: string;
+  requestedDetailsAt?: string;
   recruitmentPlatformVisibility?: string;
   region?: string;
   reviewedAt?: string;
@@ -428,6 +433,18 @@ const candidateInterviews = async (strapi: StrapiService, candidateDocumentId: s
     sort: ['scheduledStartTime:desc', 'updatedAt:desc'],
   });
 
+const candidateProgressionRequests = async (strapi: StrapiService, candidateDocumentId: string) =>
+  documents(strapi, 'api::offer.offer').findMany({
+    filters: {
+      candidate: {
+        documentId: candidateDocumentId,
+      },
+    },
+    limit: 100,
+    populate: ['employer', 'interview', 'requestedByEmployerContact'],
+    sort: ['requestedDetailsAt:desc', 'createdAt:desc'],
+  });
+
 const candidateStrikes = async (strapi: StrapiService, candidateDocumentId: string) =>
   documents(strapi, 'api::candidate-interview-strike.candidate-interview-strike').findMany({
     filters: {
@@ -692,7 +709,20 @@ const enrollmentPayload = (enrollment: DocumentRecord) => {
   };
 };
 
-const interviewPayload = (interview: DocumentRecord) => ({
+const progressionTypeLabel = (value?: string | null) => {
+  const labels: Record<string, string> = {
+    final_interview: 'Final interview',
+    introductory_call: 'Introductory call',
+    offer_discussion: 'Offer discussion',
+    other: 'Other',
+    practical_task: 'Practical task',
+    second_interview: 'Second interview',
+  };
+
+  return labels[String(value || '')] || null;
+};
+
+const interviewPayload = (interview: DocumentRecord, progressionRequest?: DocumentRecord | null) => ({
   actionPath: `/interviews?search=${encodeURIComponent(displayName(interview.candidate as DocumentRecord | undefined) || '')}`,
   completedAt: interview.completedAt || null,
   documentId: getDocumentId(interview),
@@ -700,6 +730,17 @@ const interviewPayload = (interview: DocumentRecord) => ({
   employerContact: displayName(interview.employerContact as DocumentRecord | undefined),
   interviewState: interview.interviewState || null,
   locationType: interview.locationType || null,
+  progressionRequest: progressionRequest
+    ? {
+        candidateResponse: progressionRequest.candidateResponse || null,
+        documentId: getDocumentId(progressionRequest),
+        progressionState: progressionRequest.progressionState || null,
+        progressionType: progressionRequest.progressionType || null,
+        progressionTypeLabel: progressionTypeLabel(progressionRequest.progressionType),
+        requestedAt: progressionRequest.requestedDetailsAt || progressionRequest.createdAt || null,
+        responseDeadline: progressionRequest.candidateResponseDeadline || null,
+      }
+    : null,
   scheduledEndTime: interview.scheduledEndTime || null,
   scheduledStartTime: interview.scheduledStartTime || null,
 });
@@ -1548,17 +1589,38 @@ const buildCandidateDetail = async (
     throw new ValidationError('Candidate record is missing a document ID.');
   }
 
-  const [profile, enrollments, requests, slotOffers, interviews, strikes, supportCases, auditEvents] =
+  const [
+    profile,
+    enrollments,
+    requests,
+    slotOffers,
+    interviews,
+    progressionRequests,
+    strikes,
+    supportCases,
+    auditEvents,
+  ] =
     await Promise.all([
       latestCandidateProfile(strapi, candidateDocumentId),
       candidateEnrollments(strapi, candidateDocumentId),
       candidateInterviewRequests(strapi, candidateDocumentId),
       candidateSlotOffers(strapi, candidateDocumentId),
       candidateInterviews(strapi, candidateDocumentId),
+      candidateProgressionRequests(strapi, candidateDocumentId),
       candidateStrikes(strapi, candidateDocumentId),
       candidateSupportCases(strapi, candidateDocumentId),
       candidateAuditEvents(strapi, candidate),
     ]);
+  const progressionByInterviewId = new Map<string, DocumentRecord>();
+
+  progressionRequests.forEach((request) => {
+    const interview = request.interview as DocumentRecord | undefined;
+    const interviewDocumentId = getDocumentId(interview);
+
+    if (interviewDocumentId && !progressionByInterviewId.has(interviewDocumentId)) {
+      progressionByInterviewId.set(interviewDocumentId, request);
+    }
+  });
   const permissions = candidatePermissions(session);
   const openSupportCount = supportCases.filter((supportCase) =>
     ['awaiting_candidate', 'awaiting_staff', 'in_progress', 'open'].includes(String(supportCase.caseState || ''))
@@ -1584,7 +1646,9 @@ const buildCandidateDetail = async (
       requestState: request.requestState || null,
       visibleState: request.candidateVisibleState || null,
     })),
-    interviews: interviews.map(interviewPayload),
+    interviews: interviews.map((interview) =>
+      interviewPayload(interview, progressionByInterviewId.get(getDocumentId(interview) || ''))
+    ),
     permissions,
     profile: profilePayload(profile),
     slotOffers: slotOffers.map((offer) => ({

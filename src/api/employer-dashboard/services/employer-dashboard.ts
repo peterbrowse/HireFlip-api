@@ -25,8 +25,13 @@ type DocumentRecord = Record<string, unknown> & {
   acceptanceLabel?: string;
   body?: string;
   candidate?: DocumentRecord;
+  candidateDeclineReason?: string;
+  candidateFollowUpDueAt?: string;
+  candidateMessage?: string;
   candidateNotifiedAt?: string;
+  candidateResponse?: string;
   candidateResponseDeadline?: string;
+  candidateRespondedAt?: string;
   arrivalInstructions?: string;
   capacityClaim?: DocumentRecord;
   capacityChangeRequestStatus?: string;
@@ -59,6 +64,7 @@ type DocumentRecord = Record<string, unknown> & {
   employerTermsAcceptedByEmail?: string;
   employerTermsPolicyDocumentId?: string;
   employerTermsPolicyVersion?: string;
+  employerFollowUpDueAt?: string;
   employer?: DocumentRecord;
   employerContact?: DocumentRecord;
   employerState?: string;
@@ -104,6 +110,7 @@ type DocumentRecord = Record<string, unknown> & {
   policyState?: string;
   policyType?: string;
   progressionState?: string;
+  progressionType?: string;
   metadata?: unknown;
   region?: string;
   regionCommitments?: DocumentRecord[];
@@ -305,6 +312,32 @@ const submitInterviewFeedbackSchema = identitySchema
   })
   .strict();
 
+const interviewProgressionTypeSchema = z.enum([
+  'second_interview',
+  'final_interview',
+  'practical_task',
+  'introductory_call',
+  'offer_discussion',
+  'other',
+]);
+
+const interviewProgressionDetailSchema = identitySchema
+  .extend({
+    interviewDocumentId: z.string().trim().min(1).max(120),
+  })
+  .strict();
+
+const submitInterviewProgressionSchema = identitySchema
+  .extend({
+    candidateMessage: z.string().trim().min(10).max(4000),
+    employerContactDocumentId: z.string().trim().min(1).max(120).optional(),
+    internalNote: z.string().trim().max(2000).optional().transform((value) => value || undefined),
+    interviewDocumentId: z.string().trim().min(1).max(120),
+    progressionType: interviewProgressionTypeSchema,
+    responseDeadline: z.string().trim().datetime({ offset: true }).optional(),
+  })
+  .strict();
+
 const inviteInterviewFeedbackContributorSchema = identitySchema
   .extend({
     interviewDocumentId: z.string().trim().min(1).max(120),
@@ -461,11 +494,13 @@ const validateCapacityClaimDetail = validateZodSchema(capacityClaimDetailSchema)
 const validateCreateInterviewSlotOffer = validateZodSchema(createInterviewSlotOfferSchema);
 const validateInterviewFeedbackDetail = validateZodSchema(interviewFeedbackDetailSchema);
 const validateInterviewDetail = validateZodSchema(interviewDetailSchema);
+const validateInterviewProgressionDetail = validateZodSchema(interviewProgressionDetailSchema);
 const validateInterviewSetup = validateZodSchema(interviewSetupSchema);
 const validateInviteInterviewFeedbackContributor = validateZodSchema(inviteInterviewFeedbackContributorSchema);
 const validateFeedbackInviteToken = validateZodSchema(feedbackInviteTokenSchema);
 const validateRevokeInterviewFeedbackInvite = validateZodSchema(revokeInterviewFeedbackInviteSchema);
 const validateSubmitInterviewFeedback = validateZodSchema(submitInterviewFeedbackSchema);
+const validateSubmitInterviewProgression = validateZodSchema(submitInterviewProgressionSchema);
 const validateSubmitInvitedInterviewFeedback = validateZodSchema(submitInvitedInterviewFeedbackSchema);
 const validateDeclineCapacityClaim = validateZodSchema(declineCapacityClaimSchema);
 const validateInviteTeamContact = validateZodSchema(inviteTeamContactSchema);
@@ -3608,12 +3643,330 @@ const assertValidFeedbackInvite = async (strapi: StrapiDocumentService, inviteTo
   return invite;
 };
 
+const activeProgressionStates = ['requested', 'candidate_notified'];
+
+const progressionRequestPopulate = {
+  candidate: true,
+  employer: {
+    populate: ['contacts'],
+  },
+  interview: {
+    populate: ['candidate', 'employer', 'employerContact', 'interviewSlot'],
+  },
+  requestedByEmployerContact: {
+    populate: ['coverageRegions', 'profileImage'],
+  },
+};
+
+const progressionTypeLabel = (value?: string | null) => {
+  const labels: Record<string, string> = {
+    final_interview: 'Final interview',
+    introductory_call: 'Introductory call',
+    offer_discussion: 'Offer discussion',
+    other: 'Other',
+    practical_task: 'Practical task',
+    second_interview: 'Second interview',
+  };
+
+  return labels[String(value || '')] || 'Next step';
+};
+
+const responseDeadlineForProgression = (input?: string) => {
+  if (input) {
+    const parsed = Date.parse(input);
+
+    if (!Number.isNaN(parsed) && parsed > Date.now()) {
+      return new Date(parsed).toISOString();
+    }
+  }
+
+  return addWorkingDays(new Date(), 5).toISOString();
+};
+
+const followUpDueDate = (date = new Date()) => {
+  const next = new Date(date);
+  next.setUTCMonth(next.getUTCMonth() + 1);
+  return next.toISOString();
+};
+
 const progressionPayload = (offer: DocumentRecord) => ({
   candidateName: candidateDisplayName(offer.candidate),
   documentId: getDocumentId(offer) || String(offer.id || ''),
+  progressionType: offer.progressionType || null,
+  progressionTypeLabel: progressionTypeLabel(offer.progressionType),
+  responseDeadline: offer.candidateResponseDeadline || null,
+  responseDeadlineLabel: formatDateTime(offer.candidateResponseDeadline),
   requestedLabel: formatDateTime(offer.requestedDetailsAt || offer.createdAt),
+  state: offer.progressionState || 'requested',
   statusLabel: humanize(String(offer.progressionState || 'requested')),
 });
+
+const progressionDetailPayload = async (
+  strapi: StrapiDocumentService,
+  interview: DocumentRecord,
+  contact: DocumentRecord,
+  progressionRequest?: DocumentRecord | null
+) => {
+  const interviewDocumentId = getDocumentId(interview) || String(interview.id || '');
+  const feedback = interviewDocumentId
+    ? await findEmployerFeedbackForInterview(strapi, interviewDocumentId)
+    : null;
+  const employer = documentRecordValue(contact.employer) || documentRecordValue(interview.employer) || {};
+  const contacts = await Promise.all(
+    (Array.isArray(employer.contacts) ? employer.contacts : [contact])
+      .filter((item) => !['archived', 'disabled'].includes(String(item.contactState || '')))
+      .map((item) => publicContactPayload(strapi, item))
+  );
+  const assignedContact =
+    documentRecordValue(progressionRequest?.requestedByEmployerContact) ||
+    documentRecordValue(interview.employerContact) ||
+    contact;
+  const defaultMessage = [
+    `We would like to continue the interview journey with ${candidateDisplayName(interview.candidate)}.`,
+    'Please confirm whether you are happy for us to contact you directly about the next step.',
+  ].join('\n\n');
+
+  return {
+    account: await accountPayload(strapi, contact),
+    contacts,
+    generatedAt: new Date().toISOString(),
+    interview: {
+      candidateEmail: interview.candidate?.email || null,
+      candidateName: candidateDisplayName(interview.candidate),
+      completedAt: interview.completedAt || null,
+      completedAtLabel: formatDateTime(interview.completedAt),
+      documentId: interviewDocumentId,
+      employerContactName: interview.employerContact
+        ? contactDisplayName(documentRecordValue(interview.employerContact) || {})
+        : null,
+      scheduledEndTime: interview.scheduledEndTime || null,
+      scheduledEndTimeLabel: formatDateTime(interview.scheduledEndTime),
+      scheduledStartTime: interview.scheduledStartTime || null,
+      scheduledStartTimeLabel: formatDateTime(interview.scheduledStartTime),
+      state: interview.interviewState || 'completed',
+      statusLabel: humanize(String(interview.interviewState || 'completed')),
+    },
+    progressionRequest: progressionRequest
+      ? {
+          ...progressionPayload(progressionRequest),
+          candidateDeclineReason: progressionRequest.candidateDeclineReason || null,
+          candidateMessage: progressionRequest.candidateMessage || null,
+          candidateResponse: progressionRequest.candidateResponse || null,
+          candidateRespondedAt: progressionRequest.candidateRespondedAt || null,
+          employerContactDocumentId: getDocumentId(assignedContact),
+          employerContactName: contactDisplayName(assignedContact),
+          internalNote: progressionRequest.internalProcessNotes || null,
+          requestedAt: progressionRequest.requestedDetailsAt || progressionRequest.createdAt || null,
+        }
+      : null,
+    rules: {
+      canCreateProgressionRequest:
+        String(interview.interviewState || '') === 'completed' && Boolean(feedback),
+      defaultCandidateMessage: defaultMessage,
+      defaultResponseDeadline: responseDeadlineForProgression(),
+      feedbackRequired: true,
+    },
+  };
+};
+
+const findProgressionRequestForInterview = async (
+  strapi: StrapiDocumentService,
+  interviewDocumentId: string
+) => {
+  const progressionRequests = await documents(strapi, 'api::offer.offer').findMany({
+    filters: {
+      interview: {
+        documentId: interviewDocumentId,
+      },
+    },
+    limit: 1,
+    populate: progressionRequestPopulate,
+    sort: ['requestedDetailsAt:desc', 'createdAt:desc'],
+  });
+
+  return progressionRequests[0] || null;
+};
+
+const queueCandidateProgressionRequestNotification = async ({
+  contact,
+  progressionRequest,
+  requestContext,
+  strapi,
+}: {
+  contact: DocumentRecord;
+  progressionRequest: DocumentRecord;
+  requestContext: RequestContext;
+  strapi: StrapiDocumentService;
+}) => {
+  const candidate = documentRecordValue(progressionRequest.candidate);
+  const employer = documentRecordValue(progressionRequest.employer);
+  const interview = documentRecordValue(progressionRequest.interview);
+  const candidateEmail = typeof candidate?.email === 'string' ? candidate.email : null;
+  const subject = 'Good news from your interview';
+  const dashboardUrl = candidateDashboardInterviewsUrl();
+  const candidateName = candidate?.firstName || 'there';
+  const bodyLines = [
+    `Hi ${candidateName},`,
+    `Good news, your interview with ${employer?.companyName || 'the employer'} went so well that they want your interview journey to continue with them.`,
+    'Click below to see what actions you can take next.',
+  ];
+  let emailDeliveryState: 'queued' | 'failed' = 'failed';
+  let emailJobId: string | number | undefined;
+  let emailErrorMessage: string | undefined;
+
+  if (candidateEmail) {
+    try {
+      const emailQueueResult = await requestNotificationServiceEmail({
+        correlationId: getDocumentId(progressionRequest) || getDocumentId(interview) || undefined,
+        template: {
+          key: 'generic_branded_message',
+          variables: {
+            bodyLines,
+            ctaLabel: 'View next steps',
+            ctaUrl: dashboardUrl,
+            heading: subject,
+            subject,
+          },
+        },
+        to: candidateEmail,
+        type: 'candidate_interview_progression_requested',
+      });
+
+      emailDeliveryState = emailQueueResult.data?.queued === true ? 'queued' : 'failed';
+      emailJobId = emailQueueResult.data?.jobId;
+    } catch (error) {
+      emailErrorMessage =
+        error instanceof Error ? error.message : 'Candidate progression notification could not be queued.';
+    }
+  }
+
+  await Promise.all(
+    [
+      {
+        channel: 'in_app',
+        deliveryState: 'queued' as const,
+        errorMessage: undefined,
+        jobId: undefined,
+      },
+      ...(candidateEmail
+        ? [
+            {
+              channel: 'email',
+              deliveryState: emailDeliveryState,
+              errorMessage: emailErrorMessage,
+              jobId: emailJobId,
+            },
+          ]
+        : []),
+    ].map(({ channel, deliveryState, errorMessage, jobId }) =>
+      documents(strapi, 'api::notification-event.notification-event').create({
+        data: {
+          candidate: relationConnect(candidate),
+          channel,
+          deliveryState,
+          ...(deliveryState === 'failed' ? { failedAt: new Date().toISOString() } : {}),
+          errorMessage: errorMessage || null,
+          employer: relationConnect(employer),
+          eventType: 'candidate.interview_progression_requested',
+          interview: relationConnect(interview),
+          metadata: {
+            dashboardUrl,
+            notificationServiceJobId: typeof jobId === 'undefined' ? null : String(jobId),
+            progressionRequestDocumentId: getDocumentId(progressionRequest),
+            progressionType: progressionRequest.progressionType || null,
+            requestId: requestContext.requestId,
+            requestedByEmployerContactDocumentId: getDocumentId(contact),
+          },
+          priority: 'high',
+          recipientEmail: candidateEmail,
+          recipientId: getDocumentId(candidate) || undefined,
+          recipientType: 'candidate',
+          relatedId: getDocumentId(progressionRequest) || undefined,
+          relatedType: 'progression_request',
+          templateKey: channel === 'email' ? 'generic_branded_message' : undefined,
+        },
+      })
+    )
+  );
+};
+
+const queueEmployerProgressionExpiredNotification = async ({
+  progressionRequest,
+  requestContext,
+  strapi,
+}: {
+  progressionRequest: DocumentRecord;
+  requestContext: RequestContext;
+  strapi: StrapiDocumentService;
+}) => {
+  const employer = documentRecordValue(progressionRequest.employer);
+  const contact = documentRecordValue(progressionRequest.requestedByEmployerContact);
+  const candidate = documentRecordValue(progressionRequest.candidate);
+
+  if (!contact?.email) {
+    return;
+  }
+
+  const subject = 'No response received';
+  const dashboardUrl = employerDashboardBaseUrl() + '/interviews';
+  const bodyLines = [
+    `${candidateDisplayName(candidate)} did not respond to your progression request before the deadline.`,
+    'The request has been marked as expired and kept in the interview history.',
+  ];
+  let emailDeliveryState: 'queued' | 'failed' = 'failed';
+  let emailJobId: string | number | undefined;
+  let emailErrorMessage: string | undefined;
+
+  try {
+    const emailQueueResult = await requestNotificationServiceEmail({
+      correlationId: getDocumentId(progressionRequest) || undefined,
+      template: {
+        key: 'generic_branded_message',
+        variables: {
+          bodyLines,
+          ctaLabel: 'Open interviews',
+          ctaUrl: dashboardUrl,
+          heading: subject,
+          subject,
+        },
+      },
+      to: String(contact.email),
+      type: 'employer_interview_progression_expired',
+    });
+
+    emailDeliveryState = emailQueueResult.data?.queued === true ? 'queued' : 'failed';
+    emailJobId = emailQueueResult.data?.jobId;
+  } catch (error) {
+    emailErrorMessage =
+      error instanceof Error ? error.message : 'Employer progression expiry notification could not be queued.';
+  }
+
+  await documents(strapi, 'api::notification-event.notification-event').create({
+    data: {
+      candidate: relationConnect(candidate),
+      channel: 'email',
+      deliveryState: emailDeliveryState,
+      ...(emailDeliveryState === 'failed' ? { failedAt: new Date().toISOString() } : {}),
+      errorMessage: emailErrorMessage || null,
+      employer: relationConnect(employer),
+      eventType: 'employer.interview_progression_expired',
+      interview: relationConnect(progressionRequest.interview),
+      metadata: {
+        dashboardUrl,
+        notificationServiceJobId: typeof emailJobId === 'undefined' ? null : String(emailJobId),
+        progressionRequestDocumentId: getDocumentId(progressionRequest),
+        requestId: requestContext.requestId,
+      },
+      priority: 'high',
+      recipientEmail: String(contact.email),
+      recipientId: getDocumentId(contact) || undefined,
+      recipientType: 'employer_contact',
+      relatedId: getDocumentId(progressionRequest) || undefined,
+      relatedType: 'progression_request',
+      templateKey: 'generic_branded_message',
+    },
+  });
+};
 
 const claimOpenLockMinutes = 15;
 const reusableSlotTopUpPurpose = 'reusable_slot_top_up';
@@ -4354,6 +4707,98 @@ export default ({ strapi }) => ({
         summary.errors.push({
           error: error instanceof Error ? error.message : String(error),
           feedbackDocumentId,
+        });
+      }
+    }
+
+    return summary;
+  },
+
+  async reconcileInterviewProgressionRequests(limit = 100, requestContext: RequestContext = {}) {
+    const now = new Date().toISOString();
+    const progressionRequests = await documents(strapi, 'api::offer.offer').findMany({
+      filters: {
+        candidateResponseDeadline: {
+          $lte: now,
+        },
+        progressionState: {
+          $in: activeProgressionStates,
+        },
+      },
+      limit,
+      populate: progressionRequestPopulate,
+      sort: ['candidateResponseDeadline:asc', 'updatedAt:asc'],
+    });
+    const summary = {
+      checked: progressionRequests.length,
+      errors: [] as Array<{ error: string; progressionRequestDocumentId?: string }>,
+      expired: 0,
+      skipped: 0,
+    };
+
+    for (const progressionRequest of progressionRequests) {
+      const progressionRequestDocumentId = getDocumentId(progressionRequest);
+
+      try {
+        if (!progressionRequestDocumentId) {
+          summary.skipped += 1;
+          continue;
+        }
+
+        const expiredRequest = await documents(strapi, 'api::offer.offer').update({
+          documentId: progressionRequestDocumentId,
+          data: {
+            candidateResponse: 'expired',
+            candidateRespondedAt: now,
+            metadata: {
+              ...objectValue(progressionRequest.metadata),
+              expiredBy: requestContext.serviceName || 'class-workflow-worker',
+              expiredReason: 'No response received',
+              requestId: requestContext.requestId,
+            },
+            progressionState: 'expired',
+          },
+          populate: progressionRequestPopulate,
+        });
+
+        await auditEvents(strapi).record({
+          actorId: 'system',
+          actorType: 'system',
+          eventCategory: 'interview',
+          eventType: 'candidate.interview_progression_expired',
+          metadata: {
+            progressionRequestDocumentId,
+            reason: 'No response received',
+            requestId: requestContext.requestId,
+          },
+          requestId: requestContext.requestId,
+          serviceName: requestContext.serviceName || 'class-workflow-worker',
+          severity: 'warning',
+          source: 'core_api',
+          subjectDisplayName: candidateDisplayName(progressionRequest.candidate),
+          subjectId: progressionRequestDocumentId,
+          subjectType: 'progression_request',
+        });
+
+        await queueEmployerProgressionExpiredNotification({
+          progressionRequest: expiredRequest,
+          requestContext,
+          strapi,
+        });
+        await publishAdminRealtimeEvent(
+          {
+            channels: ['operations'],
+            resourceKey: progressionRequestDocumentId,
+            resourceType: 'progression_request',
+            type: 'admin_tasks_changed',
+          },
+          strapi.log
+        );
+        summary.expired += 1;
+      } catch (error) {
+        summary.errors.push({
+          error: error instanceof Error ? error.message : String(error),
+          progressionRequestDocumentId,
         });
       }
     }
@@ -5648,6 +6093,21 @@ export default ({ strapi }) => ({
     return interviewFeedbackDetailPayload(strapi, interview, contact, feedback);
   },
 
+  async getInterviewProgressionDetail(input: unknown) {
+    const body = validateInterviewProgressionDetail(input);
+    const contact = await findEmployerContact(strapi, body);
+    const interview = await findScopedInterview(strapi, contact, body.interviewDocumentId);
+    const interviewDocumentId = getDocumentId(interview);
+
+    if (!interviewDocumentId) {
+      throw new ValidationError('Interview could not be found.');
+    }
+
+    const progressionRequest = await findProgressionRequestForInterview(strapi, interviewDocumentId);
+
+    return progressionDetailPayload(strapi, interview, contact, progressionRequest);
+  },
+
   async submitInterviewFeedback(input: unknown, requestContext: RequestContext = {}) {
     const body = validateSubmitInterviewFeedback(input);
     const contact = await findEmployerContact(strapi, body);
@@ -5731,6 +6191,119 @@ export default ({ strapi }) => ({
     });
 
     return interviewFeedbackDetailPayload(strapi, interview, contact, generatedFeedback || feedback);
+  },
+
+  async submitInterviewProgression(input: unknown, requestContext: RequestContext = {}) {
+    const body = validateSubmitInterviewProgression(input);
+    const contact = await findEmployerContact(strapi, body);
+    const interview = await findScopedInterview(strapi, contact, body.interviewDocumentId);
+    const interviewDocumentId = getDocumentId(interview);
+    const contactDocumentId = getDocumentId(contact);
+
+    if (String(interview.interviewState || '') !== 'completed') {
+      throw new ValidationError('Progression requests can only be created after the interview is completed.');
+    }
+
+    if (!interviewDocumentId || !contactDocumentId) {
+      throw new ValidationError('Progression request could not be created.');
+    }
+
+    const feedback = await findEmployerFeedbackForInterview(strapi, interviewDocumentId);
+
+    if (!feedback) {
+      throw new ValidationError('Submit interview feedback before requesting progression.');
+    }
+
+    const existingProgression = await findProgressionRequestForInterview(strapi, interviewDocumentId);
+
+    if (
+      existingProgression &&
+      !['declined', 'expired', 'cancelled'].includes(String(existingProgression.progressionState || ''))
+    ) {
+      throw new ValidationError('A progression request already exists for this interview.');
+    }
+
+    const employer = documentRecordValue(interview.employer) || documentRecordValue(contact.employer);
+    const employerContacts = Array.isArray(employer?.contacts)
+      ? employer.contacts.map(documentRecordValue).filter((record): record is DocumentRecord => Boolean(record))
+      : [contact];
+    const assignedContact =
+      (body.employerContactDocumentId
+        ? employerContacts.find((item) => getDocumentId(item) === body.employerContactDocumentId)
+        : undefined) || documentRecordValue(interview.employerContact) || contact;
+
+    if (!assignedContact?.documentId) {
+      throw new ValidationError('Select an employer contact for the next step.');
+    }
+
+    const now = new Date().toISOString();
+    const responseDeadline = responseDeadlineForProgression(body.responseDeadline);
+    const progressionRequest = await documents(strapi, 'api::offer.offer').create({
+      data: {
+        candidate: relationConnect(interview.candidate),
+        candidateMessage: body.candidateMessage,
+        candidateNotifiedAt: now,
+        candidateResponseDeadline: responseDeadline,
+        employer: relationConnect(employer),
+        followUpState: 'not_due',
+        internalProcessNotes: body.internalNote || null,
+        interview: relationConnect(interview),
+        metadata: {
+          feedbackDocumentId: getDocumentId(feedback),
+          requestId: requestContext.requestId,
+          source: 'employer_dashboard',
+        },
+        progressionState: 'candidate_notified',
+        progressionType: body.progressionType,
+        requestedByEmployerContact: relationConnect(assignedContact),
+        requestedDetailsAt: now,
+      },
+      populate: progressionRequestPopulate,
+    });
+
+    await queueCandidateProgressionRequestNotification({
+      contact: assignedContact,
+      progressionRequest,
+      requestContext,
+      strapi,
+    });
+
+    await auditEvents(strapi).record({
+      actorDisplayName: contactDisplayName(contact),
+      actorId: contactDocumentId,
+      actorType: 'employer_contact',
+      eventCategory: 'interview',
+      eventType: 'employer.interview_progression_requested',
+      ipAddress: requestContext.ipAddress,
+      metadata: {
+        assignedEmployerContactDocumentId: getDocumentId(assignedContact),
+        interviewDocumentId,
+        progressionRequestDocumentId: getDocumentId(progressionRequest),
+        progressionType: body.progressionType,
+        requestId: requestContext.requestId,
+        responseDeadline,
+      },
+      requestId: requestContext.requestId,
+      serviceName: requestContext.serviceName,
+      severity: 'info',
+      source: 'employer_dashboard',
+      subjectDisplayName: candidateDisplayName(interview.candidate),
+      subjectId: getDocumentId(progressionRequest) || interviewDocumentId,
+      subjectType: 'progression_request',
+      userAgent: requestContext.userAgent,
+    });
+
+    await publishAdminRealtimeEvent(
+      {
+        channels: ['operations'],
+        resourceKey: getDocumentId(progressionRequest) || interviewDocumentId,
+        resourceType: 'progression_request',
+        type: 'admin_tasks_changed',
+      },
+      strapi.log
+    );
+
+    return progressionDetailPayload(strapi, interview, contact, progressionRequest);
   },
 
   async inviteInterviewFeedbackContributor(input: unknown, requestContext: RequestContext = {}) {

@@ -223,6 +223,32 @@ export default {
     },
     {
       method: 'POST',
+      path: '/candidates/me/interview-progressions/:progressionRequestDocumentId/accept',
+      handler: 'candidate.acceptInterviewProgressionRequest',
+      config: {
+        auth: false,
+        middlewares: [
+          {
+            name: 'global::auth0-jwt',
+          },
+        ],
+      },
+    },
+    {
+      method: 'POST',
+      path: '/candidates/me/interview-progressions/:progressionRequestDocumentId/decline',
+      handler: 'candidate.declineInterviewProgressionRequest',
+      config: {
+        auth: false,
+        middlewares: [
+          {
+            name: 'global::auth0-jwt',
+          },
+        ],
+      },
+    },
+    {
+      method: 'POST',
       path: '/candidates/me/interviews/:interviewDocumentId/feedback-report/flag',
       handler: 'candidate.flagInterviewFeedbackReport',
       config: {

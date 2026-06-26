@@ -3829,12 +3829,25 @@ export interface ApiOfferOffer extends Struct.CollectionTypeSchema {
       'manyToOne',
       'api::candidate.candidate'
     >;
+    candidateDeclineReason: Schema.Attribute.Text;
+    candidateFollowUpDueAt: Schema.Attribute.DateTime;
+    candidateMessage: Schema.Attribute.Text;
     candidateNotifiedAt: Schema.Attribute.DateTime;
+    candidateRespondedAt: Schema.Attribute.DateTime;
+    candidateResponse: Schema.Attribute.Enumeration<
+      ['accepted', 'declined', 'expired']
+    >;
+    candidateResponseDeadline: Schema.Attribute.DateTime;
     createdAt: Schema.Attribute.DateTime;
     createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
     detailsReleasedAt: Schema.Attribute.DateTime;
     employer: Schema.Attribute.Relation<'manyToOne', 'api::employer.employer'>;
+    employerFollowUpDueAt: Schema.Attribute.DateTime;
+    followUpState: Schema.Attribute.Enumeration<
+      ['not_due', 'due', 'sent', 'completed', 'cancelled']
+    > &
+      Schema.Attribute.DefaultTo<'not_due'>;
     internalProcessNotes: Schema.Attribute.Text;
     interview: Schema.Attribute.Relation<
       'manyToOne',
@@ -3850,12 +3863,25 @@ export interface ApiOfferOffer extends Struct.CollectionTypeSchema {
         'requested',
         'candidate_notified',
         'details_released',
+        'accepted',
+        'declined',
+        'expired',
         'closed',
         'cancelled',
       ]
     > &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'requested'>;
+    progressionType: Schema.Attribute.Enumeration<
+      [
+        'second_interview',
+        'final_interview',
+        'practical_task',
+        'introductory_call',
+        'offer_discussion',
+        'other',
+      ]
+    >;
     publishedAt: Schema.Attribute.DateTime;
     requestedByEmployerContact: Schema.Attribute.Relation<
       'manyToOne',

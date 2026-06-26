@@ -21,6 +21,7 @@ type InterviewRequestService = {
 
 type EmployerDashboardService = {
   reconcileCandidateFeedbackReports(limit?: number, context?: RequestContext): Promise<unknown>;
+  reconcileInterviewProgressionRequests(limit?: number, context?: RequestContext): Promise<unknown>;
 };
 
 type PaymentWebhookEventService = {
@@ -343,6 +344,14 @@ export const startClassWorkflowWorker = (strapi: Core.Strapi) => {
           });
         } catch (error) {
           throw new Error(`Candidate feedback-report reconciliation failed: ${formatJobError(error)}`);
+        }
+
+        try {
+          await employerDashboardService(strapi).reconcileInterviewProgressionRequests(limit, {
+            serviceName: 'class-workflow-worker',
+          });
+        } catch (error) {
+          throw new Error(`Interview progression-request reconciliation failed: ${formatJobError(error)}`);
         }
 
         return;
