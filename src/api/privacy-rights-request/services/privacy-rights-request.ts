@@ -2063,6 +2063,11 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
       throw new ValidationError('Privacy request could not be found.');
     }
 
+    const terminalPrivacyRequestStates = ['completed', 'partially_fulfilled', 'rejected', 'cancelled'];
+    if (terminalPrivacyRequestStates.includes(String(request.requestState))) {
+      throw new ValidationError('Closed privacy requests cannot be changed.');
+    }
+
     if (
       ['deletion', 'erasure'].includes(String(request.requestType)) &&
       body.requestState === 'completed' &&
@@ -2084,7 +2089,6 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
           ]
         : []),
     ];
-    const terminalPrivacyRequestStates = ['completed', 'partially_fulfilled', 'rejected', 'cancelled'];
     const nextStateIsTerminal = terminalPrivacyRequestStates.includes(body.requestState);
     const updated = await documents(strapi, 'api::privacy-rights-request.privacy-rights-request').update({
       documentId: getDocumentId(request),
