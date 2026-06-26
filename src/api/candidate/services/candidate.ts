@@ -70,6 +70,8 @@ type DocumentRecord = Record<string, unknown> & {
   candidateRespondedAt?: string;
   candidateState?: string;
   candidateEmail?: string;
+  caseState?: string;
+  caseType?: string;
   candidateReportConclusion?: string;
   candidateReportGeneratedAt?: string;
   candidateReportImprovements?: string;
@@ -239,6 +241,10 @@ type InterviewRequestService = {
 type SupportCaseService = {
   addMessage(input: unknown): Promise<DocumentRecord>;
   casesForCandidate(candidateDocumentId: string): Promise<unknown[]>;
+  ensureAccountRestrictionAppealCase(input: unknown): Promise<{
+    created: boolean;
+    supportCase: DocumentRecord;
+  }>;
   ensureFeedbackReportConcernCase(input: unknown): Promise<{
     created: boolean;
     supportCase: DocumentRecord;
@@ -262,6 +268,13 @@ const interviewRequestService = (strapi: StrapiDocumentService) =>
   strapi.service('api::interview-request.interview-request') as unknown as InterviewRequestService;
 const supportCaseService = (strapi: StrapiDocumentService) =>
   strapi.service('api::support-case.support-case') as unknown as SupportCaseService;
+
+const getDocumentId = (record?: DocumentRecord | null) =>
+  typeof record?.documentId === 'string'
+    ? record.documentId
+    : typeof record?.id === 'number'
+      ? String(record.id)
+      : undefined;
 
 const communicationChannels = ['email', 'sms', 'phone'] as const;
 const candidateGenderValues = [
@@ -312,7 +325,7 @@ const profileImageSignedUrlCache = new Map<
   }
 >();
 
-const restrictedCandidateStatuses = new Set(['suspended', 'blacklisted']);
+const restrictedCandidateStatuses = new Set(['suspended', 'blacklisted', 'archived']);
 const terminalEnrollmentStatuses = new Set([
   'withdrawn',
   'refunded',
@@ -886,6 +899,14 @@ const interviewStrikeDisputeSchema = z
 
 const validateInterviewStrikeDispute = validateZodSchema(interviewStrikeDisputeSchema);
 
+const accountRestrictionAppealSchema = z
+  .object({
+    reason: z.string().trim().min(10).max(4000),
+  })
+  .strict();
+
+const validateAccountRestrictionAppeal = validateZodSchema(accountRestrictionAppealSchema);
+
 const materialProgressSchema = z
   .object({
     completionPercentage: z.number().min(0).max(100).optional(),
@@ -1043,6 +1064,33 @@ const sanitizeProfileImage = async (strapi, profileImage) => {
   return sanitizedProfileImage;
 };
 
+const accountRestrictionAppealCaseKey = (candidateDocumentId: string) =>
+  `candidate-account:${candidateDocumentId}:restriction-appeal`;
+
+const findAccountRestrictionAppealCaseForCandidate = async (
+  strapi: StrapiDocumentService,
+  candidate?: DocumentRecord | null
+) => {
+  const candidateDocumentId = getDocumentId(candidate);
+
+  if (!candidateDocumentId) {
+    return null;
+  }
+
+  const cases = await documents(strapi, 'api::support-case.support-case').findMany({
+    filters: {
+      caseKey: accountRestrictionAppealCaseKey(candidateDocumentId),
+      candidate: {
+        documentId: candidateDocumentId,
+      },
+    },
+    limit: 1,
+    populate: ['candidate', 'refund', 'payment', 'enrollment'],
+  });
+
+  return cases[0] || null;
+};
+
 const sanitizeCandidate = async (strapi, candidate) => ({
   documentId: candidate.documentId,
   classAreaPreferences: candidate.classAreaPreferences,
@@ -1065,6 +1113,8 @@ const sanitizeCandidate = async (strapi, candidate) => ({
   accountRestrictionReason: candidate.accountRestrictionReason,
   accountRestrictionMessage: candidate.accountRestrictionMessage,
   accountRestrictionAppealStatus: candidate.accountRestrictionAppealStatus || 'not_applicable',
+  accountRestrictionAppealSupportCaseDocumentId:
+    (await findAccountRestrictionAppealCaseForCandidate(strapi, candidate))?.documentId || null,
   accountRestrictedAt: candidate.accountRestrictedAt,
   region: candidate.region,
   sector: candidate.sector,
@@ -9156,6 +9206,111 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
 
     return {
       replied: true,
+      supportCase,
+    };
+  },
+
+  async appealCurrentCandidateAccountRestriction(
+    auth: Auth0State | undefined,
+    input: unknown,
+    requestContext: RequestContext = {}
+  ) {
+    if (!auth || auth.type !== 'auth0' || !auth.subject) {
+      throw new UnauthorizedError('Auth0 authentication is required.');
+    }
+
+    const existingCandidate = await findCandidateByAuthIdentity(strapi, auth.subject);
+
+    if (!existingCandidate?.documentId) {
+      throw new ValidationError('Candidate account must be synced before account restrictions can be appealed.');
+    }
+
+    if (!isCandidateRestricted(existingCandidate)) {
+      throw new ValidationError('There is no active account restriction to appeal.');
+    }
+
+    const payload = validateAccountRestrictionAppeal(input ?? {});
+    const now = new Date().toISOString();
+    const existingAppealCase = await findAccountRestrictionAppealCaseForCandidate(strapi, existingCandidate);
+    const existingCaseState = String(existingAppealCase?.caseState || '');
+    const shouldAddInitialMessage =
+      !existingAppealCase || ['closed', 'resolved'].includes(existingCaseState);
+    const appealCaseResult = await supportCaseService(strapi).ensureAccountRestrictionAppealCase({
+      appealedAt: now,
+      candidate: existingCandidate,
+      reason: payload.reason,
+      restrictionAction: existingCandidate.accountRestrictionReason || candidateState(existingCandidate),
+      restrictionStatus: existingCandidate.accountRestrictionStatus || candidateState(existingCandidate),
+    });
+    const supportCaseDocumentId = getDocumentId(appealCaseResult.supportCase);
+
+    if (!supportCaseDocumentId) {
+      throw new ValidationError('Account restriction appeal support case could not be created.');
+    }
+
+    if (shouldAddInitialMessage) {
+      await supportCaseService(strapi).addMessage({
+        body: payload.reason,
+        candidate: existingCandidate,
+        direction: 'inbound',
+        messageType: 'candidate_message',
+        sender: {
+          displayName: candidateMessageDisplayName(existingCandidate),
+          email: existingCandidate.email,
+          id: existingCandidate.documentId,
+          type: 'candidate',
+        },
+        supportCase: {
+          documentId: supportCaseDocumentId,
+        },
+        visibility: 'public',
+      });
+    }
+
+    await documents(strapi, 'api::candidate.candidate').update({
+      documentId: existingCandidate.documentId,
+      data: {
+        accountRestrictionAppealStatus: 'submitted',
+      },
+    });
+
+    await auditEvents(strapi).record({
+      actorEmail: existingCandidate.email,
+      actorId: auth.subject,
+      actorType: 'candidate',
+      eventCategory: 'account',
+      eventType: 'candidate.account_restriction_appealed',
+      ipAddress: requestContext.ipAddress,
+      metadata: {
+        appealCaseCreated: appealCaseResult.created,
+        reason: payload.reason,
+        supportCaseDocumentId,
+      },
+      occurredAt: now,
+      requestId: requestContext.requestId,
+      source: 'candidate_dashboard',
+      subjectDisplayName: candidateMessageDisplayName(existingCandidate),
+      subjectId: existingCandidate.documentId,
+      subjectType: 'candidate',
+      userAgent: requestContext.userAgent,
+    });
+    await publishAdminRealtimeEvent(
+      {
+        channels: ['support'],
+        resourceKey: supportCaseDocumentId,
+        resourceType: 'support_case',
+        type: 'support_cases_changed',
+      },
+      strapi.log
+    );
+
+    const supportCase = await supportCaseService(strapi).getCaseForCandidate({
+      candidateDocumentId: existingCandidate.documentId,
+      supportCaseDocumentId,
+    });
+
+    return {
+      appealed: true,
       supportCase,
     };
   },

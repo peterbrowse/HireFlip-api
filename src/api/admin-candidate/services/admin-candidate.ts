@@ -163,6 +163,7 @@ const candidateProfileUpdateSchema = candidateDetailSchema
 const candidateAccountActionSchema = candidateDetailSchema
   .extend({
     action: z.enum(['archive', 'blacklist', 'reactivate', 'suspend']),
+    candidateNote: z.string().trim().max(4000).optional().transform((value) => value || undefined),
     reasonNote: z.string().trim().min(3).max(4000),
   })
   .strict();
@@ -226,6 +227,11 @@ const hasAnyRole = (session: AdminSession, roles: string[]) =>
 
 const compact = <T>(items: Array<T | false | null | undefined>) =>
   items.filter((item): item is T => Boolean(item));
+
+const objectValue = (value: unknown) =>
+  value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
 
 const stringValue = (value: unknown) =>
   typeof value === 'string' && value.trim() ? value.trim() : null;
@@ -298,6 +304,7 @@ const candidatePermissions = (session: AdminSession) => ({
   canEditProfile: hasAnyRole(session, ['admin', 'super_admin', 'support']),
   canExportGdpr: hasAnyRole(session, ['super_admin']),
   canManageAccount: hasAnyRole(session, ['admin', 'super_admin']),
+  canReactivateBlacklisted: hasAnyRole(session, ['super_admin']),
   canManageStrikes: hasAnyRole(session, ['admin', 'super_admin']),
   canViewSensitiveFields: hasAnyRole(session, ['admin', 'super_admin']),
   canViewAllCandidates: hasAnyRole(session, ['admin', 'super_admin', 'support']),
@@ -878,6 +885,584 @@ const queueCandidateAmendmentNote = async ({
   };
 };
 
+const accountActionStatusLabel = (action: 'archive' | 'blacklist' | 'reactivate' | 'suspend') => ({
+  archive: 'Archived',
+  blacklist: 'Suspended',
+  reactivate: 'Reactivated',
+  suspend: 'Suspended',
+})[action];
+
+const candidateDashboardUrl = () =>
+  trimTrailingSlash(process.env.CANDIDATE_DASHBOARD_BASE_URL || 'http://localhost:3001');
+
+const queueCandidateAccountStatusNotification = async ({
+  action,
+  candidate,
+  candidateNote,
+  requestContext,
+  strapi,
+}: {
+  action: 'archive' | 'blacklist' | 'reactivate' | 'suspend';
+  candidate: DocumentRecord;
+  candidateNote?: string;
+  requestContext: RequestContext;
+  strapi: StrapiService;
+}) => {
+  const candidateEmail = stringValue(candidate.email);
+  const candidateDocumentId = getDocumentId(candidate);
+
+  if (!candidateEmail || !candidateDocumentId) {
+    return {
+      queued: false,
+    };
+  }
+
+  const statusLabel = accountActionStatusLabel(action);
+  const restricted = action !== 'reactivate';
+  const subject = restricted
+    ? 'Your HireFlip account access has changed'
+    : 'Your HireFlip account has been reactivated';
+  const bodyLines = restricted
+    ? [
+        action === 'archive'
+          ? 'Your HireFlip dashboard access has been archived.'
+          : 'Your HireFlip account has been suspended.',
+        'You can still sign in to view the account status page.',
+        'If you believe this decision is incorrect, you can submit an appeal from your dashboard.',
+      ]
+    : [
+        'Your HireFlip account access has been restored.',
+        'You can sign in to your dashboard again and continue from the next available path shown there.',
+      ];
+  const text = [
+    `Hi ${candidate.firstName || 'there'},`,
+    '',
+    ...bodyLines,
+    ...(candidateNote ? ['', candidateNote] : []),
+    '',
+    `Open your dashboard: ${candidateDashboardUrl()}`,
+    '',
+    'HireFlip',
+  ].join('\n');
+  const notificationResult = await requestNotificationServiceEmail({
+    correlationId: requestContext.requestId,
+    subject,
+    template: {
+      key: 'candidate_account_status_updated',
+      variables: {
+        candidateFirstName: candidate.firstName || 'there',
+        dashboardUrl: candidateDashboardUrl(),
+        message: candidateNote || '',
+        statusLabel,
+        subject,
+      },
+    },
+    text,
+    to: candidateEmail,
+    type: 'candidate_account_status_updated',
+  }).catch(() => undefined);
+  const jobId = notificationResult?.data?.jobId;
+
+  await documents(strapi, 'api::notification-event.notification-event').create({
+    data: {
+      candidate: relationConnect(candidate),
+      channel: 'email',
+      deliveryState: notificationResult?.data ? 'queued' : 'failed',
+      errorMessage: notificationResult?.data ? null : 'Notification service did not queue the account status update.',
+      eventType: 'candidate_account_status_updated',
+      metadata: {
+        action,
+        notificationServiceJobId: typeof jobId === 'undefined' ? null : String(jobId),
+        requestId: requestContext.requestId,
+      },
+      priority: 'high',
+      recipientEmail: candidateEmail,
+      recipientId: candidateDocumentId,
+      recipientType: 'candidate',
+      relatedId: candidateDocumentId,
+      relatedType: 'candidate',
+      templateKey: 'candidate_account_status_updated',
+    },
+  });
+
+  return {
+    queued: Boolean(notificationResult?.data),
+  };
+};
+
+const formatInterviewTime = (interview: DocumentRecord) => {
+  const value = stringValue(interview.scheduledStartTime);
+
+  if (!value) {
+    return 'the scheduled interview';
+  }
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return 'the scheduled interview';
+  }
+
+  return date.toLocaleString('en-GB', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+    timeZone: 'Europe/London',
+  });
+};
+
+const queueEmployerCandidateRestrictionCancellation = async ({
+  interview,
+  requestContext,
+  strapi,
+}: {
+  interview: DocumentRecord;
+  requestContext: RequestContext;
+  strapi: StrapiService;
+}) => {
+  const employerContact = interview.employerContact as DocumentRecord | undefined;
+  const employer = interview.employer as DocumentRecord | undefined;
+  const recipientEmail = stringValue(employerContact?.email);
+  const interviewDocumentId = getDocumentId(interview);
+
+  if (!recipientEmail || !interviewDocumentId) {
+    return {
+      queued: false,
+    };
+  }
+
+  const subject = 'HireFlip has cancelled an interview';
+  const message = 'Unfortunately, HireFlip has had to cancel this interview on behalf of the candidate.';
+  const dashboardUrl = trimTrailingSlash(process.env.EMPLOYER_DASHBOARD_PUBLIC_URL || 'http://localhost:3004');
+  const notificationResult = await requestNotificationServiceEmail({
+    correlationId: requestContext.requestId,
+    subject,
+    template: {
+      key: 'employer_interview_cancelled_by_hireflip',
+      variables: {
+        companyName: employer?.companyName || 'your organisation',
+        contactFirstName: employerContact?.firstName || 'there',
+        dashboardUrl,
+        interviewLabel: formatInterviewTime(interview),
+        message,
+        subject,
+      },
+    },
+    text: [
+      `Hi ${employerContact?.firstName || 'there'},`,
+      '',
+      message,
+      '',
+      `Interview: ${formatInterviewTime(interview)}`,
+      '',
+      `Open your dashboard: ${dashboardUrl}`,
+      '',
+      'HireFlip',
+    ].join('\n'),
+    to: recipientEmail,
+    type: 'employer_interview_cancelled_by_hireflip',
+  }).catch(() => undefined);
+  const jobId = notificationResult?.data?.jobId;
+
+  await documents(strapi, 'api::notification-event.notification-event').create({
+    data: {
+      channel: 'email',
+      deliveryState: notificationResult?.data ? 'queued' : 'failed',
+      employer: relationConnect(employer),
+      errorMessage: notificationResult?.data ? null : 'Notification service did not queue the employer cancellation email.',
+      eventType: 'employer_interview_cancelled_by_hireflip',
+      interview: relationConnect(interview),
+      metadata: {
+        notificationServiceJobId: typeof jobId === 'undefined' ? null : String(jobId),
+        requestId: requestContext.requestId,
+      },
+      priority: 'high',
+      recipientEmail,
+      recipientId: getDocumentId(employerContact),
+      recipientType: 'employer_contact',
+      relatedId: interviewDocumentId,
+      relatedType: 'interview',
+      templateKey: 'employer_interview_cancelled_by_hireflip',
+    },
+  });
+
+  return {
+    queued: Boolean(notificationResult?.data),
+  };
+};
+
+const openEnrollmentStates = new Set([
+  'interest_registered',
+  'enrollment_open',
+  'place_reserved',
+  'waiting_list',
+  'enrolled',
+  'in_class',
+  'interview_phase',
+  'completed',
+  'failed',
+]);
+const paidEnrollmentStates = new Set(['enrolled', 'in_class', 'interview_phase', 'completed', 'failed']);
+const openInterviewRequestStates = new Set([
+  'pending_profile',
+  'pending_availability',
+  'pending_capacity',
+  'capacity_claimed',
+  'employer_notified',
+  'slot_options_submitted',
+  'candidate_reviewing',
+  'candidate_selected',
+  'manual_review',
+]);
+const openCapacityClaimStates = new Set(['held', 'notified', 'accepted']);
+const openSlotOfferStates = new Set(['draft', 'submitted', 'sent', 'candidate_selected', 'replacement_required']);
+const openInterviewStates = new Set(['offered', 'candidate_selected', 'awaiting_employer_details', 'confirmed']);
+const reusableSlotStates = new Set(['offered', 'held', 'booked']);
+
+const restrictionWorkflowMetadata = ({
+  action,
+  existingMetadata,
+  reasonNote,
+  timestamp,
+}: {
+  action: string;
+  existingMetadata: unknown;
+  reasonNote: string;
+  timestamp: string;
+}) => ({
+  ...objectValue(existingMetadata),
+  accountRestriction: {
+    action,
+    appliedAt: timestamp,
+    reasonNote,
+  },
+});
+
+const applyCandidateRestrictionWorkflowEffects = async ({
+  action,
+  candidate,
+  reasonNote,
+  requestContext,
+  strapi,
+  timestamp,
+}: {
+  action: 'archive' | 'blacklist' | 'suspend';
+  candidate: DocumentRecord;
+  reasonNote: string;
+  requestContext: RequestContext;
+  strapi: StrapiService;
+  timestamp: string;
+}) => {
+  const candidateDocumentId = getDocumentId(candidate);
+
+  if (!candidateDocumentId) {
+    return {
+      cancelledInterviews: 0,
+      releasedClaims: 0,
+      releasedReservations: 0,
+      updatedEnrollments: 0,
+      updatedRequests: 0,
+      updatedSlotOffers: 0,
+    };
+  }
+
+  const [reservations, enrollments, interviewRequests, slotOffers, interviews] = await Promise.all([
+    documents(strapi, 'api::reservation.reservation').findMany({
+      filters: {
+        candidate: {
+          documentId: candidateDocumentId,
+        },
+        reservationState: 'active',
+      },
+      limit: 100,
+      populate: ['candidate', 'class', 'enrollment'],
+    }),
+    documents(strapi, 'api::enrollment.enrollment').findMany({
+      filters: {
+        candidate: {
+          documentId: candidateDocumentId,
+        },
+      },
+      limit: 100,
+      populate: ['candidate', 'class'],
+    }),
+    documents(strapi, 'api::interview-request.interview-request').findMany({
+      filters: {
+        candidate: {
+          documentId: candidateDocumentId,
+        },
+      },
+      limit: 100,
+      populate: ['candidate', 'enrollment', 'class', 'claims'],
+    }),
+    documents(strapi, 'api::interview-slot-offer.interview-slot-offer').findMany({
+      filters: {
+        candidate: {
+          documentId: candidateDocumentId,
+        },
+      },
+      limit: 100,
+      populate: ['candidate', 'enrollment', 'employer', 'employerContact', 'interviewRequest', 'capacityClaim', 'slots', 'selectedSlot'],
+    }),
+    documents(strapi, 'api::interview.interview').findMany({
+      filters: {
+        candidate: {
+          documentId: candidateDocumentId,
+        },
+      },
+      limit: 100,
+      populate: ['candidate', 'employer', 'employerContact', 'enrollment', 'interviewSlot'],
+    }),
+  ]);
+
+  let releasedReservations = 0;
+  let updatedEnrollments = 0;
+  let updatedRequests = 0;
+  let releasedClaims = 0;
+  let updatedSlotOffers = 0;
+  let cancelledInterviews = 0;
+
+  await Promise.all(
+    reservations.map(async (reservation) => {
+      const reservationDocumentId = getDocumentId(reservation);
+
+      if (!reservationDocumentId) {
+        return;
+      }
+
+      await documents(strapi, 'api::reservation.reservation').update({
+        documentId: reservationDocumentId,
+        data: {
+          cancelledAt: timestamp,
+          metadata: restrictionWorkflowMetadata({
+            action,
+            existingMetadata: reservation.metadata,
+            reasonNote,
+            timestamp,
+          }),
+          reservationState: 'released',
+        },
+      });
+      releasedReservations += 1;
+    })
+  );
+
+  await Promise.all(
+    enrollments.map(async (enrollment) => {
+      const enrollmentDocumentId = getDocumentId(enrollment);
+      const state = String(enrollment.enrollmentState || '');
+
+      if (!enrollmentDocumentId || !openEnrollmentStates.has(state)) {
+        return;
+      }
+
+      const paidOrActive = paidEnrollmentStates.has(state) || enrollment.paymentStatus === 'paid';
+      const removesAccessWithoutRefund = action !== 'archive' && paidOrActive;
+
+      await documents(strapi, 'api::enrollment.enrollment').update({
+        documentId: enrollmentDocumentId,
+        data: {
+          enrollmentState: removesAccessWithoutRefund ? 'removed_no_refund' : 'withdrawn',
+          ...(removesAccessWithoutRefund ? { refundEligibilityState: 'forfeited' } : {}),
+          metadata: {
+            ...restrictionWorkflowMetadata({
+              action,
+              existingMetadata: enrollment.metadata,
+              reasonNote,
+              timestamp,
+            }),
+            courseCompletionDeadlineBeforeRestriction: enrollment.courseCompletionDeadline || null,
+            courseDeadlinePausedAt: timestamp,
+            previousEnrollmentState: state,
+          },
+        },
+      });
+      updatedEnrollments += 1;
+    })
+  );
+
+  for (const request of interviewRequests) {
+    const requestDocumentId = getDocumentId(request);
+    const requestState = String(request.requestState || '');
+
+    if (!requestDocumentId || !openInterviewRequestStates.has(requestState)) {
+      continue;
+    }
+
+    const claims = await documents(strapi, 'api::employer-capacity-claim.employer-capacity-claim').findMany({
+      filters: {
+        interviewRequest: {
+          documentId: requestDocumentId,
+        },
+      },
+      limit: 100,
+      populate: ['interviewRequest', 'employer', 'employerContact'],
+    });
+
+    await Promise.all(
+      claims.map(async (claim) => {
+        const claimDocumentId = getDocumentId(claim);
+
+        if (!claimDocumentId || !openCapacityClaimStates.has(String(claim.claimState || ''))) {
+          return;
+        }
+
+        await documents(strapi, 'api::employer-capacity-claim.employer-capacity-claim').update({
+          documentId: claimDocumentId,
+          data: {
+            claimState: 'released',
+            releaseReason: 'request_cancelled',
+            releaseNote: 'Candidate account was restricted by HireFlip.',
+            releasedAt: timestamp,
+            metadata: restrictionWorkflowMetadata({
+              action,
+              existingMetadata: claim.metadata,
+              reasonNote,
+              timestamp,
+            }),
+          },
+        });
+        releasedClaims += 1;
+      })
+    );
+
+    await documents(strapi, 'api::interview-request.interview-request').update({
+      documentId: requestDocumentId,
+      data: {
+        candidateVisibleState: 'blocked',
+        claimedInterviewCount: 0,
+        metadata: {
+          ...restrictionWorkflowMetadata({
+            action,
+            existingMetadata: request.metadata,
+            reasonNote,
+            timestamp,
+          }),
+          previousRequestState: requestState,
+        },
+        requestState: 'cancelled',
+      },
+    });
+    updatedRequests += 1;
+  }
+
+  await Promise.all(
+    slotOffers.map(async (offer) => {
+      const offerDocumentId = getDocumentId(offer);
+
+      if (!offerDocumentId || !openSlotOfferStates.has(String(offer.offerState || ''))) {
+        return;
+      }
+
+      const slots = Array.isArray(offer.slots) ? (offer.slots as DocumentRecord[]) : [];
+
+      await Promise.all(
+        slots.map(async (slot) => {
+          const slotDocumentId = getDocumentId(slot);
+
+          if (!slotDocumentId || !reusableSlotStates.has(String(slot.slotState || ''))) {
+            return;
+          }
+
+          await documents(strapi, 'api::interview-slot.interview-slot').update({
+            documentId: slotDocumentId,
+            data: {
+              metadata: restrictionWorkflowMetadata({
+                action,
+                existingMetadata: slot.metadata,
+                reasonNote,
+                timestamp,
+              }),
+              slotState: 'available',
+            },
+          });
+        })
+      );
+
+      await documents(strapi, 'api::interview-slot-offer.interview-slot-offer').update({
+        documentId: offerDocumentId,
+        data: {
+          internalNote: 'Cancelled because the candidate account was restricted by HireFlip.',
+          metadata: restrictionWorkflowMetadata({
+            action,
+            existingMetadata: offer.metadata,
+            reasonNote,
+            timestamp,
+          }),
+          offerState: 'cancelled',
+        },
+      });
+      updatedSlotOffers += 1;
+    })
+  );
+
+  await Promise.all(
+    interviews.map(async (interview) => {
+      const interviewDocumentId = getDocumentId(interview);
+
+      if (!interviewDocumentId || !openInterviewStates.has(String(interview.interviewState || ''))) {
+        return;
+      }
+
+      const interviewSlot = interview.interviewSlot as DocumentRecord | undefined;
+      const interviewSlotDocumentId = getDocumentId(interviewSlot);
+
+      if (interviewSlotDocumentId && reusableSlotStates.has(String(interviewSlot?.slotState || ''))) {
+        await documents(strapi, 'api::interview-slot.interview-slot').update({
+          documentId: interviewSlotDocumentId,
+          data: {
+            metadata: restrictionWorkflowMetadata({
+              action,
+              existingMetadata: interviewSlot?.metadata,
+              reasonNote,
+              timestamp,
+            }),
+            slotState: 'available',
+          },
+        });
+      }
+
+      const employerNotification = await queueEmployerCandidateRestrictionCancellation({
+        interview,
+        requestContext,
+        strapi,
+      });
+
+      await documents(strapi, 'api::interview.interview').update({
+        documentId: interviewDocumentId,
+        data: {
+          employerDetailsReleaseNotificationSentAt: employerNotification.queued ? timestamp : null,
+          employerDetailsReleasedAt: timestamp,
+          employerDetailsReleaseReason: 'other',
+          interviewState: 'cancelled',
+          metadata: {
+            ...restrictionWorkflowMetadata({
+              action,
+              existingMetadata: interview.metadata,
+              reasonNote,
+              timestamp,
+            }),
+            candidateRestrictionCancelledAt: timestamp,
+            candidateRestrictionEmployerNotificationQueued: employerNotification.queued,
+            candidateSafeCancellationReason:
+              'Unfortunately, HireFlip has had to cancel this interview on behalf of the candidate.',
+            previousInterviewState: interview.interviewState || null,
+          },
+        },
+      });
+      cancelledInterviews += 1;
+    })
+  );
+
+  return {
+    cancelledInterviews,
+    releasedClaims,
+    releasedReservations,
+    updatedEnrollments,
+    updatedRequests,
+    updatedSlotOffers,
+  };
+};
+
 const recordAdminCandidateAudit = (
   strapi: StrapiService,
   session: AdminSession,
@@ -1115,19 +1700,24 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
       accountRestrictionStatus: candidate.accountRestrictionStatus || 'active',
       candidateState: candidate.candidateState || null,
     };
+    const previouslyBlacklisted =
+      candidate.accountRestrictionStatus === 'blacklisted' || candidate.candidateState === 'blacklisted';
+
+    if (body.action === 'reactivate' && previouslyBlacklisted && !permissions.canReactivateBlacklisted) {
+      throw new ForbiddenError('Only Super Admin can reactivate a blacklisted candidate account.');
+    }
+
     const now = new Date().toISOString();
     const actionStateMap = {
       archive: {
         accountRestrictionStatus: 'suspended',
         candidateState: 'archived',
         eventType: 'admin.candidate_account_archived',
-        shouldBlockAuth0: true,
       },
       blacklist: {
         accountRestrictionStatus: 'blacklisted',
-        candidateState: candidate.candidateState || 'account_created',
+        candidateState: 'blacklisted',
         eventType: 'admin.candidate_account_blacklisted',
-        shouldBlockAuth0: true,
       },
       reactivate: {
         accountRestrictionStatus: 'active',
@@ -1136,13 +1726,11 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
             ? 'account_created'
             : candidate.candidateState || 'account_created',
         eventType: 'admin.candidate_account_reactivated',
-        shouldBlockAuth0: false,
       },
       suspend: {
         accountRestrictionStatus: 'suspended',
-        candidateState: candidate.candidateState || 'account_created',
+        candidateState: 'suspended',
         eventType: 'admin.candidate_account_suspended',
-        shouldBlockAuth0: true,
       },
     }[body.action];
 
@@ -1151,12 +1739,56 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
     }
 
     const authIdentityId = stringValue(candidate.authIdentityId);
+    let auth0UserUnblocked = false;
 
-    if (authIdentityId) {
-      if (actionStateMap.shouldBlockAuth0) {
-        await getAuth0ManagementClient().blockUser(authIdentityId);
-      } else {
-        await getAuth0ManagementClient().unblockUser(authIdentityId);
+    if (body.action === 'reactivate' && authIdentityId) {
+      await getAuth0ManagementClient().unblockUser(authIdentityId);
+      auth0UserUnblocked = true;
+    }
+
+    const workflowEffects =
+      body.action === 'reactivate'
+        ? null
+        : await applyCandidateRestrictionWorkflowEffects({
+            action: body.action,
+            candidate,
+            reasonNote: body.reasonNote,
+            requestContext,
+            strapi,
+            timestamp: now,
+          });
+
+    const notificationResult = await queueCandidateAccountStatusNotification({
+      action: body.action,
+      candidate,
+      candidateNote: body.candidateNote,
+      requestContext,
+      strapi,
+    });
+
+    if (body.action === 'reactivate' && candidate.accountRestrictionAppealStatus === 'submitted') {
+      const appealCase = await documents(strapi, 'api::support-case.support-case').findMany({
+        filters: {
+          caseKey: `candidate-account:${body.candidateDocumentId}:restriction-appeal`,
+        },
+        limit: 1,
+        populate: ['candidate', 'refund', 'payment', 'enrollment'],
+      });
+      const activeAppealCase = appealCase[0];
+
+      if (activeAppealCase?.documentId && !['closed', 'resolved'].includes(String(activeAppealCase.caseState || ''))) {
+        await documents(strapi, 'api::support-case.support-case').update({
+          documentId: activeAppealCase.documentId,
+          data: {
+            caseState: 'resolved',
+            metadata: {
+              ...objectValue(activeAppealCase.metadata),
+              accountRestrictionReactivatedAt: now,
+              accountRestrictionReactivatedBy: session.user.email,
+            },
+            resolvedAt: now,
+          },
+        });
       }
     }
 
@@ -1164,10 +1796,10 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
       documentId: body.candidateDocumentId,
       data: {
         accountRestrictionAppealStatus:
-          body.action === 'reactivate' ? 'not_applicable' : candidate.accountRestrictionAppealStatus || 'not_applicable',
+          body.action === 'reactivate' ? 'not_applicable' : 'not_started',
         accountRestrictedAt: body.action === 'reactivate' ? null : now,
         accountRestrictedBy: body.action === 'reactivate' ? null : session.user.email,
-        accountRestrictionMessage: body.action === 'reactivate' ? null : body.reasonNote,
+        accountRestrictionMessage: body.action === 'reactivate' ? null : body.candidateNote || null,
         accountRestrictionReason: body.action === 'reactivate' ? null : body.action,
         accountRestrictionStatus: actionStateMap.accountRestrictionStatus,
         candidateState: actionStateMap.candidateState,
@@ -1184,8 +1816,11 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
       {
         metadata: {
           action: body.action,
-          auth0UserUpdated: Boolean(authIdentityId),
+          auth0UserUnblocked,
+          candidateNotificationQueued: notificationResult.queued,
+          candidateNoteProvided: Boolean(body.candidateNote),
           reasonNote: body.reasonNote,
+          workflowEffects,
         },
         newState: {
           accountRestrictionStatus: updatedCandidate.accountRestrictionStatus || null,

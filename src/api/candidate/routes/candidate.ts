@@ -288,6 +288,19 @@ export default {
     },
     {
       method: 'POST',
+      path: '/candidates/me/account-restriction/appeal',
+      handler: 'candidate.appealAccountRestriction',
+      config: {
+        auth: false,
+        middlewares: [
+          {
+            name: 'global::auth0-jwt',
+          },
+        ],
+      },
+    },
+    {
+      method: 'POST',
       path: '/candidates/me/class-interest',
       handler: 'candidate.registerClassInterest',
       config: {

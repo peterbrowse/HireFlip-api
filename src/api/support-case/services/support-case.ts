@@ -195,6 +195,19 @@ const ensureInterviewStrikeDisputeCaseSchema = z
   })
   .strict();
 
+const ensureAccountRestrictionAppealCaseSchema = z
+  .object({
+    appealedAt: z.string().datetime(),
+    candidate: z.unknown(),
+    reason: z.string().trim().min(10).max(4000),
+    restrictionAction: z.string().trim().max(160).optional(),
+    restrictionStatus: z.string().trim().max(160).optional(),
+    source: sourceSchema.default('candidate_dashboard'),
+    summary: z.string().trim().max(1000).optional(),
+    title: z.string().trim().min(1).max(180).optional(),
+  })
+  .strict();
+
 const addMessageSchema = z
   .object({
     body: z.string().trim().min(1).max(12000),
@@ -247,6 +260,9 @@ const validateEnsureFeedbackReportConcernCase = validateZodSchema(
 );
 const validateEnsureInterviewStrikeDisputeCase = validateZodSchema(
   ensureInterviewStrikeDisputeCaseSchema
+);
+const validateEnsureAccountRestrictionAppealCase = validateZodSchema(
+  ensureAccountRestrictionAppealCaseSchema
 );
 const validateAddMessage = validateZodSchema(addMessageSchema);
 const validateUpdateCaseState = validateZodSchema(updateCaseStateSchema);
@@ -580,6 +596,9 @@ const supportCaseKeyForFeedbackReportConcern = (feedbackDocumentId: string) =>
 const supportCaseKeyForInterviewStrikeDispute = (strikeDocumentId: string) =>
   `candidate-interview-strike:${strikeDocumentId}:dispute`;
 
+const supportCaseKeyForAccountRestrictionAppeal = (candidateDocumentId: string) =>
+  `candidate-account:${candidateDocumentId}:restriction-appeal`;
+
 const relationConnect = (record?: DocumentRecord | null) =>
   getDocumentId(record) ? { connect: [{ documentId: getDocumentId(record) }] } : undefined;
 
@@ -825,6 +844,85 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
         openedByDisplayName: candidateName,
         openedByEmail: candidate.email,
         openedByType: 'candidate',
+        priority: 'high',
+        source: body.source,
+        summary,
+        title,
+      },
+      populate: ['candidate', 'refund', 'payment', 'enrollment'],
+    });
+
+    return {
+      created: true,
+      supportCase,
+    };
+  },
+
+  async ensureAccountRestrictionAppealCase(input: unknown) {
+    const body = validateEnsureAccountRestrictionAppealCase(input);
+    const candidate = body.candidate as DocumentRecord;
+    const candidateDocumentId = getDocumentId(candidate);
+
+    if (!candidateDocumentId) {
+      throw new Error('Candidate document ID is required to open an account restriction appeal.');
+    }
+
+    const caseKey = supportCaseKeyForAccountRestrictionAppeal(candidateDocumentId);
+    const existingCase = await findCaseByKey(strapi, caseKey);
+    const candidateName = candidateDisplayName(candidate);
+    const title = body.title || (candidateName
+      ? `Account restriction appeal for ${candidateName}`
+      : 'Account restriction appeal');
+    const summary =
+      body.summary ||
+      'Candidate has appealed an account restriction from the restricted dashboard page.';
+    const metadata = {
+      appealedAt: body.appealedAt,
+      kind: 'candidate_account_restriction_appeal',
+      reason: body.reason,
+      restrictionAction: body.restrictionAction || null,
+      restrictionStatus: body.restrictionStatus || null,
+    };
+
+    if (existingCase) {
+      const shouldReopen = ['closed', 'resolved'].includes(String(existingCase.caseState || ''));
+      const supportCase = shouldReopen && existingCase.documentId
+        ? await documents(strapi, 'api::support-case.support-case').update({
+            documentId: existingCase.documentId,
+            data: {
+              caseState: 'awaiting_staff',
+              closedAt: null,
+              lastMessageAt: body.appealedAt,
+              metadata: {
+                ...objectValue(existingCase.metadata),
+                ...metadata,
+                reopenedAt: body.appealedAt,
+              },
+              resolvedAt: null,
+            },
+            populate: ['candidate', 'refund', 'payment', 'enrollment'],
+          })
+        : existingCase;
+
+      return {
+        created: false,
+        supportCase,
+      };
+    }
+
+    const supportCase = await documents(strapi, 'api::support-case.support-case').create({
+      data: {
+        candidate: relationConnect(candidate),
+        caseKey,
+        caseState: 'awaiting_staff',
+        caseType: 'account',
+        lastMessageAt: body.appealedAt,
+        metadata,
+        openedAt: body.appealedAt,
+        openedByDisplayName: candidateName,
+        openedByEmail: candidate.email,
+        openedByType: 'candidate',
+        ownerRoleKey: 'admin',
         priority: 'high',
         source: body.source,
         summary,

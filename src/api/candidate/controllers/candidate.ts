@@ -94,6 +94,11 @@ type CandidateService = {
     input: unknown,
     context: RequestContext
   ): Promise<unknown>;
+  appealCurrentCandidateAccountRestriction(
+    auth: unknown,
+    input: unknown,
+    context: RequestContext
+  ): Promise<unknown>;
   recordCurrentCandidateCourseMaterialProgress(
     auth: unknown,
     materialDocumentId: string,
@@ -519,6 +524,23 @@ export default factories.createCoreController('api::candidate.candidate', ({ str
       }
     );
 
+    ctx.body = {
+      data: result,
+    };
+  },
+
+  async appealAccountRestriction(ctx) {
+    const result = await candidateService(strapi).appealCurrentCandidateAccountRestriction(
+      ctx.state?.hireflipAuth,
+      ctx.request.body,
+      {
+        ipAddress: getForwardedClientIp(ctx),
+        requestId: ctx.state?.requestId,
+        userAgent: ctx.request.get('x-hireflip-client-user-agent') || ctx.request.get('user-agent'),
+      }
+    );
+
+    ctx.status = 201;
     ctx.body = {
       data: result,
     };

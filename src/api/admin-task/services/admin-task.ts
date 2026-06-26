@@ -1081,6 +1081,60 @@ const interviewDetailsReleasedTask = (interview: DocumentRecord): AdminTaskDraft
   };
 };
 
+const interviewCandidateRestrictionCancelledTask = (interview: DocumentRecord): AdminTaskDraft | null => {
+  const documentId = getDocumentId(interview);
+  const metadata = objectValue(interview.metadata);
+  const cancelledAt =
+    typeof metadata.candidateRestrictionCancelledAt === 'string'
+      ? metadata.candidateRestrictionCancelledAt
+      : null;
+
+  if (
+    !documentId ||
+    interview.interviewState !== 'cancelled' ||
+    interview.employerDetailsReleaseReason !== 'other' ||
+    !cancelledAt
+  ) {
+    return null;
+  }
+
+  const candidateName = interviewCandidateName(interview);
+  const employerName = interviewEmployerName(interview);
+
+  return {
+    actionLabel: 'Review cancellation',
+    actionPath: interviewOperationsPath({
+      issue: 'candidate_restriction_cancelled',
+      interview: documentId,
+    }),
+    metadata: {
+      candidateName,
+      cancelledAt,
+      employerName,
+      interviewDocumentId: documentId,
+      sourceCreatedAt: interview.createdAt,
+      sourceDetectedAt: cancelledAt,
+      visibleRoleKeys: ['sales', 'admin', 'super_admin'],
+    },
+    priority: 'high',
+    relatedDocumentId: documentId,
+    relatedType: 'interview',
+    sourceDocumentId: documentId,
+    sourceType: 'interview',
+    summary: trimToLength(
+      [
+        'HireFlip cancelled an interview on behalf of a restricted candidate account.',
+        candidateName ? `Candidate: ${candidateName}.` : '',
+        employerName ? `Employer: ${employerName}.` : '',
+      ].filter(Boolean).join(' '),
+      500
+    ),
+    taskKey: `interview:${documentId}:candidate_restriction_cancelled`,
+    taskType: 'interview_operation',
+    title: 'Interview cancelled by HireFlip',
+  };
+};
+
 const interviewFeedbackOverdueTask = (interview: DocumentRecord): AdminTaskDraft | null => {
   const documentId = getDocumentId(interview);
   const referenceAt =
@@ -1322,6 +1376,10 @@ const collectInterviewDetailTasks = async (strapi: StrapiDocumentService) => {
           employerDetailsReleaseReason: 'employer_did_not_confirm',
           interviewState: 'employer_cancelled',
         },
+        {
+          employerDetailsReleaseReason: 'other',
+          interviewState: 'cancelled',
+        },
       ],
     },
     limit: 100,
@@ -1333,6 +1391,7 @@ const collectInterviewDetailTasks = async (strapi: StrapiDocumentService) => {
     .flatMap((interview) => [
       interviewDetailsOverdueTask(interview),
       interviewDetailsReleasedTask(interview),
+      interviewCandidateRestrictionCancelledTask(interview),
     ])
     .filter((task): task is AdminTaskDraft => Boolean(task));
 };
