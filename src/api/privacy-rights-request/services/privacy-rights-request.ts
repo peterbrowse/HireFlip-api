@@ -149,6 +149,16 @@ const employerRequestSchema = employerIdentitySchema
     requestDocumentId: z.string().trim().min(1).max(160),
   })
   .strict();
+const requesterReplySchema = z
+  .object({
+    message: z.string().trim().min(1).max(4000),
+  })
+  .strict();
+const employerReplySchema = employerRequestSchema
+  .extend({
+    message: z.string().trim().min(1).max(4000),
+  })
+  .strict();
 const downloadSchema = z
   .object({
     code: z.string().trim().regex(/^\d{6}$/),
@@ -189,6 +199,8 @@ const adminAnonymiseSchema = adminRequestSchema
 const validateCandidateCreate = validateZodSchema(candidateCreateSchema);
 const validateEmployerCreate = validateZodSchema(employerCreateSchema);
 const validateEmployerRequest = validateZodSchema(employerRequestSchema);
+const validateRequesterReply = validateZodSchema(requesterReplySchema);
+const validateEmployerReply = validateZodSchema(employerReplySchema);
 const validateDownload = validateZodSchema(downloadSchema);
 const validateAdminList = validateZodSchema(adminListSchema);
 const validateAdminRequest = validateZodSchema(adminRequestSchema);
@@ -272,6 +284,9 @@ const requestMetadata = (request: DocumentRecord) => objectValue(request.metadat
 const publicRequest = (request: DocumentRecord, includeInternal = false) => {
   const metadata = requestMetadata(request);
   const notes = Array.isArray(metadata.notes) ? metadata.notes : [];
+  const requesterResponses = Array.isArray(metadata.requesterResponses)
+    ? metadata.requesterResponses
+    : [];
 
   return {
     completedAt: request.completedAt || null,
@@ -289,6 +304,7 @@ const publicRequest = (request: DocumentRecord, includeInternal = false) => {
     requestType: request.requestType || 'access',
     requestTypeLabel: humanize(request.requestType),
     requesterMessage: stringValue(metadata.requesterMessage),
+    requesterResponses,
     subject: subjectSummary(request),
     ...(includeInternal
       ? {
@@ -777,7 +793,7 @@ const dashboardPrivacyUrl = (
     subjectType === 'candidate'
       ? trimTrailingSlash(process.env.CANDIDATE_DASHBOARD_BASE_URL || 'https://dash.hireflip.work')
       : trimTrailingSlash(process.env.EMPLOYER_DASHBOARD_BASE_URL || 'https://boss.hireflip.work');
-  const suffix = requestDocumentId ? `?request=${encodeURIComponent(requestDocumentId)}` : '';
+  const suffix = requestDocumentId ? `/${encodeURIComponent(requestDocumentId)}` : '';
 
   return `${baseUrl}/settings/privacy${suffix}`;
 };
@@ -978,6 +994,72 @@ const listRequestsForSubject = async (
   return {
     requests: requests.map((request) => publicRequest(request)),
   };
+};
+
+const submitRequesterResponse = async (
+  strapi: StrapiService,
+  {
+    actorId,
+    actorType,
+    context,
+    message,
+    request,
+    source,
+    subject,
+  }: {
+    actorId?: string;
+    actorType: 'candidate' | 'employer_contact';
+    context: RequestContext;
+    message: string;
+    request: DocumentRecord;
+    source: 'candidate_dashboard' | 'employer_dashboard';
+    subject: DocumentRecord;
+  }
+) => {
+  if (request.requestState !== 'clarification_requested') {
+    throw new ValidationError('This privacy request is not waiting for clarification.');
+  }
+
+  const metadata = requestMetadata(request);
+  const requesterResponses = Array.isArray(metadata.requesterResponses)
+    ? metadata.requesterResponses
+    : [];
+  const updated = await documents(strapi, 'api::privacy-rights-request.privacy-rights-request').update({
+    documentId: getDocumentId(request),
+    data: {
+      requestState: 'in_review',
+      metadata: {
+        ...metadata,
+        clarificationRespondedAt: new Date().toISOString(),
+        requesterResponses: [
+          ...requesterResponses,
+          {
+            body: message,
+            createdAt: new Date().toISOString(),
+            createdBy: subject.email || displayName(subject),
+          },
+        ],
+      },
+    },
+  });
+  const populated = (await findRequestByDocumentId(strapi, getDocumentId(updated) || '')) || updated;
+
+  await audit(strapi, {
+    actorEmail: subject.email,
+    actorId,
+    actorType,
+    context,
+    eventType: 'privacy.requester_response_submitted',
+    metadata: {
+      previousState: request.requestState,
+      nextState: 'in_review',
+    },
+    request: populated,
+    source,
+  });
+  await publishPrivacyTaskChange(strapi, populated);
+
+  return populated;
 };
 
 const jsonClone = (value: unknown) => JSON.parse(JSON.stringify(value ?? null));
@@ -1692,6 +1774,37 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
     };
   },
 
+  async candidateReplyToRequest(
+    auth: unknown,
+    requestDocumentId: string,
+    input: unknown,
+    context: RequestContext
+  ) {
+    const body = validateRequesterReply(input);
+    const candidate = await assertCandidateAuth(strapi, auth);
+    const request = await findRequestByDocumentId(strapi, requestDocumentId);
+
+    if (!request) {
+      throw new ValidationError('Privacy request could not be found.');
+    }
+
+    assertSubjectOwnsRequest(request, candidate, 'candidate');
+    const updated = await submitRequesterResponse(strapi, {
+      actorId: candidate.authIdentityId,
+      actorType: 'candidate',
+      context,
+      message: body.message,
+      request,
+      source: 'candidate_dashboard',
+      subject: candidate,
+    });
+
+    return {
+      replied: true,
+      request: publicRequest(updated),
+    };
+  },
+
   async employerListRequests(input: unknown) {
     const identity = validateEmployerRequest({
       ...(typeof input === 'object' && input ? input : {}),
@@ -1829,6 +1942,32 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
 
     return {
       emailed: true,
+    };
+  },
+
+  async employerReplyToRequest(input: unknown, context: RequestContext) {
+    const body = validateEmployerReply(input);
+    const contact = await findEmployerContact(strapi, body);
+    const request = await findRequestByDocumentId(strapi, body.requestDocumentId);
+
+    if (!request) {
+      throw new ValidationError('Privacy request could not be found.');
+    }
+
+    assertSubjectOwnsRequest(request, contact, 'employer_contact');
+    const updated = await submitRequesterResponse(strapi, {
+      actorId: body.authIdentityId,
+      actorType: 'employer_contact',
+      context,
+      message: body.message,
+      request,
+      source: 'employer_dashboard',
+      subject: contact,
+    });
+
+    return {
+      replied: true,
+      request: publicRequest(updated),
     };
   },
 

@@ -17,11 +17,13 @@ type PrivacyRightsRequestService = {
   candidateEmailDownloadLink(auth: unknown, requestDocumentId: string, context: RequestContext): Promise<unknown>;
   candidateListRequests(auth: unknown): Promise<unknown>;
   candidateRequestDownloadCode(auth: unknown, requestDocumentId: string, context: RequestContext): Promise<unknown>;
+  candidateReplyToRequest(auth: unknown, requestDocumentId: string, input: unknown, context: RequestContext): Promise<unknown>;
   employerCreateRequest(input: unknown, context: RequestContext): Promise<unknown>;
   employerDownloadExport(input: unknown, context: RequestContext): Promise<unknown>;
   employerEmailDownloadLink(input: unknown, context: RequestContext): Promise<unknown>;
   employerListRequests(input: unknown): Promise<unknown>;
   employerRequestDownloadCode(input: unknown, context: RequestContext): Promise<unknown>;
+  employerReplyToRequest(input: unknown, context: RequestContext): Promise<unknown>;
 };
 
 const privacyRightsRequestService = (strapi: { service(uid: string): unknown }): PrivacyRightsRequestService =>
@@ -88,6 +90,17 @@ export default ({ strapi }) => ({
     };
   },
 
+  async candidateReply(ctx) {
+    ctx.body = {
+      data: await privacyRightsRequestService(strapi).candidateReplyToRequest(
+        ctx.state.hireflipAuth,
+        ctx.params.requestDocumentId,
+        ctx.request.body,
+        getRequestContext(ctx)
+      ),
+    };
+  },
+
   async employerList(ctx) {
     ctx.body = {
       data: await privacyRightsRequestService(strapi).employerListRequests(ctx.request.body),
@@ -124,6 +137,15 @@ export default ({ strapi }) => ({
   async employerEmailDownloadLink(ctx) {
     ctx.body = {
       data: await privacyRightsRequestService(strapi).employerEmailDownloadLink(
+        ctx.request.body,
+        getRequestContext(ctx)
+      ),
+    };
+  },
+
+  async employerReply(ctx) {
+    ctx.body = {
+      data: await privacyRightsRequestService(strapi).employerReplyToRequest(
         ctx.request.body,
         getRequestContext(ctx)
       ),

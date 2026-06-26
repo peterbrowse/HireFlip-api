@@ -67,6 +67,15 @@ export default {
     },
     {
       method: 'POST',
+      path: '/candidates/me/privacy-requests/:requestDocumentId/reply',
+      handler: 'privacy-rights-request.candidateReply',
+      config: {
+        auth: false,
+        middlewares: candidateAuthMiddleware,
+      },
+    },
+    {
+      method: 'POST',
       path: '/internal/employer-dashboard/privacy/requests/list',
       handler: 'privacy-rights-request.employerList',
       config: {
@@ -105,6 +114,15 @@ export default {
       method: 'POST',
       path: '/internal/employer-dashboard/privacy/requests/email-link',
       handler: 'privacy-rights-request.employerEmailDownloadLink',
+      config: {
+        auth: false,
+        policies: [employerDashboardServicePolicy],
+      },
+    },
+    {
+      method: 'POST',
+      path: '/internal/employer-dashboard/privacy/requests/reply',
+      handler: 'privacy-rights-request.employerReply',
       config: {
         auth: false,
         policies: [employerDashboardServicePolicy],
