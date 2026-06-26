@@ -5,6 +5,7 @@ import path from 'node:path';
 import { errors, validateZodSchema, z } from '@strapi/utils';
 import sharp from 'sharp';
 import { getAuth0ManagementClient, type Auth0User } from '../../../utils/auth0-management';
+import { publishAdminRealtimeEvent } from '../../../utils/admin-realtime-events';
 
 const { ValidationError } = errors;
 
@@ -155,6 +156,24 @@ type InterviewRequestService = {
 
 type EmployerReliabilityEventService = {
   summaryForEmployer(employerDocumentId: string): Promise<unknown>;
+};
+
+type SupportCaseService = {
+  addMessage(input: unknown): Promise<DocumentRecord>;
+  casesForEmployerContact(input: {
+    employerContactDocumentId: string;
+    employerDocumentId?: string;
+  }): Promise<unknown[]>;
+  createDashboardSupportCase(input: unknown): Promise<{
+    created: boolean;
+    supportCase: unknown;
+  }>;
+  getCaseForEmployerContact(input: {
+    employerContactDocumentId: string;
+    employerDocumentId?: string;
+    supportCaseDocumentId: string;
+  }): Promise<unknown | null>;
+  updateCaseState(input: unknown): Promise<DocumentRecord>;
 };
 
 type UploadedFile = {
@@ -403,6 +422,25 @@ const inviteTeamContactSchema = identitySchema
   })
   .strict();
 
+const supportCaseCreateSchema = identitySchema
+  .extend({
+    body: z.string().trim().min(10).max(12000),
+    title: z.string().trim().min(3).max(180),
+  })
+  .strict();
+
+const supportCaseDetailSchema = identitySchema
+  .extend({
+    supportCaseDocumentId: z.string().trim().min(1).max(120),
+  })
+  .strict();
+
+const supportCaseReplySchema = supportCaseDetailSchema
+  .extend({
+    body: z.string().trim().min(1).max(12000),
+  })
+  .strict();
+
 const inviteTokenSchema = z
   .object({
     inviteToken: z.string().trim().min(24).max(256),
@@ -431,6 +469,9 @@ const validateSubmitInterviewFeedback = validateZodSchema(submitInterviewFeedbac
 const validateSubmitInvitedInterviewFeedback = validateZodSchema(submitInvitedInterviewFeedbackSchema);
 const validateDeclineCapacityClaim = validateZodSchema(declineCapacityClaimSchema);
 const validateInviteTeamContact = validateZodSchema(inviteTeamContactSchema);
+const validateSupportCaseCreate = validateZodSchema(supportCaseCreateSchema);
+const validateSupportCaseDetail = validateZodSchema(supportCaseDetailSchema);
+const validateSupportCaseReply = validateZodSchema(supportCaseReplySchema);
 const validateInviteToken = validateZodSchema(inviteTokenSchema);
 const validateAcceptInvite = validateZodSchema(acceptInviteSchema);
 const validateUpdateProfile = validateZodSchema(updateProfileSchema);
@@ -447,6 +488,8 @@ const employerReliabilityEventService = (strapi: StrapiDocumentService) =>
   strapi.service(
     'api::employer-reliability-event.employer-reliability-event'
   ) as EmployerReliabilityEventService;
+const supportCaseService = (strapi: StrapiDocumentService) =>
+  strapi.service('api::support-case.support-case') as SupportCaseService;
 
 const getDocumentId = (record?: DocumentRecord | null) =>
   typeof record?.documentId === 'string' ? record.documentId : null;
@@ -5360,6 +5403,229 @@ export default ({ strapi }) => ({
         interviewsScheduled: scheduledInterviews.length,
         progressionRequests: progressionRequests.length,
       },
+    };
+  },
+
+  async listSupportCases(input: unknown) {
+    const identity = validateIdentity(input);
+    const contact = await findEmployerContact(strapi, identity);
+    const contactDocumentId = getDocumentId(contact);
+    const employerDocumentId = getDocumentId(contact.employer);
+
+    if (!contactDocumentId || !employerDocumentId) {
+      throw new ValidationError('Employer support case ownership could not be verified.');
+    }
+
+    const cases = await supportCaseService(strapi).casesForEmployerContact({
+      employerContactDocumentId: contactDocumentId,
+      employerDocumentId,
+    });
+
+    return {
+      cases,
+      counts: {
+        total: cases.length,
+      },
+      generatedAt: new Date().toISOString(),
+    };
+  },
+
+  async getSupportCase(input: unknown) {
+    const body = validateSupportCaseDetail(input);
+    const contact = await findEmployerContact(strapi, body);
+    const contactDocumentId = getDocumentId(contact);
+    const employerDocumentId = getDocumentId(contact.employer);
+
+    if (!contactDocumentId || !employerDocumentId) {
+      throw new ValidationError('Employer support case ownership could not be verified.');
+    }
+
+    const supportCase = await supportCaseService(strapi).getCaseForEmployerContact({
+      employerContactDocumentId: contactDocumentId,
+      employerDocumentId,
+      supportCaseDocumentId: body.supportCaseDocumentId,
+    });
+
+    if (!supportCase) {
+      throw new ValidationError('Support case could not be found.');
+    }
+
+    return {
+      generatedAt: new Date().toISOString(),
+      supportCase,
+    };
+  },
+
+  async createSupportCase(input: unknown, requestContext: RequestContext = {}) {
+    const body = validateSupportCaseCreate(input);
+    const contact = await findEmployerContact(strapi, body);
+    const contactDocumentId = getDocumentId(contact);
+    const employerDocumentId = getDocumentId(contact.employer);
+
+    if (!contactDocumentId || !employerDocumentId) {
+      throw new ValidationError('Employer support case ownership could not be verified.');
+    }
+
+    const caseResult = await supportCaseService(strapi).createDashboardSupportCase({
+      body: body.body,
+      caseType: 'general',
+      employer: contact.employer,
+      employerContact: contact,
+      openedBy: {
+        displayName: contactDisplayName(contact),
+        email: contact.email,
+        id: contactDocumentId,
+        type: 'employer_contact',
+      },
+      priority: 'normal',
+      source: 'employer_dashboard',
+      title: body.title,
+    });
+    const supportCaseDocumentId =
+      typeof caseResult.supportCase === 'object' && caseResult.supportCase
+        ? (caseResult.supportCase as DocumentRecord).documentId
+        : undefined;
+    const now = new Date().toISOString();
+
+    await auditEvents(strapi).record({
+      actorEmail: contact.email,
+      actorId: body.authIdentityId,
+      actorType: 'employer_contact',
+      eventCategory: 'support',
+      eventType: 'employer.support_case_created',
+      ipAddress: requestContext.ipAddress,
+      metadata: {
+        employerContactDocumentId: contactDocumentId,
+        employerDocumentId,
+        supportCaseDocumentId,
+        title: body.title,
+      },
+      occurredAt: now,
+      requestId: requestContext.requestId,
+      source: 'employer_dashboard',
+      subjectDisplayName: body.title,
+      subjectId: supportCaseDocumentId,
+      subjectType: 'support_case',
+      userAgent: requestContext.userAgent,
+    });
+    await Promise.all([
+      publishAdminRealtimeEvent(
+        {
+          channels: ['support'],
+          resourceKey: supportCaseDocumentId,
+          resourceType: 'support_case',
+          type: 'support_cases_changed',
+        },
+        strapi.log
+      ),
+      publishAdminRealtimeEvent(
+        {
+          channels: ['operations'],
+          resourceKey: supportCaseDocumentId,
+          resourceType: 'support_case',
+          type: 'admin_tasks_changed',
+        },
+        strapi.log
+      ),
+    ]);
+
+    return caseResult;
+  },
+
+  async replyToSupportCase(input: unknown, requestContext: RequestContext = {}) {
+    const body = validateSupportCaseReply(input);
+    const contact = await findEmployerContact(strapi, body);
+    const contactDocumentId = getDocumentId(contact);
+    const employerDocumentId = getDocumentId(contact.employer);
+
+    if (!contactDocumentId || !employerDocumentId) {
+      throw new ValidationError('Employer support case ownership could not be verified.');
+    }
+
+    const existingCase = await supportCaseService(strapi).getCaseForEmployerContact({
+      employerContactDocumentId: contactDocumentId,
+      employerDocumentId,
+      supportCaseDocumentId: body.supportCaseDocumentId,
+    });
+
+    if (!existingCase) {
+      throw new ValidationError('Support case could not be found.');
+    }
+
+    await supportCaseService(strapi).addMessage({
+      body: body.body,
+      direction: 'inbound',
+      employer: contact.employer,
+      employerContact: contact,
+      messageType: 'candidate_message',
+      sender: {
+        displayName: contactDisplayName(contact),
+        email: contact.email,
+        id: contactDocumentId,
+        type: 'employer_contact',
+      },
+      supportCase: {
+        documentId: body.supportCaseDocumentId,
+      },
+      visibility: 'public',
+    });
+    await supportCaseService(strapi).updateCaseState({
+      caseState: 'awaiting_staff',
+      metadata: {
+        lastEmployerReplyAt: new Date().toISOString(),
+      },
+      supportCase: {
+        documentId: body.supportCaseDocumentId,
+      },
+    });
+    await auditEvents(strapi).record({
+      actorEmail: contact.email,
+      actorId: body.authIdentityId,
+      actorType: 'employer_contact',
+      eventCategory: 'support',
+      eventType: 'employer.support_case_replied',
+      ipAddress: requestContext.ipAddress,
+      metadata: {
+        employerContactDocumentId: contactDocumentId,
+        employerDocumentId,
+        supportCaseDocumentId: body.supportCaseDocumentId,
+      },
+      occurredAt: new Date().toISOString(),
+      requestId: requestContext.requestId,
+      source: 'employer_dashboard',
+      subjectDisplayName: (existingCase as DocumentRecord).title || 'Support case',
+      subjectId: body.supportCaseDocumentId,
+      subjectType: 'support_case',
+      userAgent: requestContext.userAgent,
+    });
+    await Promise.all([
+      publishAdminRealtimeEvent(
+        {
+          channels: ['support'],
+          resourceKey: body.supportCaseDocumentId,
+          resourceType: 'support_case',
+          type: 'support_cases_changed',
+        },
+        strapi.log
+      ),
+      publishAdminRealtimeEvent(
+        {
+          channels: ['operations'],
+          resourceKey: body.supportCaseDocumentId,
+          resourceType: 'support_case',
+          type: 'admin_tasks_changed',
+        },
+        strapi.log
+      ),
+    ]);
+
+    return {
+      replied: true,
+      supportCase: await supportCaseService(strapi).getCaseForEmployerContact({
+        employerContactDocumentId: contactDocumentId,
+        employerDocumentId,
+        supportCaseDocumentId: body.supportCaseDocumentId,
+      }),
     };
   },
 

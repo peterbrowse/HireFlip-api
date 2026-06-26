@@ -241,6 +241,10 @@ type InterviewRequestService = {
 type SupportCaseService = {
   addMessage(input: unknown): Promise<DocumentRecord>;
   casesForCandidate(candidateDocumentId: string): Promise<unknown[]>;
+  createDashboardSupportCase(input: unknown): Promise<{
+    created: boolean;
+    supportCase: unknown;
+  }>;
   ensureAccountRestrictionAppealCase(input: unknown): Promise<{
     created: boolean;
     supportCase: DocumentRecord;
@@ -882,6 +886,15 @@ const supportCaseReplySchema = z
   .strict();
 
 const validateSupportCaseReply = validateZodSchema(supportCaseReplySchema);
+
+const supportCaseCreateSchema = z
+  .object({
+    body: z.string().trim().min(10).max(12000),
+    title: z.string().trim().min(3).max(180),
+  })
+  .strict();
+
+const validateSupportCaseCreate = validateZodSchema(supportCaseCreateSchema);
 
 const feedbackReportConcernSchema = z
   .object({
@@ -9078,6 +9091,85 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       },
       generatedAt: new Date().toISOString(),
     };
+  },
+
+  async createCurrentCandidateSupportCase(
+    auth: Auth0State | undefined,
+    input: unknown,
+    requestContext: RequestContext = {}
+  ) {
+    if (!auth || auth.type !== 'auth0' || !auth.subject) {
+      throw new UnauthorizedError('Auth0 authentication is required.');
+    }
+
+    const existingCandidate = await findCandidateByAuthIdentity(strapi, auth.subject);
+
+    if (!existingCandidate?.documentId) {
+      throw new ValidationError('Candidate account must be synced before support cases can be created.');
+    }
+
+    const payload = validateSupportCaseCreate(input ?? {});
+    const caseResult = await supportCaseService(strapi).createDashboardSupportCase({
+      body: payload.body,
+      candidate: existingCandidate,
+      caseType: 'general',
+      openedBy: {
+        displayName: candidateMessageDisplayName(existingCandidate),
+        email: existingCandidate.email,
+        id: existingCandidate.documentId,
+        type: 'candidate',
+      },
+      priority: 'normal',
+      source: 'candidate_dashboard',
+      title: payload.title,
+    });
+    const supportCaseDocumentId =
+      typeof caseResult.supportCase === 'object' && caseResult.supportCase
+        ? (caseResult.supportCase as DocumentRecord).documentId
+        : undefined;
+    const now = new Date().toISOString();
+
+    await auditEvents(strapi).record({
+      actorEmail: existingCandidate.email,
+      actorId: auth.subject,
+      actorType: 'candidate',
+      eventCategory: 'support',
+      eventType: 'candidate.support_case_created',
+      ipAddress: requestContext.ipAddress,
+      metadata: {
+        supportCaseDocumentId,
+        title: payload.title,
+      },
+      occurredAt: now,
+      requestId: requestContext.requestId,
+      source: 'candidate_dashboard',
+      subjectDisplayName: payload.title,
+      subjectId: supportCaseDocumentId,
+      subjectType: 'support_case',
+      userAgent: requestContext.userAgent,
+    });
+    await Promise.all([
+      publishAdminRealtimeEvent(
+        {
+          channels: ['support'],
+          resourceKey: supportCaseDocumentId,
+          resourceType: 'support_case',
+          type: 'support_cases_changed',
+        },
+        strapi.log
+      ),
+      publishAdminRealtimeEvent(
+        {
+          channels: ['operations'],
+          resourceKey: supportCaseDocumentId,
+          resourceType: 'support_case',
+          type: 'admin_tasks_changed',
+        },
+        strapi.log
+      ),
+    ]);
+
+    return caseResult;
   },
 
   async getCurrentCandidateSupportCase(

@@ -16,6 +16,42 @@ export default {
 	        policies: [employerDashboardServicePolicy],
 	      },
 	    },
+    {
+      method: 'POST',
+      path: '/internal/employer-dashboard/support/cases',
+      handler: 'employer-dashboard.supportCases',
+      config: {
+        auth: false,
+        policies: [employerDashboardServicePolicy],
+      },
+    },
+    {
+      method: 'POST',
+      path: '/internal/employer-dashboard/support/cases/detail',
+      handler: 'employer-dashboard.supportCase',
+      config: {
+        auth: false,
+        policies: [employerDashboardServicePolicy],
+      },
+    },
+    {
+      method: 'POST',
+      path: '/internal/employer-dashboard/support/cases/create',
+      handler: 'employer-dashboard.createSupportCase',
+      config: {
+        auth: false,
+        policies: [employerDashboardServicePolicy],
+      },
+    },
+    {
+      method: 'POST',
+      path: '/internal/employer-dashboard/support/cases/reply',
+      handler: 'employer-dashboard.replyToSupportCase',
+      config: {
+        auth: false,
+        policies: [employerDashboardServicePolicy],
+      },
+    },
 	    {
 	      method: 'POST',
 	      path: '/internal/employer-dashboard/onboarding',

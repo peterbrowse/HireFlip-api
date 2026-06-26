@@ -18,7 +18,11 @@ type EmployerDashboardService = {
   getInterviewDetail(input: unknown, context: RequestContext): Promise<unknown>;
   getOnboarding(input: unknown, context: RequestContext): Promise<unknown>;
   getOverview(input: unknown, context: RequestContext): Promise<unknown>;
+  getSupportCase(input: unknown, context: RequestContext): Promise<unknown>;
+  listSupportCases(input: unknown, context: RequestContext): Promise<unknown>;
   inviteTeamContact(input: unknown, context: RequestContext): Promise<unknown>;
+  createSupportCase(input: unknown, context: RequestContext): Promise<unknown>;
+  replyToSupportCase(input: unknown, context: RequestContext): Promise<unknown>;
   revokeInterviewFeedbackInvite(input: unknown, context: RequestContext): Promise<unknown>;
   updateInterviewSetup(input: unknown, context: RequestContext): Promise<unknown>;
   updateProfile(input: unknown, context: RequestContext): Promise<unknown>;
@@ -56,6 +60,43 @@ export default ({ strapi }) => ({
   async overview(ctx) {
     ctx.body = {
       data: await employerDashboardService(strapi).getOverview(
+        ctx.request.body,
+        getRequestContext(ctx)
+      ),
+    };
+  },
+
+  async supportCases(ctx) {
+    ctx.body = {
+      data: await employerDashboardService(strapi).listSupportCases(
+        ctx.request.body,
+        getRequestContext(ctx)
+      ),
+    };
+  },
+
+  async supportCase(ctx) {
+    ctx.body = {
+      data: await employerDashboardService(strapi).getSupportCase(
+        ctx.request.body,
+        getRequestContext(ctx)
+      ),
+    };
+  },
+
+  async createSupportCase(ctx) {
+    ctx.status = 201;
+    ctx.body = {
+      data: await employerDashboardService(strapi).createSupportCase(
+        ctx.request.body,
+        getRequestContext(ctx)
+      ),
+    };
+  },
+
+  async replyToSupportCase(ctx) {
+    ctx.body = {
+      data: await employerDashboardService(strapi).replyToSupportCase(
         ctx.request.body,
         getRequestContext(ctx)
       ),

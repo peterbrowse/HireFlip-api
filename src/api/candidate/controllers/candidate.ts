@@ -87,6 +87,11 @@ type CandidateService = {
   ): Promise<unknown>;
   getCurrentCandidateSupportCase(auth: unknown, supportCaseDocumentId: string): Promise<unknown>;
   getCurrentCandidateSupportCases(auth: unknown): Promise<unknown>;
+  createCurrentCandidateSupportCase(
+    auth: unknown,
+    input: unknown,
+    context: RequestContext
+  ): Promise<CreatedResponse>;
   registerCurrentCandidateClassInterest(auth: unknown, input: unknown, context: RequestContext): Promise<CreatedResponse>;
   replyToCurrentCandidateSupportCase(
     auth: unknown,
@@ -496,6 +501,23 @@ export default factories.createCoreController('api::candidate.candidate', ({ str
       ctx.state?.hireflipAuth
     );
 
+    ctx.body = {
+      data: result,
+    };
+  },
+
+  async createSupportCase(ctx) {
+    const result = await candidateService(strapi).createCurrentCandidateSupportCase(
+      ctx.state?.hireflipAuth,
+      ctx.request.body,
+      {
+        ipAddress: getForwardedClientIp(ctx),
+        requestId: ctx.state?.requestId,
+        userAgent: ctx.request.get('x-hireflip-client-user-agent') || ctx.request.get('user-agent'),
+      }
+    );
+
+    ctx.status = 201;
     ctx.body = {
       data: result,
     };

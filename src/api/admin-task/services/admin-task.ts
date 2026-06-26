@@ -879,7 +879,12 @@ const supportCaseTask = (supportCase: DocumentRecord): AdminTaskDraft | null => 
 
   const metadata = objectValue(supportCase.metadata);
   const candidateName = candidateDisplayName(supportCase.candidate);
+  const employer = documentRecordValue(supportCase.employer);
+  const employerContact = documentRecordValue(supportCase.employerContact);
+  const employerName = displayNameFallback(employer);
+  const employerContactName = candidateDisplayName(employerContact) || displayNameFallback(employerContact);
   const flaggedAt = typeof metadata.flaggedAt === 'string' ? metadata.flaggedAt : undefined;
+  const kind = typeof metadata.kind === 'string' ? metadata.kind : 'support_case';
 
   return {
     actionLabel: 'Review case',
@@ -887,7 +892,7 @@ const supportCaseTask = (supportCase: DocumentRecord): AdminTaskDraft | null => 
     metadata: {
       feedbackDocumentId: metadata.feedbackDocumentId,
       interviewDocumentId: metadata.interviewDocumentId,
-      kind: metadata.kind,
+      kind,
       sourceCreatedAt: supportCase.createdAt,
       sourceDetectedAt: flaggedAt || sourceTimestamp(supportCase),
     },
@@ -898,14 +903,16 @@ const supportCaseTask = (supportCase: DocumentRecord): AdminTaskDraft | null => 
     sourceType: 'support_case',
     summary: trimToLength(
       [
-        supportCase.summary || 'AI feedback report concern needs support review.',
+        supportCase.summary || 'Support case needs review.',
         candidateName ? `Candidate: ${candidateName}.` : '',
+        employerName ? `Employer: ${employerName}.` : '',
+        employerContactName ? `Contact: ${employerContactName}.` : '',
       ].filter(Boolean).join(' '),
       500
     ),
-    taskKey: `support-case:${documentId}:ai-feedback-report-concern`,
+    taskKey: `support-case:${documentId}:${kind}`,
     taskType: 'support_case',
-    title: supportCase.title || 'AI feedback report concern',
+    title: supportCase.title || 'Support case',
   };
 };
 
@@ -1339,15 +1346,13 @@ const collectSupportCaseTasks = async (strapi: StrapiDocumentService) => {
       caseState: {
         $in: ['open', 'awaiting_staff', 'in_progress'],
       },
-      caseType: 'interview',
     },
     limit: 100,
-    populate: ['candidate'],
+    populate: ['candidate', 'employer', 'employerContact'],
     sort: ['lastMessageAt:desc', 'createdAt:desc'],
   });
 
   return cases
-    .filter((supportCase) => objectValue(supportCase.metadata).kind === 'ai_feedback_report_concern')
     .map(supportCaseTask)
     .filter((task): task is AdminTaskDraft => Boolean(task));
 };

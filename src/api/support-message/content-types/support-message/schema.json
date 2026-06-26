@@ -64,6 +64,7 @@
       "type": "enumeration",
       "enum": [
         "candidate",
+        "employer_contact",
         "admin",
         "service",
         "system"
@@ -115,6 +116,16 @@
       "type": "relation",
       "relation": "manyToOne",
       "target": "api::payment.payment"
+    },
+    "employer": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::employer.employer"
+    },
+    "employerContact": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::employer-contact.employer-contact"
     },
     "notificationEvent": {
       "type": "relation",

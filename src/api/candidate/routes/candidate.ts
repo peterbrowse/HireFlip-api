@@ -261,6 +261,19 @@ export default {
       },
     },
     {
+      method: 'POST',
+      path: '/candidates/me/support-cases',
+      handler: 'candidate.createSupportCase',
+      config: {
+        auth: false,
+        middlewares: [
+          {
+            name: 'global::auth0-jwt',
+          },
+        ],
+      },
+    },
+    {
       method: 'GET',
       path: '/candidates/me/support-cases/:supportCaseDocumentId',
       handler: 'candidate.supportCase',

@@ -69,6 +69,7 @@
       "type": "enumeration",
       "enum": [
         "candidate_dashboard",
+        "employer_dashboard",
         "admin_dashboard",
         "payment_service",
         "notification_service",
@@ -95,6 +96,7 @@
       "type": "enumeration",
       "enum": [
         "candidate",
+        "employer_contact",
         "admin",
         "service",
         "system"
@@ -156,6 +158,16 @@
       "type": "relation",
       "relation": "manyToOne",
       "target": "api::enrollment.enrollment"
+    },
+    "employer": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::employer.employer"
+    },
+    "employerContact": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::employer-contact.employer-contact"
     },
     "metadata": {
       "type": "json"

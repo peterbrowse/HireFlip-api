@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { validateZodSchema, z } from '@strapi/utils';
 
 type DocumentRecord = Record<string, unknown> & {
@@ -15,6 +16,8 @@ type DocumentRecord = Record<string, unknown> & {
   direction?: string;
   email?: string;
   enrollment?: DocumentRecord;
+  employer?: DocumentRecord;
+  employerContact?: DocumentRecord;
   firstName?: string;
   id?: number | string;
   lastMessageAt?: string;
@@ -94,6 +97,21 @@ const candidateDisplayName = (candidate?: DocumentRecord | null) => {
   return fullName || (typeof candidate.email === 'string' ? candidate.email : undefined);
 };
 
+const employerContactDisplayName = (contact?: DocumentRecord | null) => {
+  if (!contact) {
+    return undefined;
+  }
+
+  const firstName = typeof contact.firstName === 'string' ? contact.firstName.trim() : '';
+  const lastName = typeof contact.lastName === 'string' ? contact.lastName.trim() : '';
+  const fullName = `${firstName} ${lastName}`.trim();
+
+  return fullName || (typeof contact.email === 'string' ? contact.email : undefined);
+};
+
+const employerDisplayName = (employer?: DocumentRecord | null) =>
+  employer && typeof employer.companyName === 'string' ? employer.companyName : undefined;
+
 const caseStateSchema = z.enum([
   'open',
   'awaiting_candidate',
@@ -117,6 +135,7 @@ const caseTypeSchema = z.enum([
 const prioritySchema = z.enum(['low', 'normal', 'high', 'urgent']);
 const sourceSchema = z.enum([
   'candidate_dashboard',
+  'employer_dashboard',
   'admin_dashboard',
   'payment_service',
   'notification_service',
@@ -136,8 +155,32 @@ const messageTypeSchema = z.enum([
 ]);
 const messageDirectionSchema = z.enum(['inbound', 'outbound', 'internal', 'system']);
 const visibilitySchema = z.enum(['public', 'internal']);
-const senderTypeSchema = z.enum(['candidate', 'admin', 'service', 'system']);
+const senderTypeSchema = z.enum(['candidate', 'employer_contact', 'admin', 'service', 'system']);
+const supportActorTypeSchema = senderTypeSchema;
 const deliveryStateSchema = z.enum(['not_required', 'queued', 'sent', 'delivered', 'failed']);
+
+const createDashboardSupportCaseSchema = z
+  .object({
+    body: z.string().trim().min(10).max(12000),
+    candidate: z.unknown().optional(),
+    caseType: caseTypeSchema.default('general'),
+    employer: z.unknown().optional(),
+    employerContact: z.unknown().optional(),
+    openedBy: z.object({
+      displayName: z.string().trim().max(240).optional(),
+      email: z.string().trim().email().max(254).optional(),
+      id: z.string().trim().max(160).optional(),
+      type: supportActorTypeSchema,
+    }),
+    priority: prioritySchema.default('normal'),
+    source: sourceSchema,
+    summary: z.string().trim().max(1000).optional(),
+    title: z.string().trim().min(3).max(180),
+  })
+  .strict()
+  .refine((value) => Boolean(value.candidate || value.employerContact), {
+    message: 'A candidate or employer contact is required.',
+  });
 
 const ensureRefundCaseSchema = z
   .object({
@@ -155,7 +198,7 @@ const ensureRefundCaseSchema = z
         displayName: z.string().trim().max(240).optional(),
         email: z.string().trim().email().max(254).optional(),
         id: z.string().trim().max(160).optional(),
-        type: senderTypeSchema.default('system'),
+        type: supportActorTypeSchema.default('system'),
       })
       .optional(),
     enrollment: z.unknown().optional(),
@@ -214,6 +257,8 @@ const addMessageSchema = z
     candidate: z.unknown().optional(),
     deliveryState: deliveryStateSchema.default('not_required'),
     direction: messageDirectionSchema.default('system'),
+    employer: z.unknown().optional(),
+    employerContact: z.unknown().optional(),
     messageType: messageTypeSchema.default('system_update'),
     metadata: z.unknown().optional(),
     payment: z.unknown().optional(),
@@ -264,6 +309,7 @@ const validateEnsureInterviewStrikeDisputeCase = validateZodSchema(
 const validateEnsureAccountRestrictionAppealCase = validateZodSchema(
   ensureAccountRestrictionAppealCaseSchema
 );
+const validateCreateDashboardSupportCase = validateZodSchema(createDashboardSupportCaseSchema);
 const validateAddMessage = validateZodSchema(addMessageSchema);
 const validateUpdateCaseState = validateZodSchema(updateCaseStateSchema);
 const validateAssignCase = validateZodSchema(assignCaseSchema);
@@ -291,6 +337,8 @@ const candidateSupportMessage = (message: DocumentRecord) => ({
   senderType: message.senderType || null,
   subject: message.subject || null,
 });
+
+const requesterSupportMessage = candidateSupportMessage;
 
 const formatMoney = (amountPence?: number, currency = 'GBP') => {
   if (typeof amountPence !== 'number') {
@@ -347,18 +395,27 @@ const trackingStep = ({
   state,
 });
 
-const supportCaseHasPublicCandidateReply = (messages: DocumentRecord[]) =>
+const supportCaseHasPublicRequesterReply = (messages: DocumentRecord[]) =>
   messages.some(
     (message) =>
       message.visibility === 'public' &&
-      (message.senderType === 'candidate' || message.messageType === 'candidate_message')
+      (['candidate', 'employer_contact'].includes(String(message.senderType || '')) ||
+        message.messageType === 'candidate_message')
   );
+
+const publicRequesterReplyAt = (messages: DocumentRecord[]) =>
+  messages.find(
+    (message) =>
+      message.visibility === 'public' &&
+      (['candidate', 'employer_contact'].includes(String(message.senderType || '')) ||
+        message.messageType === 'candidate_message')
+  )?.createdAt || null;
 
 const refundCaseTracking = (supportCase: DocumentRecord, messages: DocumentRecord[]) => {
   const caseState = String(supportCase.caseState || 'open');
   const refundState = String(supportCase.refund?.refundState || '');
   const openedAt = supportCase.openedAt || supportCase.createdAt || null;
-  const candidateReplied = supportCaseHasPublicCandidateReply(messages);
+  const requesterReplied = supportCaseHasPublicRequesterReply(messages);
   const caseClosed = ['closed', 'resolved'].includes(caseState);
   const refundDecisioned = [
     'approved',
@@ -392,15 +449,15 @@ const refundCaseTracking = (supportCase: DocumentRecord, messages: DocumentRecor
       state: caseState === 'open' ? 'current' : refundDecisioned || caseClosed ? 'complete' : 'current',
     }),
     trackingStep({
-      detail: candidateReplied
-        ? 'A candidate reply has been recorded on this case.'
+      detail: requesterReplied
+        ? 'A requester reply has been recorded on this case.'
         : caseState === 'awaiting_candidate'
           ? 'HireFlip is waiting for a reply in the dashboard.'
-          : 'No candidate reply is required right now.',
-      key: 'candidate_reply',
-      label: 'Candidate reply',
-      occurredAt: messages.find((message) => message.senderType === 'candidate')?.createdAt || null,
-      state: candidateReplied ? 'complete' : caseState === 'awaiting_candidate' ? 'current' : 'upcoming',
+          : 'No requester reply is required right now.',
+      key: 'requester_reply',
+      label: 'Requester reply',
+      occurredAt: publicRequesterReplyAt(messages),
+      state: requesterReplied ? 'complete' : caseState === 'awaiting_candidate' ? 'current' : 'upcoming',
     }),
     trackingStep({
       detail:
@@ -480,7 +537,7 @@ const generalCaseTracking = (supportCase: DocumentRecord, messages: DocumentReco
   const caseState = String(supportCase.caseState || 'open');
   const openedAt = supportCase.openedAt || supportCase.createdAt || null;
   const caseClosed = ['closed', 'resolved'].includes(caseState);
-  const candidateReplied = supportCaseHasPublicCandidateReply(messages);
+  const requesterReplied = supportCaseHasPublicRequesterReply(messages);
   const steps = [
     trackingStep({
       detail: 'HireFlip has received the support case.',
@@ -492,7 +549,7 @@ const generalCaseTracking = (supportCase: DocumentRecord, messages: DocumentReco
     trackingStep({
       detail:
         caseState === 'awaiting_candidate'
-          ? 'HireFlip is waiting for a candidate reply.'
+          ? 'HireFlip is waiting for a requester reply.'
           : 'HireFlip is reviewing the case.',
       key: 'review',
       label: 'Review',
@@ -500,13 +557,13 @@ const generalCaseTracking = (supportCase: DocumentRecord, messages: DocumentReco
       state: caseClosed ? 'complete' : 'current',
     }),
     trackingStep({
-      detail: candidateReplied
-        ? 'A candidate reply has been recorded.'
-        : 'No candidate reply is required right now.',
-      key: 'candidate_reply',
-      label: 'Candidate reply',
-      occurredAt: messages.find((message) => message.senderType === 'candidate')?.createdAt || null,
-      state: candidateReplied ? 'complete' : caseState === 'awaiting_candidate' ? 'current' : 'upcoming',
+      detail: requesterReplied
+        ? 'A requester reply has been recorded.'
+        : 'No requester reply is required right now.',
+      key: 'requester_reply',
+      label: 'Requester reply',
+      occurredAt: publicRequesterReplyAt(messages),
+      state: requesterReplied ? 'complete' : caseState === 'awaiting_candidate' ? 'current' : 'upcoming',
     }),
     trackingStep({
       detail: caseClosed ? 'The support case is closed.' : 'The case remains open.',
@@ -552,6 +609,19 @@ const publicSupportCase = (supportCase: DocumentRecord, messages: DocumentRecord
     : null,
   createdAt: supportCase.createdAt || null,
   documentId: getDocumentId(supportCase) || null,
+  employer: supportCase.employer
+    ? {
+        displayName: employerDisplayName(supportCase.employer) || null,
+        documentId: getDocumentId(supportCase.employer) || null,
+      }
+    : null,
+  employerContact: supportCase.employerContact
+    ? {
+        displayName: employerContactDisplayName(supportCase.employerContact) || null,
+        documentId: getDocumentId(supportCase.employerContact) || null,
+        email: supportCase.employerContact.email || null,
+      }
+    : null,
   lastMessageAt: supportCase.lastMessageAt || null,
   messages: messages.map(publicSupportMessage),
   owner: supportCase.ownerStaffUserId
@@ -587,6 +657,36 @@ const candidateSupportCase = (supportCase: DocumentRecord, messages: DocumentRec
   updatedAt: supportCase.updatedAt || null,
 });
 
+const employerSupportCase = (supportCase: DocumentRecord, messages: DocumentRecord[] = []) => ({
+  caseTracking: supportCaseTracking(supportCase, messages),
+  caseKey: supportCase.caseKey || null,
+  caseState: supportCase.caseState || null,
+  caseType: supportCase.caseType || null,
+  createdAt: supportCase.createdAt || null,
+  documentId: getDocumentId(supportCase) || null,
+  employer: supportCase.employer
+    ? {
+        displayName: employerDisplayName(supportCase.employer) || null,
+        documentId: getDocumentId(supportCase.employer) || null,
+      }
+    : null,
+  employerContact: supportCase.employerContact
+    ? {
+        displayName: employerContactDisplayName(supportCase.employerContact) || null,
+        documentId: getDocumentId(supportCase.employerContact) || null,
+        email: supportCase.employerContact.email || null,
+      }
+    : null,
+  lastMessageAt: supportCase.lastMessageAt || null,
+  messages: messages
+    .filter((message) => message.visibility === 'public')
+    .map(requesterSupportMessage),
+  priority: supportCase.priority || null,
+  summary: supportCase.summary || null,
+  title: supportCase.title || null,
+  updatedAt: supportCase.updatedAt || null,
+});
+
 const supportCaseKeyForRefund = (refund: DocumentRecord) =>
   `refund:${getDocumentId(refund) || 'unknown'}:support`;
 
@@ -599,8 +699,23 @@ const supportCaseKeyForInterviewStrikeDispute = (strikeDocumentId: string) =>
 const supportCaseKeyForAccountRestrictionAppeal = (candidateDocumentId: string) =>
   `candidate-account:${candidateDocumentId}:restriction-appeal`;
 
+const supportCaseKeyForCandidateDashboardRequest = (candidateDocumentId: string) =>
+  `candidate:${candidateDocumentId}:support:${randomUUID()}`;
+
+const supportCaseKeyForEmployerDashboardRequest = (employerContactDocumentId: string) =>
+  `employer-contact:${employerContactDocumentId}:support:${randomUUID()}`;
+
 const relationConnect = (record?: DocumentRecord | null) =>
   getDocumentId(record) ? { connect: [{ documentId: getDocumentId(record) }] } : undefined;
+
+const supportCasePopulate = [
+  'candidate',
+  'refund',
+  'payment',
+  'enrollment',
+  'employer',
+  'employerContact',
+];
 
 const findCaseByKey = async (strapi: StrapiDocumentService, caseKey: string) => {
   const cases = await documents(strapi, 'api::support-case.support-case').findMany({
@@ -608,7 +723,7 @@ const findCaseByKey = async (strapi: StrapiDocumentService, caseKey: string) => 
       caseKey,
     },
     limit: 1,
-    populate: ['candidate', 'refund', 'payment', 'enrollment'],
+    populate: supportCasePopulate,
   });
 
   return cases[0];
@@ -660,7 +775,7 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
             ownerStaffEmail: body.assignedTo.email,
             ownerStaffUserId: body.assignedTo.id,
           },
-          populate: ['candidate', 'refund', 'payment', 'enrollment'],
+          populate: supportCasePopulate,
         });
 
         return {
@@ -704,7 +819,7 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
         summary: body.summary,
         title: body.title || defaultRefundCaseTitle(refund, candidate),
       },
-      populate: ['candidate', 'refund', 'payment', 'enrollment'],
+      populate: supportCasePopulate,
     });
 
     return {
@@ -749,7 +864,7 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
               },
               resolvedAt: null,
             },
-            populate: ['candidate', 'refund', 'payment', 'enrollment'],
+            populate: supportCasePopulate,
           })
         : existingCase;
 
@@ -776,7 +891,7 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
         summary,
         title,
       },
-      populate: ['candidate', 'refund', 'payment', 'enrollment'],
+      populate: supportCasePopulate,
     });
 
     return {
@@ -822,7 +937,7 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
               },
               resolvedAt: null,
             },
-            populate: ['candidate', 'refund', 'payment', 'enrollment'],
+            populate: supportCasePopulate,
           })
         : existingCase;
 
@@ -849,7 +964,7 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
         summary,
         title,
       },
-      populate: ['candidate', 'refund', 'payment', 'enrollment'],
+      populate: supportCasePopulate,
     });
 
     return {
@@ -900,7 +1015,7 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
               },
               resolvedAt: null,
             },
-            populate: ['candidate', 'refund', 'payment', 'enrollment'],
+            populate: supportCasePopulate,
           })
         : existingCase;
 
@@ -928,7 +1043,7 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
         summary,
         title,
       },
-      populate: ['candidate', 'refund', 'payment', 'enrollment'],
+      populate: supportCasePopulate,
     });
 
     return {
@@ -937,10 +1052,81 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
     };
   },
 
+  async createDashboardSupportCase(input: unknown) {
+    const body = validateCreateDashboardSupportCase(input);
+    const candidate = body.candidate as DocumentRecord | undefined;
+    const employer = body.employer as DocumentRecord | undefined;
+    const employerContact = body.employerContact as DocumentRecord | undefined;
+    const candidateDocumentId = getDocumentId(candidate);
+    const employerContactDocumentId = getDocumentId(employerContact);
+
+    if (!candidateDocumentId && !employerContactDocumentId) {
+      throw new Error('A candidate or employer contact document ID is required to create a support case.');
+    }
+
+    const now = new Date().toISOString();
+    const caseKey = candidateDocumentId
+      ? supportCaseKeyForCandidateDashboardRequest(candidateDocumentId)
+      : supportCaseKeyForEmployerDashboardRequest(employerContactDocumentId || 'unknown');
+    const supportCase = await documents(strapi, 'api::support-case.support-case').create({
+      data: {
+        candidate: relationConnect(candidate),
+        caseKey,
+        caseState: 'awaiting_staff',
+        caseType: body.caseType,
+        employer: relationConnect(employer),
+        employerContact: relationConnect(employerContact),
+        lastMessageAt: now,
+        metadata: {
+          kind: body.openedBy.type === 'employer_contact'
+            ? 'employer_general_support_request'
+            : 'candidate_general_support_request',
+        },
+        openedAt: now,
+        openedByDisplayName: body.openedBy.displayName,
+        openedByEmail: body.openedBy.email,
+        openedByStaffUserId: body.openedBy.id,
+        openedByType: body.openedBy.type,
+        priority: body.priority,
+        source: body.source,
+        summary: body.summary || body.body.slice(0, 240),
+        title: body.title,
+      },
+      populate: supportCasePopulate,
+    });
+
+    await documents(strapi, 'api::support-message.support-message').create({
+      data: {
+        body: body.body,
+        candidate: relationConnect(candidate),
+        deliveryState: 'not_required',
+        direction: 'inbound',
+        employer: relationConnect(employer),
+        employerContact: relationConnect(employerContact),
+        messageType: 'candidate_message',
+        senderDisplayName: body.openedBy.displayName,
+        senderEmail: body.openedBy.email,
+        senderId: body.openedBy.id,
+        senderType: body.openedBy.type,
+        supportCase: relationConnect(supportCase),
+        visibility: 'public',
+      },
+    });
+    const supportCaseDocumentId = getDocumentId(supportCase);
+    const messages = await messagesForCase(strapi, supportCaseDocumentId);
+
+    return {
+      created: true,
+      supportCase: publicSupportCase(supportCase, messages),
+    };
+  },
+
   async addMessage(input: unknown) {
     const body = validateAddMessage(input);
     const supportCase = body.supportCase as DocumentRecord;
     const candidate = body.candidate as DocumentRecord | undefined;
+    const employer = body.employer as DocumentRecord | undefined;
+    const employerContact = body.employerContact as DocumentRecord | undefined;
     const refund = body.refund as DocumentRecord | undefined;
     const payment = body.payment as DocumentRecord | undefined;
     const now = new Date().toISOString();
@@ -950,6 +1136,8 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
         candidate: relationConnect(candidate),
         deliveryState: body.deliveryState,
         direction: body.direction,
+        employer: relationConnect(employer),
+        employerContact: relationConnect(employerContact),
         messageType: body.messageType,
         metadata: objectValue(body.metadata),
         payment: relationConnect(payment),
@@ -963,7 +1151,7 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
         supportCase: relationConnect(supportCase),
         visibility: body.visibility,
       },
-      populate: ['supportCase', 'candidate', 'refund', 'payment'],
+      populate: ['supportCase', 'candidate', 'refund', 'payment', 'employer', 'employerContact'],
     });
 
     if (supportCase.documentId) {
@@ -995,7 +1183,7 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
         },
         resolvedAt: resolvedState ? now : null,
       },
-      populate: ['candidate', 'refund', 'payment', 'enrollment'],
+      populate: supportCasePopulate,
     });
   },
 
@@ -1016,7 +1204,7 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
         ownerStaffEmail: body.assignedTo.email,
         ownerStaffUserId: body.assignedTo.id,
       },
-      populate: ['candidate', 'refund', 'payment', 'enrollment'],
+      populate: supportCasePopulate,
     });
   },
 
@@ -1028,7 +1216,7 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
         },
       },
       limit: 20,
-      populate: ['candidate', 'refund', 'payment', 'enrollment'],
+      populate: supportCasePopulate,
       sort: ['lastMessageAt:desc', 'createdAt:desc'],
     });
 
@@ -1045,7 +1233,7 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
         documentId: input.supportCaseDocumentId,
       },
       limit: 1,
-      populate: ['candidate', 'refund', 'payment', 'enrollment'],
+      populate: supportCasePopulate,
     });
     const supportCase = cases[0];
 
@@ -1067,7 +1255,7 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
         },
       },
       limit: 50,
-      populate: ['candidate', 'refund', 'payment', 'enrollment'],
+      populate: supportCasePopulate,
       sort: ['lastMessageAt:desc', 'createdAt:desc'],
     });
 
@@ -1096,7 +1284,7 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
         documentId: supportCaseDocumentId,
       },
       limit: 1,
-      populate: ['candidate', 'refund', 'payment', 'enrollment'],
+      populate: supportCasePopulate,
     });
     const supportCase = cases[0];
 
@@ -1110,6 +1298,98 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
     );
   },
 
+  async casesForEmployerContact({
+    employerContactDocumentId,
+    employerDocumentId,
+  }: {
+    employerContactDocumentId: string;
+    employerDocumentId?: string;
+  }) {
+    const filters = employerDocumentId
+      ? {
+          $or: [
+            {
+              employerContact: {
+                documentId: employerContactDocumentId,
+              },
+            },
+            {
+              employer: {
+                documentId: employerDocumentId,
+              },
+            },
+          ],
+        }
+      : {
+          employerContact: {
+            documentId: employerContactDocumentId,
+          },
+        };
+    const cases = await documents(strapi, 'api::support-case.support-case').findMany({
+      filters,
+      limit: 50,
+      populate: supportCasePopulate,
+      sort: ['lastMessageAt:desc', 'createdAt:desc'],
+    });
+
+    return Promise.all(
+      cases.map(async (supportCase) =>
+        employerSupportCase(
+          supportCase,
+          await messagesForCase(strapi, getDocumentId(supportCase))
+        )
+      )
+    );
+  },
+
+  async getCaseForEmployerContact({
+    employerContactDocumentId,
+    employerDocumentId,
+    supportCaseDocumentId,
+  }: {
+    employerContactDocumentId: string;
+    employerDocumentId?: string;
+    supportCaseDocumentId: string;
+  }) {
+    const filters = employerDocumentId
+      ? {
+          documentId: supportCaseDocumentId,
+          $or: [
+            {
+              employerContact: {
+                documentId: employerContactDocumentId,
+              },
+            },
+            {
+              employer: {
+                documentId: employerDocumentId,
+              },
+            },
+          ],
+        }
+      : {
+          documentId: supportCaseDocumentId,
+          employerContact: {
+            documentId: employerContactDocumentId,
+          },
+        };
+    const cases = await documents(strapi, 'api::support-case.support-case').findMany({
+      filters,
+      limit: 1,
+      populate: supportCasePopulate,
+    });
+    const supportCase = cases[0];
+
+    if (!supportCase) {
+      return null;
+    }
+
+    return employerSupportCase(
+      supportCase,
+      await messagesForCase(strapi, getDocumentId(supportCase))
+    );
+  },
+
   async listCases(input: SupportCaseListInput = {}) {
     const safeLimit = Math.min(Math.max(Number(input.limit) || 50, 1), 100);
     const cases = await documents(strapi, 'api::support-case.support-case').findMany({
@@ -1118,7 +1398,7 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
         ...(input.caseType ? { caseType: input.caseType } : {}),
       },
       limit: safeLimit,
-      populate: ['candidate', 'refund', 'payment', 'enrollment'],
+      populate: supportCasePopulate,
       sort: ['lastMessageAt:desc', 'createdAt:desc'],
     });
 

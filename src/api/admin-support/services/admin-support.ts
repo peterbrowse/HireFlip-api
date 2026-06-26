@@ -521,6 +521,9 @@ const candidateFirstName = (candidate?: DocumentRecord | null) => {
 const supportCaseUrl = (supportCaseDocumentId: string) =>
   `${trimTrailingSlash(process.env.CANDIDATE_DASHBOARD_BASE_URL || 'http://localhost:3001')}/support/${encodeURIComponent(supportCaseDocumentId)}`;
 
+const employerSupportCaseUrl = (supportCaseDocumentId: string) =>
+  `${trimTrailingSlash(process.env.EMPLOYER_DASHBOARD_PUBLIC_URL || 'http://localhost:3004')}/support/${encodeURIComponent(supportCaseDocumentId)}`;
+
 const requestNotificationServiceEmail = async ({
   correlationId,
   html,
@@ -687,7 +690,7 @@ const findSupportCaseRecord = async (strapi: StrapiService, supportCaseDocumentI
       documentId: supportCaseDocumentId,
     },
     limit: 1,
-    populate: ['candidate', 'refund', 'payment', 'enrollment'],
+    populate: ['candidate', 'refund', 'payment', 'enrollment', 'employer', 'employerContact'],
   });
 
   return cases[0];
@@ -1113,6 +1116,82 @@ const queueCandidateSupportPrompt = async ({
   };
 };
 
+const queueEmployerSupportPrompt = async ({
+  requestContext,
+  strapi,
+  supportCase,
+}: {
+  requestContext: RequestContext;
+  strapi: StrapiService;
+  supportCase: DocumentRecord;
+}) => {
+  const employerContact = documentRecordValue(supportCase.employerContact);
+  const employerContactDocumentId = getDocumentId(employerContact);
+  const supportCaseDocumentId = getDocumentId(supportCase);
+  const employerContactEmail =
+    typeof employerContact?.email === 'string' ? employerContact.email : null;
+
+  if (!employerContactDocumentId || !supportCaseDocumentId || !employerContactEmail) {
+    return {
+      emailQueued: false,
+      smsQueued: false,
+    };
+  }
+
+  const url = employerSupportCaseUrl(supportCaseDocumentId);
+  const subject = 'New reply on your HireFlip support request';
+  const emailQueueResult = await requestNotificationServiceEmail({
+    correlationId: supportCaseDocumentId,
+    template: {
+      key: 'generic_branded_message',
+      variables: {
+        bodyLines: [
+          'There is a new reply to your HireFlip employer support request.',
+          'Please open the support case in your employer dashboard to view and reply.',
+        ],
+        ctaLabel: 'Open support case',
+        ctaUrl: url,
+        heading: subject,
+        subject,
+      },
+    },
+    to: employerContactEmail,
+    type: 'employer_support_case_updated',
+  });
+  const emailQueued = emailQueueResult?.data?.queued === true;
+
+  await documents(strapi, 'api::notification-event.notification-event').create({
+    data: {
+      channel: 'email',
+      deliveryState: emailQueued ? 'queued' : 'failed',
+      ...(emailQueued ? {} : { failedAt: new Date().toISOString() }),
+      employer: relationConnect(documentRecordValue(supportCase.employer)),
+      eventType: 'employer.support_case_updated',
+      metadata: {
+        dashboardUrl: url,
+        notificationServiceJobId:
+          typeof emailQueueResult?.data?.jobId === 'undefined'
+            ? null
+            : String(emailQueueResult.data.jobId),
+        requestId: requestContext.requestId,
+        supportCaseDocumentId,
+      },
+      priority: 'normal',
+      recipientEmail: employerContactEmail,
+      recipientId: employerContactDocumentId,
+      recipientType: 'employer_contact',
+      relatedId: supportCaseDocumentId,
+      relatedType: 'support_case',
+      templateKey: 'generic_branded_message',
+    },
+  });
+
+  return {
+    emailQueued,
+    smsQueued: false,
+  };
+};
+
 const queueCandidateFeedbackReportReadyNotification = async ({
   feedback,
   interview,
@@ -1236,15 +1315,26 @@ const assertSupportSession = async (
 };
 
 const publishSupportChange = (strapi: StrapiService, supportCaseDocumentId?: string) =>
-  publishAdminRealtimeEvent(
-    {
-      channels: ['support'],
-      resourceKey: supportCaseDocumentId,
-      resourceType: 'support_case',
-      type: 'support_cases_changed',
-    },
-    (strapi as { log?: { error?: (message: string, error?: unknown) => void } }).log
-  );
+  Promise.all([
+    publishAdminRealtimeEvent(
+      {
+        channels: ['support'],
+        resourceKey: supportCaseDocumentId,
+        resourceType: 'support_case',
+        type: 'support_cases_changed',
+      },
+      (strapi as { log?: { error?: (message: string, error?: unknown) => void } }).log
+    ),
+    publishAdminRealtimeEvent(
+      {
+        channels: ['operations'],
+        resourceKey: supportCaseDocumentId,
+        resourceType: 'support_case',
+        type: 'admin_tasks_changed',
+      },
+      (strapi as { log?: { error?: (message: string, error?: unknown) => void } }).log
+    ),
+  ]);
 
 const publishAiFeedbackTaskChange = (strapi: StrapiService, feedbackDocumentId?: string) =>
   publishAdminRealtimeEvent(
@@ -1429,20 +1519,32 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
       session
     );
 
-    const notificationResult = await queueCandidateSupportPrompt({
-      requestContext,
-      strapi,
-      supportCase: supportCaseRecord,
-    });
+    const isEmployerCase = Boolean(supportCaseRecord.employerContact && !supportCaseRecord.candidate);
+    const notificationResult = isEmployerCase
+      ? await queueEmployerSupportPrompt({
+          requestContext,
+          strapi,
+          supportCase: supportCaseRecord,
+        })
+      : await queueCandidateSupportPrompt({
+          requestContext,
+          strapi,
+          supportCase: supportCaseRecord,
+        });
+    const dashboardUrl = isEmployerCase
+      ? employerSupportCaseUrl(body.supportCaseDocumentId)
+      : supportCaseUrl(body.supportCaseDocumentId);
     await supportCaseService(strapi).addMessage({
       body: body.body,
       candidate: supportCaseRecord.candidate,
       deliveryState:
         notificationResult.emailQueued || notificationResult.smsQueued ? 'queued' : 'not_required',
       direction: 'outbound',
+      employer: supportCaseRecord.employer,
+      employerContact: supportCaseRecord.employerContact,
       messageType: 'staff_reply',
       metadata: {
-        candidateDashboardUrl: supportCaseUrl(body.supportCaseDocumentId),
+        dashboardUrl,
         notificationPromptQueued:
           notificationResult.emailQueued || notificationResult.smsQueued,
         notificationPromptChannels: {
