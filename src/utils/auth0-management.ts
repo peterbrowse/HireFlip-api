@@ -184,6 +184,16 @@ export const getAuth0ManagementClient = () => {
       );
     },
 
+    async deleteUser(userId: string) {
+      await requestManagementApi<Record<string, never>>(
+        config,
+        `/users/${encodeURIComponent(userId)}`,
+        {
+          method: 'DELETE',
+        }
+      );
+    },
+
     async createPasswordSetupTicket({
       inviteUrl,
       userId,
