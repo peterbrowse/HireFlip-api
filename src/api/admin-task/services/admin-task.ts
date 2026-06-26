@@ -130,6 +130,7 @@ type AdminTaskSourceType =
   | 'interview_feedback'
   | 'notification_event'
   | 'payment'
+  | 'privacy_rights_request'
   | 'refund'
   | 'reservation'
   | 'support_case';
@@ -139,6 +140,7 @@ type AdminTaskType =
   | 'ai_feedback_review'
   | 'interview_operation'
   | 'notification_failure'
+  | 'privacy_request'
   | 'payment_review'
   | 'refund_review'
   | 'support_case'
@@ -214,6 +216,8 @@ const aiFeedbackReviewPath = (feedbackDocumentId: string) =>
   `/support/ai-feedback/${encodeURIComponent(feedbackDocumentId)}`;
 const notificationIssuePath = (notificationEventDocumentId: string) =>
   `/support/notification-issues/${encodeURIComponent(notificationEventDocumentId)}`;
+const privacyRequestPath = (requestDocumentId: string) =>
+  `/support/privacy-requests/${encodeURIComponent(requestDocumentId)}`;
 const interviewOperationsPath = (params?: Record<string, string | undefined>) => {
   const searchParams = new URLSearchParams();
 
@@ -258,6 +262,7 @@ const taskTypeLabels: Record<AdminTaskType, string> = {
   ai_feedback_review: 'AI feedback review',
   interview_operation: 'Interview operation',
   notification_failure: 'Notification failure',
+  privacy_request: 'Privacy request',
   payment_review: 'Payment review',
   refund_review: 'Refund review',
   support_case: 'Support case',
@@ -276,6 +281,7 @@ const monitoredTaskTypes: AdminTaskType[] = [
   'assessment_appeal',
   'ai_feedback_review',
   'interview_operation',
+  'privacy_request',
   'payment_review',
   'refund_review',
   'support_case',
@@ -1346,6 +1352,98 @@ const collectSupportCaseTasks = async (strapi: StrapiDocumentService) => {
     .filter((task): task is AdminTaskDraft => Boolean(task));
 };
 
+const activePrivacyRequestStates = [
+  'received',
+  'identity_verification_required',
+  'in_review',
+  'clarification_requested',
+  'processing',
+];
+
+const privacyRequestTask = (request: DocumentRecord): AdminTaskDraft | null => {
+  const documentId = getDocumentId(request);
+
+  if (!documentId) {
+    return null;
+  }
+
+  const subject =
+    request.subjectUserType === 'employer_contact'
+      ? documentRecordValue(request.employerContact)
+      : documentRecordValue(request.candidate);
+  const subjectName = candidateDisplayName(subject) || displayNameFallback(subject);
+  const dueAt = typeof request.dueAt === 'string' ? request.dueAt : null;
+  const dueTime = dueAt ? Date.parse(dueAt) : Number.NaN;
+  const isOverdue = Number.isFinite(dueTime) && dueTime < Date.now();
+  const isDueSoon =
+    Number.isFinite(dueTime) && dueTime - Date.now() <= 5 * 24 * 60 * 60 * 1000;
+  const requestTypeLabel = String(request.requestType || 'privacy').replace(/[_-]+/g, ' ');
+  const requestStateLabel = String(request.requestState || 'received').replace(/[_-]+/g, ' ');
+
+  return {
+    actionLabel: 'Review request',
+    actionPath: privacyRequestPath(documentId),
+    metadata: {
+      dueAt,
+      requestState: request.requestState || null,
+      requestType: request.requestType || null,
+      sourceCreatedAt: request.createdAt,
+      sourceDetectedAt: request.receivedAt || sourceTimestamp(request),
+      subjectName: subjectName || null,
+      subjectType: request.subjectUserType || null,
+      visibleRoleKeys: ['admin', 'super_admin'],
+    },
+    priority: isOverdue ? 'urgent' : isDueSoon ? 'high' : 'normal',
+    relatedDocumentId: getDocumentId(subject),
+    relatedType: typeof request.subjectUserType === 'string' ? request.subjectUserType : undefined,
+    sourceDocumentId: documentId,
+    sourceType: 'privacy_rights_request',
+    summary: trimToLength(
+      [
+        `${requestTypeLabel} privacy request is ${requestStateLabel}.`,
+        subjectName ? `Subject: ${subjectName}.` : '',
+        dueAt ? `Due: ${new Date(dueAt).toLocaleDateString('en-GB')}.` : '',
+      ].filter(Boolean).join(' '),
+      500
+    ),
+    taskKey: `privacy-request:${documentId}`,
+    taskType: 'privacy_request',
+    title: isOverdue ? 'Privacy request overdue' : 'Privacy request needs review',
+  };
+};
+
+function displayNameFallback(record?: DocumentRecord) {
+  if (!record) {
+    return undefined;
+  }
+
+  return (
+    [record.firstName, record.lastName].filter(Boolean).join(' ').trim() ||
+    (typeof record.companyName === 'string' ? record.companyName : undefined) ||
+    (typeof record.email === 'string' ? record.email : undefined)
+  );
+}
+
+const collectPrivacyRequestTasks = async (strapi: StrapiDocumentService) => {
+  const requests = await documents(strapi, 'api::privacy-rights-request.privacy-rights-request').findMany({
+    filters: {
+      requestState: {
+        $in: activePrivacyRequestStates,
+      },
+    },
+    limit: 100,
+    populate: {
+      candidate: true,
+      employerContact: {
+        populate: ['employer'],
+      },
+    },
+    sort: ['dueAt:asc', 'receivedAt:asc', 'createdAt:asc'],
+  });
+
+  return requests.map(privacyRequestTask).filter((task): task is AdminTaskDraft => Boolean(task));
+};
+
 const collectAiFeedbackFailureTasks = async (strapi: StrapiDocumentService) => {
   const feedbackRecords = await documents(strapi, 'api::interview-feedback.interview-feedback').findMany({
     filters: {
@@ -1447,6 +1545,7 @@ const collectTaskDrafts = async (strapi: StrapiDocumentService) => {
     enrollments,
     refunds,
     notifications,
+    privacyRequests,
     auditEvents,
     aiFeedbackFailures,
     supportCases,
@@ -1459,6 +1558,7 @@ const collectTaskDrafts = async (strapi: StrapiDocumentService) => {
     collectEnrollmentTasks(strapi),
     collectRefundTasks(strapi),
     collectNotificationTasks(strapi),
+    collectPrivacyRequestTasks(strapi),
     collectAuditTasks(strapi),
     collectAiFeedbackFailureTasks(strapi),
     collectSupportCaseTasks(strapi),
@@ -1473,6 +1573,7 @@ const collectTaskDrafts = async (strapi: StrapiDocumentService) => {
     ...enrollments,
     ...refunds,
     ...notifications,
+    ...privacyRequests,
     ...auditEvents,
     ...aiFeedbackFailures,
     ...supportCases,
@@ -1543,6 +1644,7 @@ const taskCounts = (tasks: ReturnType<typeof publicTask>[]) => {
     criticalEvents: tasks.filter((task) => task.taskType === 'system_alert').length,
     interviewOperations: tasks.filter((task) => task.taskType === 'interview_operation').length,
     notificationFailures: tasks.filter((task) => task.taskType === 'notification_failure').length,
+    privacyRequests: tasks.filter((task) => task.taskType === 'privacy_request').length,
     paymentChecks: tasks.filter((task) =>
       ['payment_review', 'refund_review'].includes(task.taskType)
     ).length,

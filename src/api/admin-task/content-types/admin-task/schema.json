@@ -24,6 +24,7 @@
         "assessment_appeal",
         "ai_feedback_review",
         "interview_operation",
+        "privacy_request",
         "payment_review",
         "refund_review",
         "support_case",
@@ -74,6 +75,7 @@
         "support_case",
         "interview_feedback",
         "interview",
+        "privacy_rights_request",
         "notification_event",
         "audit_event"
       ],

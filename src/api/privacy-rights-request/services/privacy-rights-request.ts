@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomInt } from 'node:crypto';
 import PDFDocument from 'pdfkit';
 import { errors, validateZodSchema, z } from '@strapi/utils';
 import { getAuth0ManagementClient } from '../../../utils/auth0-management';
+import { publishAdminRealtimeEvent } from '../../../utils/admin-realtime-events';
 
 const { ForbiddenError, ValidationError } = errors;
 
@@ -510,6 +511,17 @@ const audit = (
     userAgent: context.userAgent,
   });
 
+const publishPrivacyTaskChange = (strapi: StrapiService, request?: DocumentRecord | null) =>
+  publishAdminRealtimeEvent(
+    {
+      channels: ['operations'],
+      resourceKey: getDocumentId(request) ? `privacy-request:${getDocumentId(request)}` : undefined,
+      resourceType: 'admin_task',
+      type: 'admin_tasks_changed',
+    },
+    strapi.log
+  );
+
 const hashChallengeCode = ({
   code,
   requestDocumentId,
@@ -895,6 +907,8 @@ const createPrivacyRequest = async (
       'The HireFlip team will review it and update you from your dashboard.',
     ], context);
   }
+
+  await publishPrivacyTaskChange(strapi, populatedRequest || request);
 
   return populatedRequest || request;
 };
@@ -1553,7 +1567,7 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
       ],
       heading: 'Your privacy download code',
       recipient: candidate,
-      recipientType: 'admin',
+      recipientType: 'candidate',
       subject: 'Your HireFlip privacy download code',
       type: 'candidate_privacy_download_code',
     });
@@ -1624,7 +1638,7 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
       ctaUrl: dashboardPrivacyUrl('candidate', requestDocumentId),
       heading: 'Your privacy export is ready',
       recipient: candidate,
-      recipientType: 'candidate',
+      recipientType: 'admin',
       subject: 'Your HireFlip privacy export is ready',
       type: 'candidate_privacy_download_link',
     });
@@ -1887,12 +1901,12 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
           ]
         : []),
     ];
+    const terminalPrivacyRequestStates = ['completed', 'partially_fulfilled', 'rejected', 'cancelled'];
+    const nextStateIsTerminal = terminalPrivacyRequestStates.includes(body.requestState);
     const updated = await documents(strapi, 'api::privacy-rights-request.privacy-rights-request').update({
       documentId: getDocumentId(request),
       data: {
-        completedAt: ['completed', 'partially_fulfilled', 'rejected', 'cancelled'].includes(body.requestState)
-          ? new Date().toISOString()
-          : request.completedAt || null,
+        completedAt: nextStateIsTerminal ? request.completedAt || new Date().toISOString() : null,
         rejectionReason: body.requestState === 'rejected' ? body.rejectionReason || null : request.rejectionReason || null,
         requestState: body.requestState,
         metadata: {
@@ -1930,6 +1944,8 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
             : 'The HireFlip team has updated your request.'),
       ], context);
     }
+
+    await publishPrivacyTaskChange(strapi, populated);
 
     return adminResult(session, populated);
   },
@@ -2024,6 +2040,7 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
     }
 
     const updated = await anonymiseCandidate(strapi, request.candidate, session, request, body.auditReason, context);
+    await publishPrivacyTaskChange(strapi, updated);
 
     return adminResult(session, updated);
   },
