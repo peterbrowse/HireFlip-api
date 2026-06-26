@@ -1,4 +1,5 @@
 import { errors, validateZodSchema, z } from '@strapi/utils';
+import PDFDocument from 'pdfkit';
 import { getAuth0ManagementClient } from '../../../utils/auth0-management';
 
 const { ForbiddenError, ValidationError } = errors;
@@ -264,6 +265,45 @@ const displayName = (candidate?: DocumentRecord | null) => {
 
   return fullName || candidate?.email || 'Candidate';
 };
+
+const jsonClone = (value: unknown) => JSON.parse(JSON.stringify(value ?? null));
+
+const renderCandidateExportPdf = ({
+  candidate,
+  data,
+}: {
+  candidate: DocumentRecord;
+  data: Record<string, unknown>;
+}) =>
+  new Promise<Buffer>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    const doc = new PDFDocument({
+      margins: {
+        bottom: 48,
+        left: 48,
+        right: 48,
+        top: 48,
+      },
+      size: 'A4',
+    });
+
+    doc.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+    doc.on('error', reject);
+    doc.on('end', () => resolve(Buffer.concat(chunks)));
+
+    doc.fontSize(20).text('HireFlip Candidate Data Export');
+    doc.moveDown(0.5);
+    doc.fontSize(10).text(`Generated: ${new Date().toISOString()}`);
+    doc.text(`Candidate: ${displayName(candidate)} (${candidate.email || 'No email'})`);
+    doc.text(`Candidate ID: ${getDocumentId(candidate) || 'Not recorded'}`);
+    doc.moveDown();
+    doc.fontSize(14).text('Export Data');
+    doc.moveDown(0.5);
+    doc.fontSize(8).text(JSON.stringify(jsonClone(data), null, 2), {
+      lineGap: 2,
+    });
+    doc.end();
+  });
 
 const humanize = (value?: string | null) =>
   value
@@ -2208,22 +2248,7 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
       : [];
     const exportedAt = new Date().toISOString();
 
-    await recordAdminCandidateAudit(
-      strapi,
-      session,
-      candidate,
-      'admin.privacy_candidate_data_exported',
-      requestContext,
-      {
-        metadata: {
-          exportedAt,
-          exportFormat: 'json',
-        },
-      }
-    );
-
-    return {
-      export: {
+    const exportPayload = {
         auditEvents: auditRecords,
         candidate,
         candidateProfiles: profiles,
@@ -2238,8 +2263,34 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
         strikes,
         supportCases,
         supportMessages,
-      },
+    };
+    const pdf = await renderCandidateExportPdf({
+      candidate,
+      data: exportPayload,
+    });
+
+    await recordAdminCandidateAudit(
+      strapi,
+      session,
+      candidate,
+      'admin.privacy_candidate_data_exported',
+      requestContext,
+      {
+        metadata: {
+          exportedAt,
+          exportFormat: 'pdf',
+        },
+      }
+    );
+
+    return {
+      export: exportPayload,
       exported: true,
+      file: {
+        base64: pdf.toString('base64'),
+        fileName: `hireflip-candidate-data-export-${getDocumentId(candidate) || 'candidate'}.pdf`,
+        mimeType: 'application/pdf',
+      },
       user: session.user,
     };
   },

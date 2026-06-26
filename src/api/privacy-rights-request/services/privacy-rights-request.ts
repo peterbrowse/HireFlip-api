@@ -179,11 +179,7 @@ const adminActionSchema = adminRequestSchema
     requestState: z.enum(requestStateValues),
   })
   .strict();
-const adminDownloadSchema = adminRequestSchema
-  .extend({
-    code: z.string().trim().regex(/^\d{6}$/),
-  })
-  .strict();
+const adminDownloadSchema = adminRequestSchema;
 const adminAnonymiseSchema = adminRequestSchema
   .extend({
     auditReason: z.string().trim().min(3).max(4000),
@@ -815,6 +811,56 @@ const queuePrivacyUpdate = (
   });
 };
 
+const sendRequesterDownloadCode = async (
+  strapi: StrapiService,
+  request: DocumentRecord,
+  session: AdminSession,
+  context: RequestContext
+) => {
+  const subjectType = request.subjectUserType === 'employer_contact' ? 'employer_contact' : 'candidate';
+  const recipient = subjectType === 'employer_contact' ? request.employerContact : request.candidate;
+
+  if (!recipient) {
+    throw new ValidationError('Privacy request subject is missing.');
+  }
+
+  const ownerId = String(recipient.authIdentityId || '').trim();
+
+  if (!ownerId) {
+    throw new ValidationError('Privacy request subject is missing an authentication identity.');
+  }
+
+  const code = await saveDownloadChallenge(strapi, request, subjectType, ownerId);
+  await createNotificationEvent(strapi, request, {
+    bodyLines: [
+      `Your HireFlip privacy download code is ${code}.`,
+      'This code expires in 15 minutes.',
+      'Open your HireFlip dashboard privacy request to download the PDF export.',
+    ],
+    ctaLabel: 'Open privacy request',
+    ctaUrl: dashboardPrivacyUrl(subjectType, getDocumentId(request)),
+    heading: 'Your privacy export is ready',
+    recipient,
+    recipientType: subjectType,
+    subject: 'Your HireFlip privacy export is ready',
+    type: `${subjectType}_privacy_download_code`,
+  });
+  await audit(strapi, {
+    actorDisplayName: session.user.displayName,
+    actorEmail: session.user.email,
+    actorId: session.user.id,
+    actorType: 'admin',
+    context,
+    eventType: 'privacy.requester_download_code_sent',
+    request,
+    source: 'admin_dashboard',
+  });
+
+  return {
+    codeSent: true,
+  };
+};
+
 const saveDownloadChallenge = async (
   strapi: StrapiService,
   request: DocumentRecord,
@@ -1223,8 +1269,8 @@ const renderPdf = async ({
     doc.end();
   });
 
-const exportForRequest = async (strapi: StrapiService, request: DocumentRecord) => {
-  if (!['completed', 'partially_fulfilled', 'processing'].includes(String(request.requestState))) {
+const exportForRequest = async (strapi: StrapiService, request: DocumentRecord, requireReady = true) => {
+  if (requireReady && !['completed', 'partially_fulfilled', 'processing'].includes(String(request.requestState))) {
     throw new ValidationError('Privacy export is not ready for download yet.');
   }
 
@@ -1638,7 +1684,7 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
       ctaUrl: dashboardPrivacyUrl('candidate', requestDocumentId),
       heading: 'Your privacy export is ready',
       recipient: candidate,
-      recipientType: 'admin',
+      recipientType: 'candidate',
       subject: 'Your HireFlip privacy export is ready',
       type: 'candidate_privacy_download_link',
     });
@@ -1935,7 +1981,12 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
       source: 'admin_dashboard',
     });
 
-    if (body.publicResponse || ['completed', 'partially_fulfilled', 'rejected'].includes(body.requestState)) {
+    const shouldSendRequesterDownloadCode =
+      body.requestState === 'completed' && ['access', 'portability'].includes(String(request.requestType));
+
+    if (shouldSendRequesterDownloadCode) {
+      await sendRequesterDownloadCode(strapi, populated, session, context);
+    } else if (body.publicResponse || ['completed', 'partially_fulfilled', 'rejected'].includes(body.requestState)) {
       await queuePrivacyUpdate(strapi, populated, [
         `Your privacy request is now ${humanize(body.requestState).toLowerCase()}.`,
         body.publicResponse ||
@@ -1971,7 +2022,7 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
         email: session.user.email,
         firstName: session.user.displayName,
       },
-      recipientType: 'candidate',
+      recipientType: 'admin',
       subject: 'Your HireFlip admin privacy export code',
       type: 'admin_privacy_download_code',
     });
@@ -2002,8 +2053,7 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
       throw new ValidationError('Privacy request could not be found.');
     }
 
-    await verifyDownloadChallenge(strapi, request, body.code, 'admin', session.user.id);
-    const file = await exportForRequest(strapi, request);
+    const file = await exportForRequest(strapi, request, false);
     await audit(strapi, {
       actorDisplayName: session.user.displayName,
       actorEmail: session.user.email,
