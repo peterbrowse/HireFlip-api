@@ -1292,11 +1292,33 @@ const main = async () => {
     });
     const candidateProfile = await documents(strapi, 'api::candidate-profile.candidate-profile').create({
       data: {
-        availability: 'First interview availability submitted for smoke test.',
+        availability: 'Unavailable dates confirmed for the next 30 days in the smoke test.',
+        availabilityConfirmedAt: new Date().toISOString(),
+        availabilityExpiresAt: addDays(30),
         candidate: connect(candidate),
         completedAt: new Date().toISOString(),
+        education: [
+          {
+            institution: 'HireFlip Smoke College',
+            qualification: 'Entry-level readiness programme',
+            year: '2026',
+          },
+        ],
+        interviewFormatPreference: 'in_person_preferred',
+        preferredWorkStyle: 'in_person',
         profileState: 'completed',
-        summary: 'Smoke profile for interview request routing.',
+        readinessOverviewAcknowledgedAt: new Date().toISOString(),
+        recruitmentPlatformVisibility: 'visible',
+        recruitmentVisibilityWordingVersion: 'candidate-interview-readiness-v1',
+        skills: {
+          strengths: ['Communication', 'Preparation', 'Customer focus'],
+        },
+        summary:
+          'I believe I would make a great employee in the entry-level marketing space because I prepare carefully, communicate clearly, and want to keep improving through feedback.',
+        targetRoleTitle: 'Entry-level marketing assistant',
+        targetRoleType: 'full_time',
+        targetSector: 'marketing',
+        targetSectorLabel: 'Marketing',
       },
     });
 
