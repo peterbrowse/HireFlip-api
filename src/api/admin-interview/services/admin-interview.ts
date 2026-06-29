@@ -29,6 +29,9 @@ type EmployerReliabilityEventService = {
 
 type DocumentRecord = Record<string, unknown> & {
   candidate?: DocumentRecord;
+  candidateFollowUpCompletedAt?: string;
+  candidateFollowUpOutcome?: string;
+  candidateFollowUpState?: string;
   class?: DocumentRecord;
   companyName?: string;
   completedAt?: string;
@@ -43,6 +46,9 @@ type DocumentRecord = Record<string, unknown> & {
   employerDetailsReleaseEligibleAt?: string;
   employerDetailsReleaseReason?: string;
   employerDetailsReleasedAt?: string;
+  employerFollowUpCompletedAt?: string;
+  employerFollowUpOutcome?: string;
+  employerFollowUpState?: string;
   feedbackDueAt?: string;
   feedbackOverdueDetectedAt?: string;
   firstName?: string;
@@ -87,7 +93,8 @@ type OperationIssue =
   | 'details_released'
   | 'feedback_due'
   | 'feedback_overdue'
-  | 'progression_expired';
+  | 'progression_expired'
+  | 'progression_follow_up_concern';
 
 type OperationRow = {
   actionPath: string;
@@ -129,6 +136,7 @@ const operationsSchema = z
         'feedback_due',
         'feedback_overdue',
         'progression_expired',
+        'progression_follow_up_concern',
       ])
       .default('all'),
     search: z.string().trim().max(120).optional().transform((value) => value || undefined),
@@ -235,6 +243,7 @@ const issueLabels: Record<Exclude<OperationIssue, 'all'>, string> = {
   feedback_due: 'Feedback due',
   feedback_overdue: 'Feedback overdue',
   progression_expired: 'Progression expired',
+  progression_follow_up_concern: 'Progression follow-up concern',
 };
 
 const reliabilityEventTypeByIssue: Partial<Record<Exclude<OperationIssue, 'all'>, string>> = {
@@ -378,6 +387,56 @@ const progressionRequestRow = (request: DocumentRecord): OperationRow | null => 
   };
 };
 
+const progressionFollowUpConcernRow = (request: DocumentRecord): OperationRow | null => {
+  const documentId = getDocumentId(request);
+  const interview = documentRecordValue(request.interview);
+
+  if (!documentId) {
+    return null;
+  }
+
+  const candidateName = displayName(documentRecordValue(request.candidate));
+  const employer = employerName(request);
+  const candidateConcern = ['employer_did_not_contact_me', 'need_support'].includes(
+    String(request.candidateFollowUpOutcome || '')
+  );
+  const employerConcern = request.employerFollowUpOutcome === 'no_response_from_candidate';
+  const outcome = candidateConcern
+    ? request.candidateFollowUpOutcome
+    : employerConcern
+      ? request.employerFollowUpOutcome
+      : null;
+  const referenceAt =
+    request.candidateFollowUpCompletedAt ||
+    request.employerFollowUpCompletedAt ||
+    request.updatedAt ||
+    request.createdAt ||
+    null;
+
+  return {
+    actionPath: `/interviews?issue=progression_follow_up_concern&progression=${encodeURIComponent(documentId)}`,
+    candidateName,
+    dueAt: referenceAt,
+    employerDocumentId: employerDocumentId(request),
+    employerName: employer,
+    issue: 'progression_follow_up_concern',
+    issueLabel: issueLabels.progression_follow_up_concern,
+    priority: 'high',
+    referenceAt,
+    regionName: interview ? regionName(interview) : null,
+    sourceDocumentId: documentId,
+    sourceType: 'progression_request',
+    statusLabel: outcome ? humanize(String(outcome)) : 'Needs review',
+    summary: [
+      'A one-month progression follow-up needs interview operations review.',
+      candidateName ? `Candidate: ${candidateName}` : null,
+      employer ? `Employer: ${employer}` : null,
+      outcome ? `Outcome: ${humanize(String(outcome))}` : null,
+    ].filter(Boolean).join(' / '),
+    reliabilityEvent: null,
+  };
+};
+
 const assertSession = async (
   strapi: StrapiDocumentService,
   sessionToken: string,
@@ -473,7 +532,7 @@ export default ({ strapi }) => ({
     const session = await assertSession(strapi, body.sessionToken, requestContext);
     const now = Date.now();
 
-    const [interviews, requests, progressionRequests] = await Promise.all([
+    const [interviews, requests, progressionRequests, progressionFollowUpConcerns] = await Promise.all([
       documents(strapi, 'api::interview.interview').findMany({
         filters: {
           interviewState: {
@@ -516,6 +575,31 @@ export default ({ strapi }) => ({
           requestedByEmployerContact: true,
         },
         sort: ['candidateRespondedAt:desc', 'updatedAt:desc'],
+      }),
+      documents(strapi, 'api::offer.offer').findMany({
+        filters: {
+          progressionState: 'accepted',
+          $or: [
+            {
+              candidateFollowUpOutcome: {
+                $in: ['employer_did_not_contact_me', 'need_support'],
+              },
+            },
+            {
+              employerFollowUpOutcome: 'no_response_from_candidate',
+            },
+          ],
+        },
+        limit: 100,
+        populate: {
+          candidate: true,
+          employer: true,
+          interview: {
+            populate: ['interviewSlot'],
+          },
+          requestedByEmployerContact: true,
+        },
+        sort: ['candidateFollowUpCompletedAt:desc', 'employerFollowUpCompletedAt:desc', 'updatedAt:desc'],
       }),
     ]);
     const interviewDocumentIds = interviews
@@ -572,6 +656,7 @@ export default ({ strapi }) => ({
 
     rows.push(...requests.map(requestRow));
     rows.push(...progressionRequests.map(progressionRequestRow));
+    rows.push(...progressionFollowUpConcerns.map(progressionFollowUpConcernRow));
 
     const compactRows = rows.filter((row): row is OperationRow => Boolean(row));
     const reliabilitySourceDocumentIds = compactRows
@@ -634,6 +719,9 @@ export default ({ strapi }) => ({
         detailsReleased: rowsWithReliability.filter((row) => row.issue === 'details_released').length,
         feedbackDue: rowsWithReliability.filter((row) => row.issue === 'feedback_due').length,
         feedbackOverdue: rowsWithReliability.filter((row) => row.issue === 'feedback_overdue').length,
+        progressionFollowUpConcerns: rowsWithReliability.filter(
+          (row) => row.issue === 'progression_follow_up_concern'
+        ).length,
         total: rowsWithReliability.length,
       },
       filteredOperations: filteredRows.length,

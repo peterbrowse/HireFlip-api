@@ -66,6 +66,14 @@ type DocumentRecord = Record<string, unknown> & {
   candidate?: DocumentRecord;
   candidateDeclineReason?: string;
   candidateFollowUpDueAt?: string;
+  candidateFollowUpState?: string;
+  candidateFollowUpOutcome?: string;
+  candidateFollowUpResponses?: unknown;
+  candidateFollowUpNotes?: string;
+  candidateFollowUpSentAt?: string;
+  candidateFollowUpReminderSentAt?: string;
+  candidateFollowUpCompletedAt?: string;
+  candidateFollowUpClosedAt?: string;
   candidateMessage?: string;
   candidateResponseDeadline?: string;
   candidateNotifiedAt?: string;
@@ -119,6 +127,14 @@ type DocumentRecord = Record<string, unknown> & {
   email?: string;
   employer?: DocumentRecord;
   employerFollowUpDueAt?: string;
+  employerFollowUpState?: string;
+  employerFollowUpOutcome?: string;
+  employerFollowUpResponses?: unknown;
+  employerFollowUpNotes?: string;
+  employerFollowUpSentAt?: string;
+  employerFollowUpReminderSentAt?: string;
+  employerFollowUpCompletedAt?: string;
+  employerFollowUpClosedAt?: string;
   enrollment?: DocumentRecord;
   enrollmentState?: string;
   earliestStartDate?: string;
@@ -126,6 +142,7 @@ type DocumentRecord = Record<string, unknown> & {
   expiresAt?: string;
   experience?: unknown;
   firstName?: string;
+  followUpState?: string;
   dateOfBirth?: string;
   gender?: string;
   genderSelfDescription?: string;
@@ -261,6 +278,10 @@ type SupportCaseService = {
     supportCase: DocumentRecord;
   }>;
   ensureFeedbackReportConcernCase(input: unknown): Promise<{
+    created: boolean;
+    supportCase: DocumentRecord;
+  }>;
+  ensureProgressionOutcomeConcernCase(input: unknown): Promise<{
     created: boolean;
     supportCase: DocumentRecord;
   }>;
@@ -1566,12 +1587,31 @@ const candidateInterviewProgressionDeclineSchema = z
     declineReason: z.string().trim().max(2000).optional().transform((value) => value || undefined),
   })
   .strict();
+const candidateProgressionFollowUpOutcomes = [
+  'still_in_progress',
+  'progressed_to_another_stage',
+  'received_offer',
+  'accepted_role',
+  'declined_or_withdrew',
+  'employer_chose_not_to_continue',
+  'employer_did_not_contact_me',
+  'need_support',
+] as const;
+const candidateProgressionFollowUpSchema = z
+  .object({
+    employerContacted: z.boolean().optional(),
+    notes: z.string().trim().max(2000).optional().transform((value) => value || undefined),
+    outcome: z.enum(candidateProgressionFollowUpOutcomes),
+    supportRequested: z.boolean().default(false),
+  })
+  .strict();
 
 const validateCandidateInterviewSlotAccept = validateZodSchema(candidateInterviewSlotAcceptSchema);
 const validateCandidateInterviewSlotDecline = validateZodSchema(candidateInterviewSlotDeclineSchema);
 const validateCandidateInterviewProgressionDecline = validateZodSchema(
   candidateInterviewProgressionDeclineSchema
 );
+const validateCandidateProgressionFollowUp = validateZodSchema(candidateProgressionFollowUpSchema);
 
 const providerCheckoutConfirmationSchema = z
   .object({
@@ -3129,6 +3169,17 @@ const buildDashboardInterviewsUrl = () =>
 const buildEmployerDashboardInterviewsUrl = () =>
   `${trimTrailingSlash(process.env.EMPLOYER_DASHBOARD_BASE_URL || 'http://localhost:3004')}/interviews`;
 
+const progressionFollowUpDueDate = (date = new Date()) => {
+  const oneCalendarMonth = new Date(date);
+  oneCalendarMonth.setUTCMonth(oneCalendarMonth.getUTCMonth() + 1);
+  const thirtyOneDays = new Date(date);
+  thirtyOneDays.setUTCDate(thirtyOneDays.getUTCDate() + 31);
+
+  return oneCalendarMonth.getTime() <= thirtyOneDays.getTime()
+    ? oneCalendarMonth
+    : thirtyOneDays;
+};
+
 const candidateInterviewSlotReminderIntervalMs = () =>
   getIntegerEnv('CANDIDATE_INTERVIEW_SLOT_REMINDER_INTERVAL_HOURS', 12) * 60 * 60 * 1000;
 
@@ -3272,6 +3323,21 @@ const progressionTypeLabel = (value?: string | null) => {
   return labels[String(value || '')] || 'Next step';
 };
 
+const candidateProgressionFollowUpOutcomeLabel = (value?: string | null) => {
+  const labels: Record<string, string> = {
+    accepted_role: 'I accepted the role',
+    declined_or_withdrew: 'I declined or withdrew',
+    employer_chose_not_to_continue: 'The employer chose not to continue',
+    employer_did_not_contact_me: 'The employer did not contact me',
+    need_support: 'I need support',
+    progressed_to_another_stage: 'I progressed to another stage',
+    received_offer: 'I received an offer',
+    still_in_progress: 'Still in progress',
+  };
+
+  return labels[String(value || '')] || null;
+};
+
 const candidateReportVisibleStates = new Set(['generated', 'approved', 'manually_edited']);
 
 const normalizeCandidateReportTakeaways = (value: unknown) =>
@@ -3344,6 +3410,27 @@ const sanitizeCandidateInterviewProgressionRequest = (request?: DocumentRecord |
       : null,
     progressionType: request.progressionType || null,
     progressionTypeLabel: progressionTypeLabel(request.progressionType),
+    followUp: {
+      candidate: {
+        completedAt: request.candidateFollowUpCompletedAt || null,
+        dueAt: request.candidateFollowUpDueAt || null,
+        notes: request.candidateFollowUpNotes || null,
+        outcome: request.candidateFollowUpOutcome || null,
+        outcomeLabel: candidateProgressionFollowUpOutcomeLabel(request.candidateFollowUpOutcome),
+        reminderSentAt: request.candidateFollowUpReminderSentAt || null,
+        responses: objectValue(request.candidateFollowUpResponses),
+        sentAt: request.candidateFollowUpSentAt || null,
+        state: request.candidateFollowUpState || request.followUpState || 'not_due',
+      },
+      employer: {
+        completedAt: request.employerFollowUpCompletedAt || null,
+        dueAt: request.employerFollowUpDueAt || null,
+        outcome: request.employerFollowUpOutcome || null,
+        reminderSentAt: request.employerFollowUpReminderSentAt || null,
+        sentAt: request.employerFollowUpSentAt || null,
+        state: request.employerFollowUpState || request.followUpState || 'not_due',
+      },
+    },
     requestedAt: request.requestedDetailsAt || request.createdAt || null,
     responseDeadline,
     responseExpired: Boolean(responseDeadline && isPastDate(responseDeadline)),
@@ -8458,8 +8545,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
     }
 
     const now = new Date().toISOString();
-    const followUpDueAt = new Date(now);
-    followUpDueAt.setUTCMonth(followUpDueAt.getUTCMonth() + 1);
+    const followUpDueAt = progressionFollowUpDueDate(new Date(now));
     const acceptedRequest = await documents(strapi, 'api::offer.offer').update({
       documentId: progressionRequest.documentId,
       data: {
@@ -8468,6 +8554,8 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
         detailsReleasedAt: now,
         employerFollowUpDueAt: followUpDueAt.toISOString(),
         candidateFollowUpDueAt: followUpDueAt.toISOString(),
+        employerFollowUpState: 'not_due',
+        candidateFollowUpState: 'not_due',
         followUpState: 'not_due',
         metadata: {
           ...objectValue(progressionRequest.metadata),
@@ -8618,6 +8706,162 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       declined: !expired,
       expired,
       progressionRequest: sanitizeCandidateInterviewProgressionRequest(declinedRequest),
+    };
+  },
+
+  async submitCurrentCandidateInterviewProgressionFollowUp(
+    auth: Auth0State | undefined,
+    progressionRequestDocumentId: string,
+    input: unknown = {},
+    requestContext: RequestContext = {}
+  ) {
+    if (!auth || auth.type !== 'auth0' || !auth.subject) {
+      throw new UnauthorizedError('Auth0 authentication is required.');
+    }
+
+    const existingCandidate = await findCandidateByAuthIdentity(strapi, auth.subject);
+
+    if (!existingCandidate) {
+      throw new ValidationError('Candidate account must be synced before submitting follow-up.');
+    }
+
+    const payload = validateCandidateProgressionFollowUp(input ?? {});
+    const progressionRequest = await findCandidateProgressionRequest(
+      strapi,
+      existingCandidate,
+      progressionRequestDocumentId
+    );
+
+    if (!progressionRequest) {
+      throw new ValidationError('Progression request could not be found.');
+    }
+
+    if (String(progressionRequest.progressionState || '') !== 'accepted') {
+      throw new ValidationError('Follow-up is only available after accepting an employer progression request.');
+    }
+
+    if (String(progressionRequest.candidateFollowUpState || '') === 'completed') {
+      throw new ValidationError('This follow-up has already been submitted.');
+    }
+
+    const now = new Date().toISOString();
+    const concernOutcomes = new Set(['employer_did_not_contact_me', 'need_support']);
+    const needsSupport = concernOutcomes.has(payload.outcome) || payload.supportRequested;
+    const responses = {
+      employerContacted:
+        typeof payload.employerContacted === 'boolean' ? payload.employerContacted : null,
+      supportRequested: payload.supportRequested,
+    };
+    let supportCase: DocumentRecord | null = null;
+
+    if (needsSupport) {
+      const supportCaseService = strapi.service('api::support-case.support-case') as SupportCaseService;
+      const supportCaseResult = await supportCaseService.ensureProgressionOutcomeConcernCase({
+        candidate: existingCandidate,
+        employer: progressionRequest.employer,
+        employerContact: progressionRequest.requestedByEmployerContact,
+        message: payload.notes,
+        openedAt: now,
+        openedBy: {
+          displayName: candidateMessageDisplayName(existingCandidate),
+          email: existingCandidate.email,
+          type: 'candidate',
+        },
+        outcome: payload.outcome,
+        progressionRequestDocumentId,
+        source: 'candidate_dashboard',
+      });
+
+      supportCase = supportCaseResult.supportCase;
+
+      if (payload.notes && supportCase) {
+        await supportCaseService.addMessage({
+          body: payload.notes,
+          candidate: existingCandidate,
+          direction: 'inbound',
+          messageType: 'candidate_message',
+          metadata: {
+            outcome: payload.outcome,
+            progressionRequestDocumentId,
+          },
+          sender: {
+            displayName: candidateMessageDisplayName(existingCandidate),
+            email: existingCandidate.email,
+            id: existingCandidate.documentId,
+            type: 'candidate',
+          },
+          supportCase,
+          visibility: 'public',
+        });
+      }
+    }
+
+    const updatedRequest = await documents(strapi, 'api::offer.offer').update({
+      documentId: progressionRequest.documentId,
+      data: {
+        candidateFollowUpCompletedAt: now,
+        candidateFollowUpNotes: payload.notes || null,
+        candidateFollowUpOutcome: payload.outcome,
+        candidateFollowUpResponses: responses,
+        candidateFollowUpState: 'completed',
+        followUpState:
+          ['completed', 'closed_no_response'].includes(String(progressionRequest.employerFollowUpState || ''))
+            ? 'completed'
+            : progressionRequest.followUpState || 'sent',
+        metadata: {
+          ...objectValue(progressionRequest.metadata),
+          candidateFollowUpSupportCaseDocumentId: getDocumentId(supportCase) || null,
+          candidateFollowUpSubmittedAt: now,
+          requestId: requestContext.requestId,
+        },
+      },
+      populate: candidateInterviewProgressionRequestPopulate,
+    });
+
+    await auditEvents(strapi).record({
+      actorId: existingCandidate.documentId,
+      actorType: 'candidate',
+      eventCategory: 'interview',
+      eventType: 'candidate.interview_progression_follow_up_submitted',
+      ipAddress: requestContext.ipAddress,
+      metadata: {
+        needsSupport,
+        outcome: payload.outcome,
+        progressionRequestDocumentId,
+        requestId: requestContext.requestId,
+        supportCaseDocumentId: getDocumentId(supportCase) || null,
+      },
+      requestId: requestContext.requestId,
+      serviceName: requestContext.serviceName,
+      severity: needsSupport ? 'warning' : 'info',
+      source: 'candidate_dashboard',
+      subjectDisplayName: candidateMessageDisplayName(existingCandidate),
+      subjectId: progressionRequestDocumentId,
+      subjectType: 'progression_request',
+      userAgent: requestContext.userAgent,
+    });
+
+    await publishAdminRealtimeEvent(
+      {
+        channels: ['operations', 'support'],
+        resourceKey: getDocumentId(supportCase) || progressionRequestDocumentId,
+        resourceType: needsSupport ? 'support_case' : 'progression_request',
+        type: needsSupport ? 'support_cases_changed' : 'admin_tasks_changed',
+      },
+      strapi.log
+    );
+
+    return {
+      followUp: sanitizeCandidateInterviewProgressionRequest(updatedRequest)?.followUp?.candidate,
+      needsSupport,
+      progressionRequest: sanitizeCandidateInterviewProgressionRequest(updatedRequest),
+      supportCase: supportCase
+        ? {
+            documentId: getDocumentId(supportCase) || null,
+            title: supportCase.title || null,
+          }
+        : null,
+      submitted: true,
     };
   },
 

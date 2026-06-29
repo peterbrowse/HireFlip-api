@@ -31,6 +31,7 @@ type EmployerDashboardService = {
   updateSettings(input: unknown, context: RequestContext): Promise<unknown>;
   submitInterviewFeedback(input: unknown, context: RequestContext): Promise<unknown>;
   submitInterviewProgression(input: unknown, context: RequestContext): Promise<unknown>;
+  submitInterviewProgressionFollowUp(input: unknown, context: RequestContext): Promise<unknown>;
   submitInvitedInterviewFeedback(input: unknown, context: RequestContext): Promise<unknown>;
   validateInterviewFeedbackInvite(input: unknown, context: RequestContext): Promise<unknown>;
   validateInvite(input: unknown, context: RequestContext): Promise<unknown>;
@@ -162,6 +163,15 @@ export default ({ strapi }) => ({
 	  async submitInterviewProgression(ctx) {
     ctx.body = {
       data: await employerDashboardService(strapi).submitInterviewProgression(
+        ctx.request.body,
+        getRequestContext(ctx)
+      ),
+    };
+	  },
+
+	  async submitInterviewProgressionFollowUp(ctx) {
+    ctx.body = {
+      data: await employerDashboardService(strapi).submitInterviewProgressionFollowUp(
         ctx.request.body,
         getRequestContext(ctx)
       ),

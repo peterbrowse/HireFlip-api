@@ -225,6 +225,15 @@ export default {
     },
     {
       method: 'POST',
+      path: '/internal/employer-dashboard/interviews/progression/follow-up',
+      handler: 'employer-dashboard.submitInterviewProgressionFollowUp',
+      config: {
+        auth: false,
+        policies: [employerDashboardServicePolicy],
+      },
+    },
+    {
+      method: 'POST',
       path: '/internal/employer-dashboard/feedback/invites/create',
       handler: 'employer-dashboard.inviteInterviewFeedbackContributor',
       config: {

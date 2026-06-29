@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { createHash, randomBytes } = require('node:crypto');
 const { compileStrapi, createStrapi } = require('@strapi/strapi');
+const { setupSmokeDatabase } = require('./lib/smoke-database');
 
 process.env.CLASS_WORKFLOW_BOOTSTRAP_ENABLED = 'false';
 
@@ -105,6 +106,27 @@ const deleteAuditEventsForSubject = async (strapi, subjectId) => {
 
   for (const event of events) {
     await deleteDocument(strapi, 'api::audit-event.audit-event', event.documentId);
+  }
+};
+
+const deleteSupportMessagesForCase = async (strapi, supportCaseDocumentId) => {
+  if (!supportCaseDocumentId) {
+    return;
+  }
+
+  const messages = await documents(strapi, 'api::support-message.support-message')
+    .findMany({
+      filters: {
+        supportCase: {
+          documentId: supportCaseDocumentId,
+        },
+      },
+      limit: 50,
+    })
+    .catch(() => []);
+
+  for (const message of messages) {
+    await deleteDocument(strapi, 'api::support-message.support-message', message.documentId);
   }
 };
 
@@ -382,6 +404,10 @@ const main = async () => {
   loadEnvFile();
 
   const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const smokeDatabase = setupSmokeDatabase({
+    runId,
+    scriptName: 'employer-dashboard',
+  });
   process.env.AUTH0_MANAGEMENT_DOMAIN = `auth-smoke-${runId}.example.test`;
   process.env.AUTH0_MANAGEMENT_CLIENT_ID = 'smoke-management-client';
   process.env.AUTH0_MANAGEMENT_CLIENT_SECRET = 'smoke-management-secret';
@@ -434,6 +460,7 @@ const main = async () => {
 	    interviewRequest: null,
 	    onboardingPolicyDocument: null,
 	    progressionRequest: null,
+	    progressionSupportCase: null,
 	    slotOffer: null,
 	    slots: [],
 	    settingsTeamContact: null,
@@ -463,6 +490,7 @@ const main = async () => {
     };
 
     const adminEmployerService = strapi.service('api::admin-employer.admin-employer');
+    const candidateService = strapi.service('api::candidate.candidate');
     const employerDashboardService = strapi.service('api::employer-dashboard.employer-dashboard');
     const interviewRequestService = strapi.service('api::interview-request.interview-request');
     const adminInviteEmail = `admin-created-employer-smoke-${runId}@example.test`;
@@ -1544,6 +1572,84 @@ const main = async () => {
       'Expected one progression request.'
     );
 
+    const followUpSentAt = addDays(-1, 9);
+    const acceptedProgressionRequest = await documents(strapi, 'api::offer.offer').update({
+      documentId: progressionRequest.documentId,
+      data: {
+        candidateFollowUpDueAt: followUpSentAt,
+        candidateFollowUpSentAt: followUpSentAt,
+        candidateFollowUpState: 'sent',
+        candidateResponse: 'accepted',
+        candidateRespondedAt: followUpSentAt,
+        employerFollowUpDueAt: followUpSentAt,
+        employerFollowUpSentAt: followUpSentAt,
+        employerFollowUpState: 'sent',
+        followUpState: 'sent',
+        progressionState: 'accepted',
+      },
+      populate: ['candidate', 'employer', 'interview', 'requestedByEmployerContact'],
+    });
+
+    created.progressionRequest = acceptedProgressionRequest;
+
+    const employerFollowUpResult = await employerDashboardService.submitInterviewProgressionFollowUp({
+      candidateRespondedSince: false,
+      email: slotEmployerContact.email,
+      interviewDocumentId: interview.documentId,
+      notes: 'Smoke employer follow-up needs support because the candidate has not responded.',
+      outcome: 'no_response_from_candidate',
+      progressionRequestDocumentId: acceptedProgressionRequest.documentId,
+      supportRequested: true,
+    });
+
+    assert(
+      employerFollowUpResult.progressionRequest?.followUp?.employer?.state === 'completed',
+      'Expected employer progression follow-up to complete.'
+    );
+    assert(
+      employerFollowUpResult.progressionRequest?.followUp?.employer?.outcome === 'no_response_from_candidate',
+      'Expected employer progression follow-up outcome to be recorded.'
+    );
+
+    const candidateFollowUpResult = await candidateService.submitCurrentCandidateInterviewProgressionFollowUp(
+      {
+        subject: candidate.authIdentityId,
+        type: 'auth0',
+      },
+      acceptedProgressionRequest.documentId,
+      {
+        employerContacted: false,
+        notes: 'Smoke candidate follow-up also needs support.',
+        outcome: 'employer_did_not_contact_me',
+        supportRequested: true,
+      }
+    );
+
+    assert(candidateFollowUpResult.submitted === true, 'Expected candidate progression follow-up to submit.');
+    assert(
+      candidateFollowUpResult.followUp?.state === 'completed',
+      'Expected candidate progression follow-up to complete.'
+    );
+    assert(
+      candidateFollowUpResult.supportCase?.documentId,
+      'Expected progression concern support case to be returned.'
+    );
+
+    created.progressionSupportCase = candidateFollowUpResult.supportCase;
+
+    const progressionSupportCases = await documents(strapi, 'api::support-case.support-case').findMany({
+      filters: {
+        caseKey: `progression-outcome:${acceptedProgressionRequest.documentId}:concern`,
+      },
+      limit: 2,
+    });
+
+    assert(progressionSupportCases.length === 1, 'Expected one shared progression concern support case.');
+    assert(
+      progressionSupportCases[0]?.caseState === 'awaiting_staff',
+      'Expected progression concern to await staff review.'
+    );
+
     const feedbackDetail = await employerDashboardService.getInterviewFeedbackDetail({
       email: slotEmployerContact.email,
       interviewDocumentId: interview.documentId,
@@ -1703,6 +1809,8 @@ const main = async () => {
       created.publicFeedbackInvite?.documentId
     );
     await deleteDocument(strapi, 'api::offer.offer', created.progressionRequest?.documentId);
+    await deleteSupportMessagesForCase(strapi, created.progressionSupportCase?.documentId);
+    await deleteDocument(strapi, 'api::support-case.support-case', created.progressionSupportCase?.documentId);
     await deleteDocument(strapi, 'api::interview.interview', created.interview?.documentId);
 
     for (const slot of created.slots) {
@@ -1756,6 +1864,7 @@ const main = async () => {
 	    await deleteDocument(strapi, 'api::class-area.class-area', created.adminClassAreaSecondary?.documentId);
 	    await deleteDocument(strapi, 'api::class-area.class-area', created.adminClassArea?.documentId);
     await strapi.destroy();
+    await smokeDatabase.cleanup();
     global.fetch = globalThis.__hireflipOriginalFetch;
   }
 };

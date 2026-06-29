@@ -734,6 +734,24 @@ const interviewPayload = (interview: DocumentRecord, progressionRequest?: Docume
     ? {
         candidateResponse: progressionRequest.candidateResponse || null,
         documentId: getDocumentId(progressionRequest),
+        followUp: {
+          candidate: {
+            completedAt: progressionRequest.candidateFollowUpCompletedAt || null,
+            outcome: progressionRequest.candidateFollowUpOutcome || null,
+            outcomeLabel: progressionRequest.candidateFollowUpOutcome
+              ? humanize(String(progressionRequest.candidateFollowUpOutcome))
+              : null,
+            state: progressionRequest.candidateFollowUpState || progressionRequest.followUpState || 'not_due',
+          },
+          employer: {
+            completedAt: progressionRequest.employerFollowUpCompletedAt || null,
+            outcome: progressionRequest.employerFollowUpOutcome || null,
+            outcomeLabel: progressionRequest.employerFollowUpOutcome
+              ? humanize(String(progressionRequest.employerFollowUpOutcome))
+              : null,
+            state: progressionRequest.employerFollowUpState || progressionRequest.followUpState || 'not_due',
+          },
+        },
         progressionState: progressionRequest.progressionState || null,
         progressionType: progressionRequest.progressionType || null,
         progressionTypeLabel: progressionTypeLabel(progressionRequest.progressionType),

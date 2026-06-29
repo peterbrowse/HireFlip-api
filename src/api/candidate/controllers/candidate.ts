@@ -64,6 +64,12 @@ type CandidateService = {
     input: unknown,
     context: RequestContext
   ): Promise<unknown>;
+  submitCurrentCandidateInterviewProgressionFollowUp(
+    auth: unknown,
+    progressionRequestDocumentId: string,
+    input: unknown,
+    context: RequestContext
+  ): Promise<unknown>;
   disputeCurrentCandidateInterviewStrike(
     auth: unknown,
     strikeDocumentId: string,
@@ -510,6 +516,23 @@ export default factories.createCoreController('api::candidate.candidate', ({ str
     const result = await candidateService(strapi).flagCurrentCandidateInterviewFeedbackReport(
       ctx.state?.hireflipAuth,
       ctx.params?.interviewDocumentId,
+      ctx.request.body,
+      {
+        ipAddress: getForwardedClientIp(ctx),
+        requestId: ctx.state?.requestId,
+        userAgent: ctx.request.get('x-hireflip-client-user-agent') || ctx.request.get('user-agent'),
+      }
+    );
+
+    ctx.body = {
+      data: result,
+    };
+  },
+
+  async submitInterviewProgressionFollowUp(ctx) {
+    const result = await candidateService(strapi).submitCurrentCandidateInterviewProgressionFollowUp(
+      ctx.state?.hireflipAuth,
+      ctx.params.progressionRequestDocumentId,
       ctx.request.body,
       {
         ipAddress: getForwardedClientIp(ctx),

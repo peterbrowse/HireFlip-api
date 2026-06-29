@@ -249,6 +249,19 @@ export default {
     },
     {
       method: 'POST',
+      path: '/candidates/me/interview-progressions/:progressionRequestDocumentId/follow-up',
+      handler: 'candidate.submitInterviewProgressionFollowUp',
+      config: {
+        auth: false,
+        middlewares: [
+          {
+            name: 'global::auth0-jwt',
+          },
+        ],
+      },
+    },
+    {
+      method: 'POST',
       path: '/candidates/me/interviews/:interviewDocumentId/feedback-report/flag',
       handler: 'candidate.flagInterviewFeedbackReport',
       config: {

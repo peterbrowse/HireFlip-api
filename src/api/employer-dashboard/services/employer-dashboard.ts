@@ -27,6 +27,14 @@ type DocumentRecord = Record<string, unknown> & {
   candidate?: DocumentRecord;
   candidateDeclineReason?: string;
   candidateFollowUpDueAt?: string;
+  candidateFollowUpState?: string;
+  candidateFollowUpOutcome?: string;
+  candidateFollowUpResponses?: unknown;
+  candidateFollowUpNotes?: string;
+  candidateFollowUpSentAt?: string;
+  candidateFollowUpReminderSentAt?: string;
+  candidateFollowUpCompletedAt?: string;
+  candidateFollowUpClosedAt?: string;
   candidateMessage?: string;
   candidateNotifiedAt?: string;
   candidateResponse?: string;
@@ -65,6 +73,14 @@ type DocumentRecord = Record<string, unknown> & {
   employerTermsPolicyDocumentId?: string;
   employerTermsPolicyVersion?: string;
   employerFollowUpDueAt?: string;
+  employerFollowUpState?: string;
+  employerFollowUpOutcome?: string;
+  employerFollowUpResponses?: unknown;
+  employerFollowUpNotes?: string;
+  employerFollowUpSentAt?: string;
+  employerFollowUpReminderSentAt?: string;
+  employerFollowUpCompletedAt?: string;
+  employerFollowUpClosedAt?: string;
   employer?: DocumentRecord;
   employerContact?: DocumentRecord;
   employerState?: string;
@@ -73,6 +89,7 @@ type DocumentRecord = Record<string, unknown> & {
   expiresAt?: string;
   firstName?: string;
   fulfilledAt?: string;
+  followUpState?: string;
   id?: number | string;
   internalNote?: string;
   introCopy?: string;
@@ -174,6 +191,10 @@ type SupportCaseService = {
   createDashboardSupportCase(input: unknown): Promise<{
     created: boolean;
     supportCase: unknown;
+  }>;
+  ensureProgressionOutcomeConcernCase(input: unknown): Promise<{
+    created: boolean;
+    supportCase: DocumentRecord;
   }>;
   getCaseForEmployerContact(input: {
     employerContactDocumentId: string;
@@ -335,6 +356,27 @@ const submitInterviewProgressionSchema = identitySchema
     interviewDocumentId: z.string().trim().min(1).max(120),
     progressionType: interviewProgressionTypeSchema,
     responseDeadline: z.string().trim().datetime({ offset: true }).optional(),
+  })
+  .strict();
+
+const employerProgressionFollowUpOutcomes = [
+  'still_in_progress',
+  'candidate_progressed_next_stage',
+  'candidate_offered_role',
+  'candidate_accepted_role',
+  'candidate_rejected_or_withdrew',
+  'employer_chose_not_to_continue',
+  'no_response_from_candidate',
+  'other',
+] as const;
+const submitInterviewProgressionFollowUpSchema = identitySchema
+  .extend({
+    candidateRespondedSince: z.boolean().optional(),
+    interviewDocumentId: z.string().trim().min(1).max(120),
+    notes: z.string().trim().max(2000).optional().transform((value) => value || undefined),
+    outcome: z.enum(employerProgressionFollowUpOutcomes),
+    progressionRequestDocumentId: z.string().trim().min(1).max(120),
+    supportRequested: z.boolean().default(false),
   })
   .strict();
 
@@ -501,6 +543,9 @@ const validateFeedbackInviteToken = validateZodSchema(feedbackInviteTokenSchema)
 const validateRevokeInterviewFeedbackInvite = validateZodSchema(revokeInterviewFeedbackInviteSchema);
 const validateSubmitInterviewFeedback = validateZodSchema(submitInterviewFeedbackSchema);
 const validateSubmitInterviewProgression = validateZodSchema(submitInterviewProgressionSchema);
+const validateSubmitInterviewProgressionFollowUp = validateZodSchema(
+  submitInterviewProgressionFollowUpSchema
+);
 const validateSubmitInvitedInterviewFeedback = validateZodSchema(submitInvitedInterviewFeedbackSchema);
 const validateDeclineCapacityClaim = validateZodSchema(declineCapacityClaimSchema);
 const validateInviteTeamContact = validateZodSchema(inviteTeamContactSchema);
@@ -1561,11 +1606,13 @@ const invitePopulate = {
 };
 
 const requestNotificationServiceEmail = async ({
+  cc,
   correlationId,
   template,
   to,
   type,
 }: {
+  cc?: string | string[];
   correlationId?: string;
   template: {
     key: string;
@@ -1590,6 +1637,7 @@ const requestNotificationServiceEmail = async ({
   try {
     const response = await fetch(`${trimTrailingSlash(baseUrl)}/api/internal/notifications/email`, {
       body: JSON.stringify({
+        ...(cc ? { cc } : {}),
         correlationId,
         priority: 'transactional',
         source: 'core-api',
@@ -3671,6 +3719,36 @@ const progressionTypeLabel = (value?: string | null) => {
   return labels[String(value || '')] || 'Next step';
 };
 
+const employerProgressionFollowUpOutcomeLabel = (value?: string | null) => {
+  const labels: Record<string, string> = {
+    candidate_accepted_role: 'Candidate accepted role',
+    candidate_offered_role: 'Candidate offered role',
+    candidate_progressed_next_stage: 'Candidate progressed to next stage',
+    candidate_rejected_or_withdrew: 'Candidate rejected or withdrew',
+    employer_chose_not_to_continue: 'Employer chose not to continue',
+    no_response_from_candidate: 'No response from candidate',
+    other: 'Other',
+    still_in_progress: 'Still in progress',
+  };
+
+  return labels[String(value || '')] || null;
+};
+
+const candidateProgressionFollowUpOutcomeLabel = (value?: string | null) => {
+  const labels: Record<string, string> = {
+    accepted_role: 'Candidate accepted role',
+    declined_or_withdrew: 'Candidate declined or withdrew',
+    employer_chose_not_to_continue: 'Employer chose not to continue',
+    employer_did_not_contact_me: 'Employer did not contact candidate',
+    need_support: 'Candidate needs support',
+    progressed_to_another_stage: 'Candidate progressed to another stage',
+    received_offer: 'Candidate received offer',
+    still_in_progress: 'Still in progress',
+  };
+
+  return labels[String(value || '')] || null;
+};
+
 const responseDeadlineForProgression = (input?: string) => {
   if (input) {
     const parsed = Date.parse(input);
@@ -3684,14 +3762,43 @@ const responseDeadlineForProgression = (input?: string) => {
 };
 
 const followUpDueDate = (date = new Date()) => {
-  const next = new Date(date);
-  next.setUTCMonth(next.getUTCMonth() + 1);
-  return next.toISOString();
+  const oneCalendarMonth = new Date(date);
+  oneCalendarMonth.setUTCMonth(oneCalendarMonth.getUTCMonth() + 1);
+  const thirtyOneDays = new Date(date);
+  thirtyOneDays.setUTCDate(thirtyOneDays.getUTCDate() + 31);
+
+  return oneCalendarMonth.getTime() <= thirtyOneDays.getTime()
+    ? oneCalendarMonth.toISOString()
+    : thirtyOneDays.toISOString();
 };
 
 const progressionPayload = (offer: DocumentRecord) => ({
   candidateName: candidateDisplayName(offer.candidate),
   documentId: getDocumentId(offer) || String(offer.id || ''),
+  followUp: {
+    candidate: {
+      completedAt: offer.candidateFollowUpCompletedAt || null,
+      dueAt: offer.candidateFollowUpDueAt || null,
+      notes: offer.candidateFollowUpNotes || null,
+      outcome: offer.candidateFollowUpOutcome || null,
+      outcomeLabel: candidateProgressionFollowUpOutcomeLabel(offer.candidateFollowUpOutcome),
+      reminderSentAt: offer.candidateFollowUpReminderSentAt || null,
+      responses: objectValue(offer.candidateFollowUpResponses),
+      sentAt: offer.candidateFollowUpSentAt || null,
+      state: offer.candidateFollowUpState || offer.followUpState || 'not_due',
+    },
+    employer: {
+      completedAt: offer.employerFollowUpCompletedAt || null,
+      dueAt: offer.employerFollowUpDueAt || null,
+      notes: offer.employerFollowUpNotes || null,
+      outcome: offer.employerFollowUpOutcome || null,
+      outcomeLabel: employerProgressionFollowUpOutcomeLabel(offer.employerFollowUpOutcome),
+      reminderSentAt: offer.employerFollowUpReminderSentAt || null,
+      responses: objectValue(offer.employerFollowUpResponses),
+      sentAt: offer.employerFollowUpSentAt || null,
+      state: offer.employerFollowUpState || offer.followUpState || 'not_due',
+    },
+  },
   progressionType: offer.progressionType || null,
   progressionTypeLabel: progressionTypeLabel(offer.progressionType),
   responseDeadline: offer.candidateResponseDeadline || null,
@@ -3968,6 +4075,262 @@ const queueEmployerProgressionExpiredNotification = async ({
   });
 };
 
+const activeEmployerContacts = (employer?: DocumentRecord | null) =>
+  (Array.isArray(employer?.contacts) ? employer.contacts : [])
+    .map(documentRecordValue)
+    .filter((contact): contact is DocumentRecord =>
+      Boolean(contact && contact.email && !['archived', 'disabled'].includes(String(contact.contactState || '')))
+    );
+
+const leadEmployerContact = (employer?: DocumentRecord | null) =>
+  activeEmployerContacts(employer).find((contact) => contact.contactRole === 'lead') ||
+  activeEmployerContacts(employer)[0];
+
+const employerProgressionDashboardUrl = (progressionRequest: DocumentRecord) => {
+  const interview = documentRecordValue(progressionRequest.interview);
+  const interviewDocumentId = getDocumentId(interview);
+
+  return interviewDocumentId
+    ? `${employerDashboardBaseUrl()}/interviews/${encodeURIComponent(interviewDocumentId)}/progression`
+    : `${employerDashboardBaseUrl()}/interviews`;
+};
+
+const candidateProgressionDashboardUrl = () =>
+  `${trimTrailingSlash(process.env.CANDIDATE_DASHBOARD_BASE_URL || 'http://localhost:3001')}/interviews`;
+
+const recordProgressionNotificationEvent = async ({
+  channel = 'email',
+  eventType,
+  jobId,
+  priority = 'normal',
+  progressionRequest,
+  recipientEmail,
+  recipientId,
+  recipientType,
+  strapi,
+  templateKey = 'generic_branded_message',
+}: {
+  channel?: 'email' | 'in_app';
+  eventType: string;
+  jobId?: string | number;
+  priority?: 'low' | 'normal' | 'high' | 'urgent';
+  progressionRequest: DocumentRecord;
+  recipientEmail?: string | null;
+  recipientId?: string | null;
+  recipientType: 'candidate' | 'employer_contact';
+  strapi: StrapiDocumentService;
+  templateKey?: string;
+}) => {
+  await documents(strapi, 'api::notification-event.notification-event').create({
+    data: {
+      candidate: relationConnect(progressionRequest.candidate),
+      channel,
+      deliveryState: channel === 'in_app' ? 'queued' : typeof jobId === 'undefined' ? 'failed' : 'queued',
+      ...(channel === 'email' && typeof jobId === 'undefined' ? { failedAt: new Date().toISOString() } : {}),
+      employer: relationConnect(progressionRequest.employer),
+      eventType,
+      interview: relationConnect(progressionRequest.interview),
+      metadata: {
+        notificationServiceJobId: typeof jobId === 'undefined' ? null : String(jobId),
+        progressionRequestDocumentId: getDocumentId(progressionRequest),
+      },
+      priority,
+      recipientEmail,
+      recipientId: recipientId || undefined,
+      recipientType,
+      relatedId: getDocumentId(progressionRequest) || undefined,
+      relatedType: 'progression_request',
+      templateKey: channel === 'email' ? templateKey : undefined,
+    },
+  });
+};
+
+const queueCandidateProgressionFollowUpEmail = async ({
+  progressionRequest,
+  reminder = false,
+  strapi,
+}: {
+  progressionRequest: DocumentRecord;
+  reminder?: boolean;
+  strapi: StrapiDocumentService;
+}) => {
+  const candidate = documentRecordValue(progressionRequest.candidate);
+  const employer = documentRecordValue(progressionRequest.employer);
+
+  if (!candidate?.email) {
+    return undefined;
+  }
+
+  const subject = reminder
+    ? 'A quick reminder about your HireFlip interview follow-up'
+    : 'How did things go after your HireFlip interview?';
+  const dashboardUrl = candidateProgressionDashboardUrl();
+  const bodyLines = reminder
+    ? [
+        `Hi ${candidate.firstName || 'there'},`,
+        `Just a quick reminder to let us know how things are going after your interview with ${employer?.companyName || 'the employer'}.`,
+        'It only takes a moment, and helps us keep an eye on the experience candidates are having.',
+      ]
+    : [
+        `Hi ${candidate.firstName || 'there'},`,
+        `It has been around a month since you accepted the next step with ${employer?.companyName || 'the employer'}.`,
+        'Could you let us know how things are going?',
+      ];
+  const result = await requestNotificationServiceEmail({
+    correlationId: getDocumentId(progressionRequest) || undefined,
+    template: {
+      key: 'generic_branded_message',
+      variables: {
+        bodyLines,
+        ctaLabel: 'Open interview follow-up',
+        ctaUrl: dashboardUrl,
+        heading: subject,
+        subject,
+      },
+    },
+    to: String(candidate.email),
+    type: reminder
+      ? 'candidate_interview_progression_follow_up_reminder'
+      : 'candidate_interview_progression_follow_up',
+  }).catch(() => undefined);
+
+  await recordProgressionNotificationEvent({
+    eventType: reminder
+      ? 'candidate.interview_progression_follow_up_reminder'
+      : 'candidate.interview_progression_follow_up',
+    jobId: result?.data?.jobId,
+    priority: 'normal',
+    progressionRequest,
+    recipientEmail: String(candidate.email),
+    recipientId: getDocumentId(candidate) || null,
+    recipientType: 'candidate',
+    strapi,
+  });
+
+  return result;
+};
+
+const queueEmployerProgressionFollowUpEmail = async ({
+  progressionRequest,
+  reminder = false,
+  strapi,
+}: {
+  progressionRequest: DocumentRecord;
+  reminder?: boolean;
+  strapi: StrapiDocumentService;
+}) => {
+  const employer = documentRecordValue(progressionRequest.employer);
+  const candidate = documentRecordValue(progressionRequest.candidate);
+  const contact = documentRecordValue(progressionRequest.requestedByEmployerContact);
+  const leadContact = leadEmployerContact(employer);
+
+  if (!contact?.email) {
+    return undefined;
+  }
+
+  const subject = reminder
+    ? 'A quick reminder about your HireFlip candidate follow-up'
+    : 'How did things go after the HireFlip interview?';
+  const dashboardUrl = employerProgressionDashboardUrl(progressionRequest);
+  const bodyLines = reminder
+    ? [
+        `Just a quick reminder to let us know how things are going with ${candidateDisplayName(candidate)} after the HireFlip interview.`,
+        'It only takes a moment and helps us understand outcomes after the first interview.',
+      ]
+    : [
+        `It has been around a month since ${candidateDisplayName(candidate)} accepted your request to continue after the HireFlip interview.`,
+        'Could you let us know how things are going?',
+      ];
+  const cc =
+    leadContact?.email && leadContact.email !== contact.email
+      ? String(leadContact.email)
+      : undefined;
+  const result = await requestNotificationServiceEmail({
+    cc,
+    correlationId: getDocumentId(progressionRequest) || undefined,
+    template: {
+      key: 'generic_branded_message',
+      variables: {
+        bodyLines,
+        ctaLabel: 'Open follow-up',
+        ctaUrl: dashboardUrl,
+        heading: subject,
+        subject,
+      },
+    },
+    to: String(contact.email),
+    type: reminder
+      ? 'employer_interview_progression_follow_up_reminder'
+      : 'employer_interview_progression_follow_up',
+  }).catch(() => undefined);
+
+  await recordProgressionNotificationEvent({
+    eventType: reminder
+      ? 'employer.interview_progression_follow_up_reminder'
+      : 'employer.interview_progression_follow_up',
+    jobId: result?.data?.jobId,
+    priority: 'normal',
+    progressionRequest,
+    recipientEmail: String(contact.email),
+    recipientId: getDocumentId(contact) || null,
+    recipientType: 'employer_contact',
+    strapi,
+  });
+
+  return result;
+};
+
+const progressionFollowUpTerminalStates = ['completed', 'closed_no_response', 'cancelled'];
+const progressionFollowUpReminderWorkingDays = 5;
+
+const workingDaysHaveElapsed = (fromDate: string | undefined, workingDays: number, now = new Date()) => {
+  if (!fromDate) {
+    return false;
+  }
+
+  const parsed = new Date(fromDate);
+
+  if (Number.isNaN(parsed.getTime())) {
+    return false;
+  }
+
+  return addWorkingDays(parsed, workingDays).getTime() <= now.getTime();
+};
+
+const aggregateProgressionFollowUpState = (
+  request: DocumentRecord,
+  patch: Record<string, unknown> = {}
+) => {
+  const candidateState = String(
+    patch.candidateFollowUpState ||
+      request.candidateFollowUpState ||
+      request.followUpState ||
+      'not_due'
+  );
+  const employerState = String(
+    patch.employerFollowUpState ||
+      request.employerFollowUpState ||
+      request.followUpState ||
+      'not_due'
+  );
+
+  if (
+    progressionFollowUpTerminalStates.includes(candidateState) &&
+    progressionFollowUpTerminalStates.includes(employerState)
+  ) {
+    return 'completed';
+  }
+
+  if (
+    ['sent', 'reminded', 'completed', 'closed_no_response'].includes(candidateState) ||
+    ['sent', 'reminded', 'completed', 'closed_no_response'].includes(employerState)
+  ) {
+    return 'sent';
+  }
+
+  return 'not_due';
+};
+
 const claimOpenLockMinutes = 15;
 const reusableSlotTopUpPurpose = 'reusable_slot_top_up';
 
@@ -4038,11 +4401,6 @@ const slotOfferPayload = (offer: DocumentRecord) => ({
   slots: (Array.isArray(offer.slots) ? offer.slots : []).map(slotPayload),
   submittedAt: offer.createdAt || offer.submittedAt || null,
 });
-
-const activeEmployerContacts = (employer?: DocumentRecord | null) =>
-  (Array.isArray(employer?.contacts) ? employer.contacts : []).filter(
-    (contact) => !['archived', 'disabled'].includes(String(contact.contactState || ''))
-  );
 
 const capacityClaimDetailPayload = async (
   strapi: StrapiDocumentService,
@@ -4715,7 +5073,8 @@ export default ({ strapi }) => ({
   },
 
   async reconcileInterviewProgressionRequests(limit = 100, requestContext: RequestContext = {}) {
-    const now = new Date().toISOString();
+    const nowDate = new Date();
+    const now = nowDate.toISOString();
     const progressionRequests = await documents(strapi, 'api::offer.offer').findMany({
       filters: {
         candidateResponseDeadline: {
@@ -4732,6 +5091,9 @@ export default ({ strapi }) => ({
     const summary = {
       checked: progressionRequests.length,
       errors: [] as Array<{ error: string; progressionRequestDocumentId?: string }>,
+      followUpsClosed: 0,
+      followUpsReminded: 0,
+      followUpsSent: 0,
       expired: 0,
       skipped: 0,
     };
@@ -4795,6 +5157,191 @@ export default ({ strapi }) => ({
           strapi.log
         );
         summary.expired += 1;
+      } catch (error) {
+        summary.errors.push({
+          error: error instanceof Error ? error.message : String(error),
+          progressionRequestDocumentId,
+        });
+      }
+    }
+
+    const followUpRequests = await documents(strapi, 'api::offer.offer').findMany({
+      filters: {
+        progressionState: 'accepted',
+        $or: [
+          {
+            candidateFollowUpState: {
+              $in: ['not_due', 'sent', 'reminded'],
+            },
+          },
+          {
+            employerFollowUpState: {
+              $in: ['not_due', 'sent', 'reminded'],
+            },
+          },
+        ],
+      },
+      limit,
+      populate: progressionRequestPopulate,
+      sort: ['candidateFollowUpDueAt:asc', 'employerFollowUpDueAt:asc', 'updatedAt:asc'],
+    });
+
+    summary.checked += followUpRequests.length;
+
+    for (const progressionRequest of followUpRequests) {
+      const progressionRequestDocumentId = getDocumentId(progressionRequest);
+      let currentProgressionRequest = progressionRequest;
+
+      const updateFollowUpRequest = async (data: Record<string, unknown>) => {
+        if (!progressionRequestDocumentId) {
+          throw new ValidationError('Progression request could not be updated.');
+        }
+
+        currentProgressionRequest = await documents(strapi, 'api::offer.offer').update({
+          documentId: progressionRequestDocumentId,
+          data: {
+            ...data,
+            followUpState: aggregateProgressionFollowUpState(currentProgressionRequest, data),
+            metadata: {
+              ...objectValue(currentProgressionRequest.metadata),
+              lastFollowUpReconciledAt: now,
+              requestId: requestContext.requestId,
+            },
+          },
+          populate: progressionRequestPopulate,
+        });
+      };
+
+      const processCandidateFollowUp = async () => {
+        const state = String(currentProgressionRequest.candidateFollowUpState || 'not_due');
+
+        if (progressionFollowUpTerminalStates.includes(state)) {
+          return;
+        }
+
+        if (
+          state === 'not_due' &&
+          currentProgressionRequest.candidateFollowUpDueAt &&
+          Date.parse(currentProgressionRequest.candidateFollowUpDueAt) <= nowDate.getTime()
+        ) {
+          await queueCandidateProgressionFollowUpEmail({
+            progressionRequest: currentProgressionRequest,
+            strapi,
+          });
+          await updateFollowUpRequest({
+            candidateFollowUpSentAt: now,
+            candidateFollowUpState: 'sent',
+          });
+          summary.followUpsSent += 1;
+          return;
+        }
+
+        if (
+          state === 'sent' &&
+          workingDaysHaveElapsed(
+            currentProgressionRequest.candidateFollowUpSentAt,
+            progressionFollowUpReminderWorkingDays,
+            nowDate
+          )
+        ) {
+          await queueCandidateProgressionFollowUpEmail({
+            progressionRequest: currentProgressionRequest,
+            reminder: true,
+            strapi,
+          });
+          await updateFollowUpRequest({
+            candidateFollowUpReminderSentAt: now,
+            candidateFollowUpState: 'reminded',
+          });
+          summary.followUpsReminded += 1;
+          return;
+        }
+
+        if (
+          state === 'reminded' &&
+          workingDaysHaveElapsed(
+            currentProgressionRequest.candidateFollowUpReminderSentAt,
+            progressionFollowUpReminderWorkingDays,
+            nowDate
+          )
+        ) {
+          await updateFollowUpRequest({
+            candidateFollowUpClosedAt: now,
+            candidateFollowUpState: 'closed_no_response',
+          });
+          summary.followUpsClosed += 1;
+        }
+      };
+
+      const processEmployerFollowUp = async () => {
+        const state = String(currentProgressionRequest.employerFollowUpState || 'not_due');
+
+        if (progressionFollowUpTerminalStates.includes(state)) {
+          return;
+        }
+
+        if (
+          state === 'not_due' &&
+          currentProgressionRequest.employerFollowUpDueAt &&
+          Date.parse(currentProgressionRequest.employerFollowUpDueAt) <= nowDate.getTime()
+        ) {
+          await queueEmployerProgressionFollowUpEmail({
+            progressionRequest: currentProgressionRequest,
+            strapi,
+          });
+          await updateFollowUpRequest({
+            employerFollowUpSentAt: now,
+            employerFollowUpState: 'sent',
+          });
+          summary.followUpsSent += 1;
+          return;
+        }
+
+        if (
+          state === 'sent' &&
+          workingDaysHaveElapsed(
+            currentProgressionRequest.employerFollowUpSentAt,
+            progressionFollowUpReminderWorkingDays,
+            nowDate
+          )
+        ) {
+          await queueEmployerProgressionFollowUpEmail({
+            progressionRequest: currentProgressionRequest,
+            reminder: true,
+            strapi,
+          });
+          await updateFollowUpRequest({
+            employerFollowUpReminderSentAt: now,
+            employerFollowUpState: 'reminded',
+          });
+          summary.followUpsReminded += 1;
+          return;
+        }
+
+        if (
+          state === 'reminded' &&
+          workingDaysHaveElapsed(
+            currentProgressionRequest.employerFollowUpReminderSentAt,
+            progressionFollowUpReminderWorkingDays,
+            nowDate
+          )
+        ) {
+          await updateFollowUpRequest({
+            employerFollowUpClosedAt: now,
+            employerFollowUpState: 'closed_no_response',
+          });
+          summary.followUpsClosed += 1;
+        }
+      };
+
+      try {
+        if (!progressionRequestDocumentId) {
+          summary.skipped += 1;
+          continue;
+        }
+
+        await processCandidateFollowUp();
+        await processEmployerFollowUp();
       } catch (error) {
         summary.errors.push({
           error: error instanceof Error ? error.message : String(error),
@@ -6304,6 +6851,156 @@ export default ({ strapi }) => ({
     );
 
     return progressionDetailPayload(strapi, interview, contact, progressionRequest);
+  },
+
+  async submitInterviewProgressionFollowUp(input: unknown, requestContext: RequestContext = {}) {
+    const body = validateSubmitInterviewProgressionFollowUp(input);
+    const contact = await findEmployerContact(strapi, body);
+    const interview = await findScopedInterview(strapi, contact, body.interviewDocumentId);
+    const interviewDocumentId = getDocumentId(interview);
+    const contactDocumentId = getDocumentId(contact);
+
+    if (!interviewDocumentId || !contactDocumentId) {
+      throw new ValidationError('Progression follow-up could not be submitted.');
+    }
+
+    const progressionRequest = await findProgressionRequestForInterview(strapi, interviewDocumentId);
+    const progressionRequestDocumentId = getDocumentId(progressionRequest);
+
+    if (!progressionRequest || progressionRequestDocumentId !== body.progressionRequestDocumentId) {
+      throw new ValidationError('Progression request could not be found.');
+    }
+
+    if (String(progressionRequest.progressionState || '') !== 'accepted') {
+      throw new ValidationError('Follow-up is only available after the candidate accepts progression.');
+    }
+
+    if (String(progressionRequest.employerFollowUpState || '') === 'completed') {
+      throw new ValidationError('This follow-up has already been submitted.');
+    }
+
+    const assignedContactDocumentId = getDocumentId(
+      documentRecordValue(progressionRequest.requestedByEmployerContact)
+    );
+
+    if (
+      assignedContactDocumentId &&
+      assignedContactDocumentId !== contactDocumentId &&
+      !isLeadContact(contact)
+    ) {
+      throw new ValidationError('Only the assigned progression contact or lead contact can submit this follow-up.');
+    }
+
+    const now = new Date().toISOString();
+    const needsSupport = body.outcome === 'no_response_from_candidate' || body.supportRequested;
+    const responses = {
+      candidateRespondedSince:
+        typeof body.candidateRespondedSince === 'boolean' ? body.candidateRespondedSince : null,
+      supportRequested: body.supportRequested,
+    };
+    let supportCase: DocumentRecord | null = null;
+
+    if (needsSupport) {
+      const supportCaseResult = await supportCaseService(strapi).ensureProgressionOutcomeConcernCase({
+        candidate: progressionRequest.candidate,
+        employer: progressionRequest.employer,
+        employerContact: contact,
+        message: body.notes,
+        openedAt: now,
+        openedBy: {
+          displayName: contactDisplayName(contact),
+          email: contact.email,
+          type: 'employer_contact',
+        },
+        outcome: body.outcome,
+        progressionRequestDocumentId,
+        source: 'employer_dashboard',
+      });
+
+      supportCase = supportCaseResult.supportCase;
+
+      if (body.notes && supportCase) {
+        await supportCaseService(strapi).addMessage({
+          body: body.notes,
+          candidate: progressionRequest.candidate,
+          direction: 'inbound',
+          employer: progressionRequest.employer,
+          employerContact: contact,
+          messageType: 'system_update',
+          metadata: {
+            outcome: body.outcome,
+            progressionRequestDocumentId,
+          },
+          sender: {
+            displayName: contactDisplayName(contact),
+            email: contact.email,
+            id: contactDocumentId,
+            type: 'employer_contact',
+          },
+          supportCase,
+          visibility: 'public',
+        });
+      }
+    }
+
+    const updateData = {
+      employerFollowUpCompletedAt: now,
+      employerFollowUpNotes: body.notes || null,
+      employerFollowUpOutcome: body.outcome,
+      employerFollowUpResponses: responses,
+      employerFollowUpState: 'completed',
+      metadata: {
+        ...objectValue(progressionRequest.metadata),
+        employerFollowUpSubmittedAt: now,
+        employerFollowUpSupportCaseDocumentId: getDocumentId(supportCase) || null,
+        requestId: requestContext.requestId,
+      },
+    };
+    const updatedRequest = await documents(strapi, 'api::offer.offer').update({
+      documentId: progressionRequestDocumentId,
+      data: {
+        ...updateData,
+        followUpState: aggregateProgressionFollowUpState(progressionRequest, updateData),
+      },
+      populate: progressionRequestPopulate,
+    });
+
+    await auditEvents(strapi).record({
+      actorDisplayName: contactDisplayName(contact),
+      actorId: contactDocumentId,
+      actorType: 'employer_contact',
+      eventCategory: 'interview',
+      eventType: 'employer.interview_progression_follow_up_submitted',
+      ipAddress: requestContext.ipAddress,
+      metadata: {
+        interviewDocumentId,
+        needsSupport,
+        outcome: body.outcome,
+        progressionRequestDocumentId,
+        requestId: requestContext.requestId,
+        supportCaseDocumentId: getDocumentId(supportCase) || null,
+      },
+      requestId: requestContext.requestId,
+      serviceName: requestContext.serviceName,
+      severity: needsSupport ? 'warning' : 'info',
+      source: 'employer_dashboard',
+      subjectDisplayName: candidateDisplayName(interview.candidate),
+      subjectId: progressionRequestDocumentId,
+      subjectType: 'progression_request',
+      userAgent: requestContext.userAgent,
+    });
+
+    await publishAdminRealtimeEvent(
+      {
+        channels: ['operations'],
+        resourceKey: progressionRequestDocumentId,
+        resourceType: 'progression_request',
+        type: needsSupport ? 'support_cases_changed' : 'admin_tasks_changed',
+      },
+      strapi.log
+    );
+
+    return progressionDetailPayload(strapi, interview, contact, updatedRequest);
   },
 
   async inviteInterviewFeedbackContributor(input: unknown, requestContext: RequestContext = {}) {

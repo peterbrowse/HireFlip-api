@@ -79,6 +79,30 @@
     "candidateFollowUpDueAt": {
       "type": "datetime"
     },
+    "employerFollowUpState": {
+      "type": "enumeration",
+      "enum": [
+        "not_due",
+        "sent",
+        "reminded",
+        "completed",
+        "closed_no_response",
+        "cancelled"
+      ],
+      "default": "not_due"
+    },
+    "candidateFollowUpState": {
+      "type": "enumeration",
+      "enum": [
+        "not_due",
+        "sent",
+        "reminded",
+        "completed",
+        "closed_no_response",
+        "cancelled"
+      ],
+      "default": "not_due"
+    },
     "followUpState": {
       "type": "enumeration",
       "enum": [
@@ -89,6 +113,68 @@
         "cancelled"
       ],
       "default": "not_due"
+    },
+    "employerFollowUpSentAt": {
+      "type": "datetime"
+    },
+    "candidateFollowUpSentAt": {
+      "type": "datetime"
+    },
+    "employerFollowUpReminderSentAt": {
+      "type": "datetime"
+    },
+    "candidateFollowUpReminderSentAt": {
+      "type": "datetime"
+    },
+    "employerFollowUpCompletedAt": {
+      "type": "datetime"
+    },
+    "candidateFollowUpCompletedAt": {
+      "type": "datetime"
+    },
+    "employerFollowUpClosedAt": {
+      "type": "datetime"
+    },
+    "candidateFollowUpClosedAt": {
+      "type": "datetime"
+    },
+    "employerFollowUpOutcome": {
+      "type": "enumeration",
+      "enum": [
+        "still_in_progress",
+        "candidate_progressed_next_stage",
+        "candidate_offered_role",
+        "candidate_accepted_role",
+        "candidate_rejected_or_withdrew",
+        "employer_chose_not_to_continue",
+        "no_response_from_candidate",
+        "other"
+      ]
+    },
+    "candidateFollowUpOutcome": {
+      "type": "enumeration",
+      "enum": [
+        "still_in_progress",
+        "progressed_to_another_stage",
+        "received_offer",
+        "accepted_role",
+        "declined_or_withdrew",
+        "employer_chose_not_to_continue",
+        "employer_did_not_contact_me",
+        "need_support"
+      ]
+    },
+    "employerFollowUpResponses": {
+      "type": "json"
+    },
+    "candidateFollowUpResponses": {
+      "type": "json"
+    },
+    "employerFollowUpNotes": {
+      "type": "text"
+    },
+    "candidateFollowUpNotes": {
+      "type": "text"
     },
     "requestedByEmployerContact": {
       "type": "relation",

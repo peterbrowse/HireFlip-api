@@ -3,6 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { compileStrapi, createStrapi } = require('@strapi/strapi');
+const { setupSmokeDatabase } = require('./lib/smoke-database');
 
 process.env.CLASS_WORKFLOW_BOOTSTRAP_ENABLED = 'false';
 
@@ -306,6 +307,10 @@ const main = async () => {
   loadEnvFile();
 
   const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const smokeDatabase = setupSmokeDatabase({
+    runId,
+    scriptName: 'candidate-interview-slots',
+  });
   process.env.CANDIDATE_DASHBOARD_BASE_URL = 'http://localhost:3001';
   process.env.CANDIDATE_INTERVIEW_SLOT_REMINDER_INTERVAL_HOURS = '1';
   process.env.EMPLOYER_DASHBOARD_BASE_URL = 'http://localhost:3004';
@@ -1186,6 +1191,7 @@ const main = async () => {
     await deleteDocument(strapi, 'api::class-area.class-area', created.classArea?.documentId);
 
     await strapi.destroy();
+    await smokeDatabase.cleanup();
   }
 };
 

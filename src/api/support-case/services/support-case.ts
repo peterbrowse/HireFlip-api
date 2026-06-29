@@ -225,6 +225,28 @@ const ensureFeedbackReportConcernCaseSchema = z
   })
   .strict();
 
+const ensureProgressionOutcomeConcernCaseSchema = z
+  .object({
+    candidate: z.unknown().optional(),
+    employer: z.unknown().optional(),
+    employerContact: z.unknown().optional(),
+    message: z.string().trim().max(12000).optional(),
+    openedAt: z.string().datetime(),
+    openedBy: z.object({
+      displayName: z.string().trim().max(240).optional(),
+      email: z.string().trim().email().max(254).optional(),
+      type: supportActorTypeSchema,
+    }),
+    outcome: z.string().trim().min(1).max(120),
+    progressionRequestDocumentId: z.string().trim().min(1).max(160),
+    source: sourceSchema,
+    summary: z.string().trim().max(1000).optional(),
+  })
+  .strict()
+  .refine((value) => Boolean(value.candidate || value.employerContact), {
+    message: 'A candidate or employer contact is required.',
+  });
+
 const ensureInterviewStrikeDisputeCaseSchema = z
   .object({
     appealedAt: z.string().datetime(),
@@ -302,6 +324,9 @@ const assignCaseSchema = z
 const validateEnsureRefundCase = validateZodSchema(ensureRefundCaseSchema);
 const validateEnsureFeedbackReportConcernCase = validateZodSchema(
   ensureFeedbackReportConcernCaseSchema
+);
+const validateEnsureProgressionOutcomeConcernCase = validateZodSchema(
+  ensureProgressionOutcomeConcernCaseSchema
 );
 const validateEnsureInterviewStrikeDisputeCase = validateZodSchema(
   ensureInterviewStrikeDisputeCaseSchema
@@ -693,6 +718,9 @@ const supportCaseKeyForRefund = (refund: DocumentRecord) =>
 const supportCaseKeyForFeedbackReportConcern = (feedbackDocumentId: string) =>
   `interview-feedback-report:${feedbackDocumentId}:candidate-concern`;
 
+const supportCaseKeyForProgressionOutcomeConcern = (progressionRequestDocumentId: string) =>
+  `progression-outcome:${progressionRequestDocumentId}:concern`;
+
 const supportCaseKeyForInterviewStrikeDispute = (strikeDocumentId: string) =>
   `candidate-interview-strike:${strikeDocumentId}:dispute`;
 
@@ -886,6 +914,91 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
         openedByDisplayName: candidateName,
         openedByEmail: candidate.email,
         openedByType: 'candidate',
+        priority: 'high',
+        source: body.source,
+        summary,
+        title,
+      },
+      populate: supportCasePopulate,
+    });
+
+    return {
+      created: true,
+      supportCase,
+    };
+  },
+
+  async ensureProgressionOutcomeConcernCase(input: unknown) {
+    const body = validateEnsureProgressionOutcomeConcernCase(input);
+    const candidate = body.candidate as DocumentRecord | undefined;
+    const employer = body.employer as DocumentRecord | undefined;
+    const employerContact = body.employerContact as DocumentRecord | undefined;
+    const caseKey = supportCaseKeyForProgressionOutcomeConcern(body.progressionRequestDocumentId);
+    const existingCase = await findCaseByKey(strapi, caseKey);
+    const candidateName = candidateDisplayName(candidate);
+    const employerName = employerDisplayName(employer);
+    const contactName = employerContactDisplayName(employerContact);
+    const title = candidateName
+      ? `Progression follow-up concern for ${candidateName}`
+      : 'Progression follow-up concern';
+    const summary =
+      body.summary ||
+      [
+        'A post-interview progression follow-up needs staff review.',
+        employerName ? `Employer: ${employerName}.` : '',
+        contactName ? `Contact: ${contactName}.` : '',
+        `Outcome: ${body.outcome.replace(/_/g, ' ')}.`,
+      ].filter(Boolean).join(' ');
+    const metadata = {
+      kind: 'interview_progression_outcome_concern',
+      message: body.message || null,
+      outcome: body.outcome,
+      progressionRequestDocumentId: body.progressionRequestDocumentId,
+      raisedAt: body.openedAt,
+    };
+
+    if (existingCase) {
+      const shouldReopen = ['closed', 'resolved'].includes(String(existingCase.caseState || ''));
+      const supportCase = shouldReopen && existingCase.documentId
+        ? await documents(strapi, 'api::support-case.support-case').update({
+            documentId: existingCase.documentId,
+            data: {
+              caseState: 'awaiting_staff',
+              closedAt: null,
+              lastMessageAt: body.openedAt,
+              metadata: {
+                ...objectValue(existingCase.metadata),
+                ...metadata,
+                reopenedAt: body.openedAt,
+              },
+              resolvedAt: null,
+            },
+            populate: supportCasePopulate,
+          })
+        : existingCase;
+
+      return {
+        created: false,
+        supportCase,
+      };
+    }
+
+    const supportCase = await documents(strapi, 'api::support-case.support-case').create({
+      data: {
+        candidate: relationConnect(candidate),
+        caseKey,
+        caseState: 'awaiting_staff',
+        caseType: 'interview',
+        employer: relationConnect(employer),
+        employerContact: relationConnect(employerContact),
+        lastMessageAt: body.openedAt,
+        metadata,
+        openedAt: body.openedAt,
+        openedByDisplayName:
+          body.openedBy.displayName || candidateName || contactName,
+        openedByEmail: body.openedBy.email,
+        openedByType: body.openedBy.type,
+        ownerRoleKey: 'support',
         priority: 'high',
         source: body.source,
         summary,
