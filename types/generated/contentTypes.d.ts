@@ -599,8 +599,10 @@ export interface ApiAdminTaskAdminTask extends Struct.CollectionTypeSchema {
         'support_case',
         'interview_feedback',
         'interview',
+        'privacy_rights_request',
         'notification_event',
         'audit_event',
+        'class',
       ]
     > &
       Schema.Attribute.Required;
@@ -621,7 +623,9 @@ export interface ApiAdminTaskAdminTask extends Struct.CollectionTypeSchema {
       [
         'assessment_appeal',
         'ai_feedback_review',
+        'class_readiness',
         'interview_operation',
+        'privacy_request',
         'payment_review',
         'refund_review',
         'support_case',
@@ -1319,6 +1323,15 @@ export interface ApiClassClass extends Struct.CollectionTypeSchema {
         number
       > &
       Schema.Attribute.DefaultTo<200>;
+    interviewCapacityContingencyPercentage: Schema.Attribute.Integer &
+      Schema.Attribute.SetMinMax<
+        {
+          max: 500;
+          min: 0;
+        },
+        number
+      > &
+      Schema.Attribute.DefaultTo<30>;
     interviewGuaranteeDeadline: Schema.Attribute.DateTime;
     interviewsGuaranteed: Schema.Attribute.Integer &
       Schema.Attribute.Required &
@@ -1336,6 +1349,15 @@ export interface ApiClassClass extends Struct.CollectionTypeSchema {
     locale: Schema.Attribute.String & Schema.Attribute.Private;
     localizations: Schema.Attribute.Relation<'oneToMany', 'api::class.class'> &
       Schema.Attribute.Private;
+    minimumViableCapacity: Schema.Attribute.Integer &
+      Schema.Attribute.SetMinMax<
+        {
+          max: 1000;
+          min: 1;
+        },
+        number
+      > &
+      Schema.Attribute.DefaultTo<1>;
     modulesPassCriteriaAttached: Schema.Attribute.Boolean &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<false>;
@@ -1355,11 +1377,31 @@ export interface ApiClassClass extends Struct.CollectionTypeSchema {
         minLength: 1;
       }>;
     openedAt: Schema.Attribute.DateTime;
-    openingMode: Schema.Attribute.Enumeration<
-      ['admin_scheduled', 'admin_immediate', 'automatic']
+    openingCapacityReservation: Schema.Attribute.JSON;
+    openingCapacityReservationState: Schema.Attribute.Enumeration<
+      ['none', 'reserved', 'released', 'consumed']
     > &
       Schema.Attribute.Required &
-      Schema.Attribute.DefaultTo<'admin_scheduled'>;
+      Schema.Attribute.DefaultTo<'none'>;
+    openingMode: Schema.Attribute.Enumeration<
+      [
+        'manual_readiness',
+        'admin_scheduled',
+        'admin_immediate',
+        'automatic',
+        'automatic_when_ready',
+        'automatic_at_capacity',
+      ]
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'manual_readiness'>;
+    openingReadinessCheckedAt: Schema.Attribute.DateTime;
+    openingReadinessStatus: Schema.Attribute.Enumeration<
+      ['not_checked', 'blocked', 'ready', 'opened']
+    > &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<'not_checked'>;
+    openingReadinessSummary: Schema.Attribute.JSON;
     overview: Schema.Attribute.Text;
     pricePence: Schema.Attribute.Integer &
       Schema.Attribute.SetMinMax<
@@ -1373,6 +1415,9 @@ export interface ApiClassClass extends Struct.CollectionTypeSchema {
       Schema.Attribute.SetMinMaxLength<{
         maxLength: 120;
       }>;
+    remoteInterviewsAllowed: Schema.Attribute.Boolean &
+      Schema.Attribute.Required &
+      Schema.Attribute.DefaultTo<false>;
     requirements: Schema.Attribute.Text;
     scheduledEnrollmentOpenAt: Schema.Attribute.DateTime;
     scheduleNotes: Schema.Attribute.Text;
@@ -3830,7 +3875,36 @@ export interface ApiOfferOffer extends Struct.CollectionTypeSchema {
       'api::candidate.candidate'
     >;
     candidateDeclineReason: Schema.Attribute.Text;
+    candidateFollowUpClosedAt: Schema.Attribute.DateTime;
+    candidateFollowUpCompletedAt: Schema.Attribute.DateTime;
     candidateFollowUpDueAt: Schema.Attribute.DateTime;
+    candidateFollowUpNotes: Schema.Attribute.Text;
+    candidateFollowUpOutcome: Schema.Attribute.Enumeration<
+      [
+        'still_in_progress',
+        'progressed_to_another_stage',
+        'received_offer',
+        'accepted_role',
+        'declined_or_withdrew',
+        'employer_chose_not_to_continue',
+        'employer_did_not_contact_me',
+        'need_support',
+      ]
+    >;
+    candidateFollowUpReminderSentAt: Schema.Attribute.DateTime;
+    candidateFollowUpResponses: Schema.Attribute.JSON;
+    candidateFollowUpSentAt: Schema.Attribute.DateTime;
+    candidateFollowUpState: Schema.Attribute.Enumeration<
+      [
+        'not_due',
+        'sent',
+        'reminded',
+        'completed',
+        'closed_no_response',
+        'cancelled',
+      ]
+    > &
+      Schema.Attribute.DefaultTo<'not_due'>;
     candidateMessage: Schema.Attribute.Text;
     candidateNotifiedAt: Schema.Attribute.DateTime;
     candidateRespondedAt: Schema.Attribute.DateTime;
@@ -3843,7 +3917,36 @@ export interface ApiOfferOffer extends Struct.CollectionTypeSchema {
       Schema.Attribute.Private;
     detailsReleasedAt: Schema.Attribute.DateTime;
     employer: Schema.Attribute.Relation<'manyToOne', 'api::employer.employer'>;
+    employerFollowUpClosedAt: Schema.Attribute.DateTime;
+    employerFollowUpCompletedAt: Schema.Attribute.DateTime;
     employerFollowUpDueAt: Schema.Attribute.DateTime;
+    employerFollowUpNotes: Schema.Attribute.Text;
+    employerFollowUpOutcome: Schema.Attribute.Enumeration<
+      [
+        'still_in_progress',
+        'candidate_progressed_next_stage',
+        'candidate_offered_role',
+        'candidate_accepted_role',
+        'candidate_rejected_or_withdrew',
+        'employer_chose_not_to_continue',
+        'no_response_from_candidate',
+        'other',
+      ]
+    >;
+    employerFollowUpReminderSentAt: Schema.Attribute.DateTime;
+    employerFollowUpResponses: Schema.Attribute.JSON;
+    employerFollowUpSentAt: Schema.Attribute.DateTime;
+    employerFollowUpState: Schema.Attribute.Enumeration<
+      [
+        'not_due',
+        'sent',
+        'reminded',
+        'completed',
+        'closed_no_response',
+        'cancelled',
+      ]
+    > &
+      Schema.Attribute.DefaultTo<'not_due'>;
     followUpState: Schema.Attribute.Enumeration<
       ['not_due', 'due', 'sent', 'completed', 'cancelled']
     > &
@@ -4788,6 +4891,11 @@ export interface ApiSupportCaseSupportCase extends Struct.CollectionTypeSchema {
     createdAt: Schema.Attribute.DateTime;
     createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
+    employer: Schema.Attribute.Relation<'manyToOne', 'api::employer.employer'>;
+    employerContact: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::employer-contact.employer-contact'
+    >;
     enrollment: Schema.Attribute.Relation<
       'manyToOne',
       'api::enrollment.enrollment'
@@ -4814,7 +4922,7 @@ export interface ApiSupportCaseSupportCase extends Struct.CollectionTypeSchema {
         maxLength: 160;
       }>;
     openedByType: Schema.Attribute.Enumeration<
-      ['candidate', 'admin', 'service', 'system']
+      ['candidate', 'employer_contact', 'admin', 'service', 'system']
     > &
       Schema.Attribute.DefaultTo<'system'>;
     ownerRoleKey: Schema.Attribute.Enumeration<
@@ -4844,6 +4952,7 @@ export interface ApiSupportCaseSupportCase extends Struct.CollectionTypeSchema {
     source: Schema.Attribute.Enumeration<
       [
         'candidate_dashboard',
+        'employer_dashboard',
         'admin_dashboard',
         'payment_service',
         'notification_service',
@@ -4899,6 +5008,11 @@ export interface ApiSupportMessageSupportMessage
     > &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'system'>;
+    employer: Schema.Attribute.Relation<'manyToOne', 'api::employer.employer'>;
+    employerContact: Schema.Attribute.Relation<
+      'manyToOne',
+      'api::employer-contact.employer-contact'
+    >;
     locale: Schema.Attribute.String & Schema.Attribute.Private;
     localizations: Schema.Attribute.Relation<
       'oneToMany',
@@ -4940,7 +5054,7 @@ export interface ApiSupportMessageSupportMessage
         maxLength: 160;
       }>;
     senderType: Schema.Attribute.Enumeration<
-      ['candidate', 'admin', 'service', 'system']
+      ['candidate', 'employer_contact', 'admin', 'service', 'system']
     > &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'system'>;

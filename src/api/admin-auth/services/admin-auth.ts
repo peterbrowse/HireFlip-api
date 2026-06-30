@@ -345,6 +345,39 @@ const addSeconds = (seconds: number) => new Date(Date.now() + seconds * 1000).to
 const isPast = (isoDate?: string) => !isoDate || new Date(isoDate).getTime() <= Date.now();
 const profileImageFormats = ['webp', 'avif'] as const;
 
+const envFlag = (name: string) => process.env[name]?.trim().toLowerCase() === 'true';
+
+const envList = (name: string) =>
+  (process.env[name] || '')
+    .split(',')
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean);
+
+const e2eTwoFactorCode = (email: string) => {
+  if (!envFlag('HIREFLIP_E2E_AUTH_ENABLED')) {
+    return undefined;
+  }
+
+  const code = process.env.HIREFLIP_E2E_ADMIN_OTP?.trim();
+
+  if (!code || !/^\d{6}$/.test(code)) {
+    return undefined;
+  }
+
+  const normalizedEmail = email.trim().toLowerCase();
+  const allowedEmails = new Set([
+    ...envList('HIREFLIP_E2E_ADMIN_EMAILS'),
+    ...(process.env.HIREFLIP_E2E_ADMIN_EMAIL
+      ? [process.env.HIREFLIP_E2E_ADMIN_EMAIL.trim().toLowerCase()]
+      : []),
+  ]);
+
+  return allowedEmails.has(normalizedEmail) ? code : undefined;
+};
+
+const shouldSkipE2eTwoFactorEmail = (email: string) =>
+  Boolean(e2eTwoFactorCode(email)) && envFlag('HIREFLIP_E2E_ADMIN_OTP_SKIP_EMAIL');
+
 const getUploadedFilePath = (file?: UploadedFile) => file?.filepath || file?.path;
 
 const profileImageFormat = () => {
@@ -1134,7 +1167,7 @@ export default () => ({
     const fullUser = await findAdminUserById(user.id || '');
     const sessionUser = await toSessionUserWithProfile(fullUser || user);
     const challengeId = randomUUID();
-    const code = numericCode();
+    const code = e2eTwoFactorCode(sessionUser.email) || numericCode();
     const salt = randomBytes(16).toString('hex');
     const expiresAt = addSeconds(currentConfig.codeTtlSeconds);
     const codeHash = await createCodeHash(challengeId, code, salt);
@@ -1167,11 +1200,17 @@ export default () => ({
     });
 
     try {
-      await sendTwoFactorEmail(sessionUser.email, code, expiresAt);
+      if (!shouldSkipE2eTwoFactorEmail(sessionUser.email)) {
+        await sendTwoFactorEmail(sessionUser.email, code, expiresAt);
+      }
       await recordAuditEvent('admin.auth.2fa_challenge_delivered', requestContext, {
         actorEmail: sessionUser.email,
         actorId: sessionUser.id,
         actorDisplayName: sessionUser.displayName,
+        metadata: {
+          e2eFixedCode: Boolean(e2eTwoFactorCode(sessionUser.email)),
+          emailSkipped: shouldSkipE2eTwoFactorEmail(sessionUser.email),
+        },
       });
     } catch (error) {
       await store.delete({ key: challengeKey(challengeId) });
@@ -1217,7 +1256,7 @@ export default () => ({
       throw new RateLimitError('Please wait before requesting another code.');
     }
 
-    const code = numericCode();
+    const code = e2eTwoFactorCode(challenge.email) || numericCode();
     const salt = randomBytes(16).toString('hex');
     const expiresAt = addSeconds(currentConfig.codeTtlSeconds);
     const codeHash = await createCodeHash(challenge.id, code, salt);
@@ -1236,7 +1275,9 @@ export default () => ({
     });
 
     try {
-      await sendTwoFactorEmail(challenge.email, code, expiresAt);
+      if (!shouldSkipE2eTwoFactorEmail(challenge.email)) {
+        await sendTwoFactorEmail(challenge.email, code, expiresAt);
+      }
     } catch (error) {
       await store.set({
         key: challengeKey(challenge.id),
@@ -1262,6 +1303,8 @@ export default () => ({
       actorId: challenge.userId,
       actorDisplayName: challenge.user.displayName,
       metadata: {
+        e2eFixedCode: Boolean(e2eTwoFactorCode(challenge.email)),
+        emailSkipped: shouldSkipE2eTwoFactorEmail(challenge.email),
         resent: true,
       },
     });
