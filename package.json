@@ -1,6 +1,6 @@
 {
   "name": "hireflip-api",
-  "version": "0.1.30",
+  "version": "0.1.31",
   "private": true,
   "description": "HireFlip core Strapi API",
   "scripts": {
@@ -30,6 +30,7 @@
     "smoke:refund-provider-updates": "npm run build && ENV_PATH=${ENV_PATH:-.env.local} node scripts/smoke-refund-provider-updates.js",
     "smoke:support-cases": "npm run build && ENV_PATH=${ENV_PATH:-.env.local} node scripts/smoke-support-cases.js",
     "smoke:waiting-list-offers": "ENV_PATH=${ENV_PATH:-.env.local} node scripts/smoke-waiting-list-offers.js",
+    "smoke:mvp-dry-run": "ENV_PATH=${ENV_PATH:-.env.local} node scripts/smoke-mvp-dry-run.js",
     "upgrade": "npx @strapi/upgrade latest",
     "upgrade:dry": "npx @strapi/upgrade latest --dry"
   },
