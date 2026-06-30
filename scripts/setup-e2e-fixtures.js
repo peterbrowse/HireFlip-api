@@ -435,7 +435,10 @@ const ensureCandidate = async (strapi, auth0User, content) => {
     (await findFirst(strapi, 'api::candidate.candidate', { email })) ||
     (await findFirst(strapi, 'api::candidate.candidate', { authIdentityId: auth0User.userId }));
 
-  await resetCandidateCheckoutRecords(strapi, existing);
+  if (existing?.documentId) {
+    await resetCandidateCheckoutRecords(strapi, existing);
+    await deleteDocument(strapi, 'api::candidate.candidate', existing.documentId);
+  }
 
   const data = {
     accountCreatedAt: existing?.accountCreatedAt || now,
@@ -475,13 +478,6 @@ const ensureCandidate = async (strapi, auth0User, content) => {
     sector: content.sector.name,
     workSectorPreferences: preferenceSelection(content.sector.slug),
   };
-
-  if (existing?.documentId) {
-    return documents(strapi, 'api::candidate.candidate').update({
-      documentId: existing.documentId,
-      data,
-    });
-  }
 
   return documents(strapi, 'api::candidate.candidate').create({ data });
 };
