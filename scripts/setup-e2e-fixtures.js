@@ -453,6 +453,8 @@ const ensureCandidate = async (strapi, auth0User, content) => {
     lastName: optionalEnv('HIREFLIP_E2E_CANDIDATE_LAST_NAME', 'Candidate'),
     marketingConsentCapturedAt: now,
     marketingConsentState: 'opted_out',
+    marketingConsentWordingVersion:
+      optionalEnv('HIREFLIP_E2E_CANDIDATE_CONSENT_WORDING_VERSION', 'e2e-candidate-account-v1'),
     notificationPreferences: {
       channels: {
         email: true,
@@ -461,6 +463,7 @@ const ensureCandidate = async (strapi, auth0User, content) => {
       },
       preferredCommunicationChannel: 'email',
     },
+    phone: optionalEnv('HIREFLIP_E2E_CANDIDATE_PHONE', '+447700900123'),
     preferredCommunicationChannel: 'email',
     profileSettings: {
       accountOnboarding: {
