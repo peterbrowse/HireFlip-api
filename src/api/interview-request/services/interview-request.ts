@@ -35,6 +35,7 @@ type DocumentRecord = Record<string, unknown> & {
   employerFeedbackReminderCount?: number;
   employerResponseReminderCount?: number;
   employerState?: string;
+  employerInterviewAvailabilityThresholdPercentage?: number;
   endTime?: string;
   enrollment?: DocumentRecord;
   expiresAt?: string;
@@ -44,6 +45,7 @@ type DocumentRecord = Record<string, unknown> & {
   insufficientCapacityDetectedAt?: string;
   initialInterviewCommitmentCadence?: string;
   initialInterviewCommitmentVolume?: number;
+  interviewCapacityContingencyPercentage?: number;
   interviewRequest?: DocumentRecord;
   interviewCommitmentCadence?: string;
   interviewCommitmentVolume?: number;
@@ -59,6 +61,8 @@ type DocumentRecord = Record<string, unknown> & {
   lastEmployerFeedbackReminderSentAt?: string;
   metadata?: unknown;
   name?: string;
+  openingCapacityReservation?: unknown;
+  openingCapacityReservationState?: string;
   operatingRegions?: DocumentRecord[];
   profileState?: string;
   region?: DocumentRecord;
@@ -1652,10 +1656,47 @@ const consumedClaimsForEmployer = async ({
   return claims.reduce((total, claim) => total + integerValue(claim.claimCount, 1), 0);
 };
 
+const reservedOpeningCapacityForEmployer = async ({
+  classDocumentId,
+  employerDocumentId,
+  strapi,
+}: {
+  classDocumentId?: string;
+  employerDocumentId: string;
+  strapi: StrapiDocumentService;
+}) => {
+  const classes = await documents(strapi, 'api::class.class').findMany({
+    filters: {
+      openingCapacityReservationState: 'reserved',
+    },
+    limit: 500,
+  });
+
+  return classes.reduce((total, classRecord) => {
+    if (getDocumentId(classRecord) === classDocumentId) {
+      return total;
+    }
+
+    const reservation = objectValue(classRecord.openingCapacityReservation);
+    const allocations = Array.isArray(reservation.allocations) ? reservation.allocations : [];
+
+    return total + allocations.reduce((allocationTotal, allocation) => {
+      const allocationRecord = objectValue(allocation);
+
+      if (allocationRecord.employerDocumentId !== employerDocumentId) {
+        return allocationTotal;
+      }
+
+      return allocationTotal + integerValue(allocationRecord.reserved, 0);
+    }, 0);
+  }, 0);
+};
+
 const eligibleEmployerCapacity = async (
   strapi: StrapiDocumentService,
   regionDocumentId: string,
-  now = new Date()
+  now = new Date(),
+  classDocumentId?: string
 ) => {
   const employers = await documents(strapi, 'api::employer.employer').findMany({
     filters: {
@@ -1708,7 +1749,12 @@ const eligibleEmployerCapacity = async (
       regionDocumentId,
       strapi,
     });
-    const available = Math.max(0, commitment.volume - consumed);
+    const reserved = await reservedOpeningCapacityForEmployer({
+      classDocumentId,
+      employerDocumentId,
+      strapi,
+    });
+    const available = Math.max(0, commitment.volume - consumed - reserved);
 
     if (available <= 0) {
       continue;
@@ -1717,6 +1763,7 @@ const eligibleEmployerCapacity = async (
     eligible.push({
       available,
       consumed,
+      reserved,
       employer,
       employerDocumentId,
       employerName: String(employer.companyName || employer.name || ''),
@@ -3221,14 +3268,19 @@ export default factories.createCoreService('api::interview-request.interview-req
         documentId: body.classDocumentId,
       },
       limit: 1,
-      populate: ['classArea'],
+      populate: ['classArea', 'workSector'],
     });
     const classRecord = classes[0];
     const regionDocumentId = getDocumentId(classRecord?.classArea);
+    const classDocumentId = getDocumentId(classRecord);
 
     if (!classRecord || !regionDocumentId) {
       return {
         availableInterviewCapacity: 0,
+        capacityShortfall: 0,
+        contingencyPercentage: 0,
+        eligibleEmployerCount: 0,
+        employerCapacityBreakdown: [],
         ready: false,
         requiredInterviewCapacity: 0,
         reason: 'Class is missing an operating region.',
@@ -3237,14 +3289,16 @@ export default factories.createCoreService('api::interview-request.interview-req
 
     const capacity = Math.max(1, integerValue(classRecord.capacity, 1));
     const interviewsGuaranteed = Math.max(0, integerValue(classRecord.interviewsGuaranteed, 0));
-    const thresholdPercentage = Math.max(
-      1,
-      integerValue(classRecord.employerInterviewAvailabilityThresholdPercentage, 150)
+    const contingencyPercentage = Math.max(
+      0,
+      Number.isFinite(Number(classRecord.interviewCapacityContingencyPercentage))
+        ? integerValue(classRecord.interviewCapacityContingencyPercentage, 30)
+        : Math.max(0, integerValue(classRecord.employerInterviewAvailabilityThresholdPercentage, 150) - 100)
     );
     const requiredInterviewCapacity = Math.ceil(
-      capacity * interviewsGuaranteed * (thresholdPercentage / 100)
+      capacity * interviewsGuaranteed * (1 + (contingencyPercentage / 100))
     );
-    const eligible = await eligibleEmployerCapacity(strapi, regionDocumentId);
+    const eligible = await eligibleEmployerCapacity(strapi, regionDocumentId, new Date(), classDocumentId);
     const availableInterviewCapacity = eligible.reduce(
       (total, employerCapacity) => total + employerCapacity.available,
       0
@@ -3255,10 +3309,21 @@ export default factories.createCoreService('api::interview-request.interview-req
 
     return {
       availableInterviewCapacity,
+      capacityShortfall: Math.max(0, requiredInterviewCapacity - availableInterviewCapacity),
+      contingencyPercentage,
       eligibleEmployerCount: eligible.length,
+      employerCapacityBreakdown: eligible.map((employerCapacity) => ({
+        available: employerCapacity.available,
+        consumed: employerCapacity.consumed,
+        contactDocumentId: employerCapacity.contactDocumentId,
+        contactEmail: employerCapacity.contactEmail || null,
+        employerDocumentId: employerCapacity.employerDocumentId,
+        employerName: employerCapacity.employerName,
+        reserved: employerCapacity.reserved,
+      })),
       ready: capacityRequirementMet && distinctEmployerRequirementMet,
       requiredInterviewCapacity,
-      thresholdPercentage,
+      thresholdPercentage: 100 + contingencyPercentage,
       reason:
         capacityRequirementMet && distinctEmployerRequirementMet
           ? null

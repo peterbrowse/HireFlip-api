@@ -137,11 +137,14 @@
     "openingMode": {
       "type": "enumeration",
       "enum": [
+        "manual_readiness",
         "admin_scheduled",
         "admin_immediate",
-        "automatic"
+        "automatic",
+        "automatic_when_ready",
+        "automatic_at_capacity"
       ],
-      "default": "admin_scheduled",
+      "default": "manual_readiness",
       "required": true
     },
     "scheduledEnrollmentOpenAt": {
@@ -176,6 +179,54 @@
       "default": 150,
       "min": 1,
       "max": 1000
+    },
+    "interviewCapacityContingencyPercentage": {
+      "type": "integer",
+      "default": 30,
+      "min": 0,
+      "max": 500
+    },
+    "minimumViableCapacity": {
+      "type": "integer",
+      "default": 1,
+      "min": 1,
+      "max": 1000
+    },
+    "openingReadinessStatus": {
+      "type": "enumeration",
+      "enum": [
+        "not_checked",
+        "blocked",
+        "ready",
+        "opened"
+      ],
+      "default": "not_checked",
+      "required": true
+    },
+    "openingReadinessCheckedAt": {
+      "type": "datetime"
+    },
+    "openingReadinessSummary": {
+      "type": "json"
+    },
+    "openingCapacityReservationState": {
+      "type": "enumeration",
+      "enum": [
+        "none",
+        "reserved",
+        "released",
+        "consumed"
+      ],
+      "default": "none",
+      "required": true
+    },
+    "openingCapacityReservation": {
+      "type": "json"
+    },
+    "remoteInterviewsAllowed": {
+      "type": "boolean",
+      "default": false,
+      "required": true
     },
     "modulesPassCriteriaAttached": {
       "type": "boolean",

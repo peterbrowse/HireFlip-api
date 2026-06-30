@@ -35,9 +35,14 @@ type AuditEventService = {
 type InterviewRequestService = {
   checkClassInterviewSupply(input: unknown): Promise<{
     availableInterviewCapacity: number;
+    capacityShortfall?: number;
+    contingencyPercentage?: number;
+    eligibleEmployerCount?: number;
+    employerCapacityBreakdown?: Array<Record<string, unknown>>;
     ready: boolean;
     reason?: string | null;
     requiredInterviewCapacity: number;
+    thresholdPercentage?: number;
   }>;
 };
 
@@ -75,6 +80,7 @@ type DocumentRecord = Record<string, unknown> & {
   id?: number | string;
   interestRegisteredAt?: string;
   interestThresholdPercentage?: number;
+  interviewCapacityContingencyPercentage?: number;
   interviewGuaranteeDeadline?: string;
   interviewGuaranteeWindowStartsAt?: string;
   interviewsGuaranteed?: number;
@@ -89,7 +95,12 @@ type DocumentRecord = Record<string, unknown> & {
   name?: string;
   officialClassCode?: string;
   openedAt?: string;
+  openingCapacityReservation?: unknown;
+  openingCapacityReservationState?: string;
   openingMode?: string;
+  openingReadinessCheckedAt?: string;
+  openingReadinessStatus?: string;
+  openingReadinessSummary?: unknown;
   passStatus?: string;
   payment?: DocumentRecord;
   paymentState?: string;
@@ -99,6 +110,7 @@ type DocumentRecord = Record<string, unknown> & {
   postedByStaffEmail?: string;
   postedByStaffUserId?: string;
   pricePence?: number;
+  minimumViableCapacity?: number;
   processedAt?: string;
   progressState?: string;
   progressType?: string;
@@ -109,6 +121,7 @@ type DocumentRecord = Record<string, unknown> & {
   qualifyingInterviewsDeliveredCount?: number;
   refundEligibilityState?: string;
   region?: string;
+  remoteInterviewsAllowed?: boolean;
   reservation?: DocumentRecord;
   reservationExpiresAt?: string;
   reservationState?: string;
@@ -170,16 +183,31 @@ const classStates = [
   'archived',
 ] as const;
 
-const openingModes = ['admin_scheduled', 'admin_immediate', 'automatic'] as const;
+const openingModes = [
+  'manual_readiness',
+  'admin_scheduled',
+  'admin_immediate',
+  'automatic',
+  'automatic_when_ready',
+  'automatic_at_capacity',
+] as const;
+const readinessFilters = [
+  'all',
+  'ready',
+  'blocked',
+  'needs_employer_capacity',
+  'needs_course_setup',
+] as const;
 const announcementPriorities = ['normal', 'important', 'urgent'] as const;
 const announcementStates = ['draft', 'published', 'archived'] as const;
 const editableAnnouncementStates = ['draft', 'published'] as const;
 
 const listSchema = z
   .object({
+    readiness: z.enum(readinessFilters).default('all'),
     search: z.string().trim().max(120).optional().transform((value) => value || undefined),
     sessionToken: z.string().trim().min(32).max(512),
-    sortBy: z.enum(['capacity', 'createdAt', 'displayTitle', 'startDate', 'state']).default('startDate'),
+    sortBy: z.enum(['capacity', 'createdAt', 'displayTitle', 'readiness', 'startDate', 'state']).default('startDate'),
     sortDirection: z.enum(['asc', 'desc']).default('asc'),
     state: z.enum([...classStates, 'all']).default('all'),
   })
@@ -243,17 +271,20 @@ const classInputSchema = z
     endDate: optionalDate(),
     includedItems: z.array(z.string().trim().min(1).max(240)).max(40).optional(),
     interestThresholdPercentage: numberInput(z.number().int().min(1).max(1000)).default(100),
+    interviewCapacityContingencyPercentage: numberInput(z.number().int().min(0).max(500)).default(30),
     interviewGuaranteeDeadline: optionalDateTime(),
     interviewsGuaranteed: numberInput(z.number().int().min(0).max(50)),
     level: optionalString(80),
     moduleSummary: optionalString(2000),
     modulesPassCriteriaAttached: optionalBoolean().default(false),
+    minimumViableCapacity: numberInput(z.number().int().min(1).max(1000)).default(1),
     name: z.string().trim().min(1).max(160),
     officialClassCode: z.string().trim().min(1).max(40),
-    openingMode: z.enum(openingModes).default('admin_scheduled'),
+    openingMode: z.enum(openingModes).default('manual_readiness'),
     overview: optionalString(5000),
     pricePence: numberInput(z.number().int().min(0)).optional(),
     region: optionalString(120),
+    remoteInterviewsAllowed: optionalBoolean().default(false),
     requirements: optionalString(3000),
     scheduledEnrollmentOpenAt: optionalDateTime(),
     scheduleNotes: optionalString(3000),
@@ -490,18 +521,30 @@ const summarizeClass = (classRecord?: DocumentRecord | null) => {
     enrollmentOpenedBy: classRecord.enrollmentOpenedBy || null,
     includedItems: Array.isArray(classRecord.includedItems) ? classRecord.includedItems : [],
     interestThresholdPercentage: classRecord.interestThresholdPercentage ?? null,
+    interviewCapacityContingencyPercentage:
+      classRecord.interviewCapacityContingencyPercentage ?? null,
     interviewGuaranteeDeadline: classRecord.interviewGuaranteeDeadline || null,
     interviewsGuaranteed: classRecord.interviewsGuaranteed ?? null,
     level: classRecord.level || null,
     moduleSummary: classRecord.moduleSummary || null,
     modulesPassCriteriaAttached: classRecord.modulesPassCriteriaAttached === true,
+    minimumViableCapacity: classRecord.minimumViableCapacity ?? null,
     name: classRecord.name || null,
     officialClassCode: classRecord.officialClassCode || null,
     openedAt: classRecord.openedAt || null,
+    openingCapacityReservationState: classRecord.openingCapacityReservationState || 'none',
     openingMode: classRecord.openingMode || null,
+    openingReadinessCheckedAt: classRecord.openingReadinessCheckedAt || null,
+    openingReadinessStatus:
+      classRecord.openingReadinessStatus ||
+      (classRecord.automaticOpeningReadinessStatus === 'not_ready'
+        ? 'blocked'
+        : classRecord.automaticOpeningReadinessStatus || 'not_checked'),
+    openingReadinessSummary: objectValue(classRecord.openingReadinessSummary),
     overview: classRecord.overview || null,
     pricePence: classRecord.pricePence ?? null,
     region: classRecord.classArea?.name || classRecord.region || null,
+    remoteInterviewsAllowed: classRecord.remoteInterviewsAllowed === true,
     requirements: classRecord.requirements || null,
     scheduledEnrollmentOpenAt: classRecord.scheduledEnrollmentOpenAt || null,
     scheduleNotes: classRecord.scheduleNotes || null,
@@ -598,9 +641,66 @@ const classCounts = (classRecord: DocumentRecord, enrollments: DocumentRecord[])
   };
 };
 
+const integerValue = (value: unknown, fallback = 0) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.trunc(parsed) : fallback;
+};
+
+const classDemandCount = (counts: ReturnType<typeof classCounts>) =>
+  counts.capacityHeld + counts.interestRegistered + counts.placeReserved + counts.waitingList;
+
+const courseSetupIsComplete = (courseSetup: CourseSetupPayload) =>
+  courseSetup.sections.length > 0 &&
+  courseSetup.modules.length > 0 &&
+  courseSetup.materials.length > 0 &&
+  courseSetup.tests.length > 0;
+
+const readinessSummary = (classRecord: DocumentRecord) =>
+  objectValue(classRecord.openingReadinessSummary);
+
+const readinessCategoryForClass = (classRecord: DocumentRecord) => {
+  const summary = readinessSummary(classRecord);
+  const category = typeof summary.category === 'string' ? summary.category : undefined;
+
+  if (category) {
+    return category;
+  }
+
+  const status = classRecord.openingReadinessStatus ||
+    (classRecord.automaticOpeningReadinessStatus === 'not_ready'
+      ? 'blocked'
+      : classRecord.automaticOpeningReadinessStatus);
+
+  return status === 'ready' || status === 'opened' ? 'ready' : status === 'blocked' ? 'blocked' : 'not_checked';
+};
+
+const classMatchesReadiness = (classRecord: DocumentRecord, readiness: string) => {
+  if (readiness === 'all') {
+    return true;
+  }
+
+  const summary = readinessSummary(classRecord);
+  const blockerKeys = Array.isArray(summary.blockerKeys) ? summary.blockerKeys.map(String) : [];
+  const category = readinessCategoryForClass(classRecord);
+
+  if (readiness === 'needs_employer_capacity') {
+    return blockerKeys.includes('employer_capacity') || category === 'needs_employer_capacity';
+  }
+
+  if (readiness === 'needs_course_setup') {
+    return blockerKeys.includes('course_setup') || category === 'needs_course_setup';
+  }
+
+  return category === readiness;
+};
+
 const sortValue = (classRecord: DocumentRecord, sortBy: string) => {
   if (sortBy === 'capacity') {
     return Number(classRecord.capacity || 0);
+  }
+
+  if (sortBy === 'readiness') {
+    return readinessCategoryForClass(classRecord);
   }
 
   if (sortBy === 'createdAt' || sortBy === 'startDate') {
@@ -1203,17 +1303,20 @@ const normalizeClassData = (input: z.infer<typeof classInputSchema> | Partial<z.
     'endDate',
     'includedItems',
     'interestThresholdPercentage',
+    'interviewCapacityContingencyPercentage',
     'interviewGuaranteeDeadline',
     'interviewsGuaranteed',
     'level',
     'moduleSummary',
     'modulesPassCriteriaAttached',
+    'minimumViableCapacity',
     'name',
     'officialClassCode',
     'openingMode',
     'overview',
     'pricePence',
     'region',
+    'remoteInterviewsAllowed',
     'requirements',
     'scheduledEnrollmentOpenAt',
     'scheduleNotes',
@@ -1493,6 +1596,7 @@ const openEnrollmentForClass = async ({
 }) => {
   const now = new Date().toISOString();
   const previousState = summarizeClass(classRecord);
+  const openingCapacityReservation = createOpeningCapacityReservation(classRecord);
   const updatedClass = await documents(strapi, 'api::class.class').update({
     documentId: getDocumentId(classRecord),
     data: {
@@ -1500,7 +1604,10 @@ const openEnrollmentForClass = async ({
       enrollmentOpenedAt: classRecord.enrollmentOpenedAt || now,
       enrollmentOpenedBy: session.user.displayName,
       openedAt: classRecord.openedAt || now,
-      openingMode: classRecord.openingMode === 'automatic' ? 'automatic' : 'admin_immediate',
+      openingCapacityReservation,
+      openingCapacityReservationState: 'reserved',
+      openingReadinessCheckedAt: classRecord.openingReadinessCheckedAt || now,
+      openingReadinessStatus: 'opened',
       scheduledEnrollmentOpenAt: classRecord.scheduledEnrollmentOpenAt || null,
       state: 'open',
     },
@@ -1551,6 +1658,7 @@ const openEnrollmentForClass = async ({
     eventType: 'admin.class_enrollment_opened',
     metadata: {
       openedEnrollmentCount: openedEnrollments.length,
+      openingCapacityReservation,
     },
     newState: summarizeClass(updatedClass),
     previousState,
@@ -1772,28 +1880,249 @@ const courseSetupForClass = async (strapi: StrapiService, classRecord: DocumentR
   };
 };
 
-const shouldAutoOpenClass = (classRecord: DocumentRecord, enrollments: DocumentRecord[], now: number) => {
-  if (classRecord.openingMode === 'admin_scheduled') {
+const calculateClassOpeningReadiness = async ({
+  classRecord,
+  enrollments,
+  strapi,
+}: {
+  classRecord: DocumentRecord;
+  enrollments: DocumentRecord[];
+  strapi: StrapiService;
+}) => {
+  const classDocumentId = getDocumentId(classRecord);
+  const counts = classCounts(classRecord, enrollments);
+  const capacity = Math.max(1, integerValue(classRecord.capacity, 1));
+  const minimumViableCapacity = Math.min(
+    capacity,
+    Math.max(1, integerValue(classRecord.minimumViableCapacity, 1))
+  );
+  const candidateDemand = classDemandCount(counts);
+  const demandMeetsMinimum = candidateDemand >= minimumViableCapacity;
+  const blockerKeys: string[] = [];
+  const blockers: string[] = [];
+  const warnings: string[] = [];
+
+  if (!getDocumentId(classRecord.classArea)) {
+    blockerKeys.push('class_area');
+    blockers.push('Class operating region is missing.');
+  }
+
+  if (!getDocumentId(classRecord.workSector)) {
+    blockerKeys.push('work_sector');
+    blockers.push('Class work sector is missing.');
+  }
+
+  if (!getDocumentId(classRecord.course)) {
+    blockerKeys.push('course_setup');
+    blockers.push('Course is not linked.');
+  }
+
+  const courseSetup = await courseSetupForClass(strapi, classRecord);
+
+  if (getDocumentId(classRecord.course) && !courseSetupIsComplete(courseSetup)) {
+    blockerKeys.push('course_setup');
+    blockers.push('Course setup must include sections, modules, materials, and tests.');
+  }
+
+  if (classRecord.modulesPassCriteriaAttached !== true) {
+    blockerKeys.push('course_setup');
+    blockers.push('Module pass criteria are not attached.');
+  }
+
+  if (!classRecord.currency) {
+    blockerKeys.push('payment_config');
+    blockers.push('Class currency is missing.');
+  }
+
+  if (typeof classRecord.pricePence !== 'number' && typeof classRecord.discountedPricePence !== 'number') {
+    blockerKeys.push('payment_config');
+    blockers.push('Class price is missing.');
+  }
+
+  if (
+    classRecord.startDate &&
+    classRecord.endDate &&
+    Date.parse(classRecord.endDate) < Date.parse(classRecord.startDate)
+  ) {
+    blockerKeys.push('dates');
+    blockers.push('Class end date is before the start date.');
+  }
+
+  if (!demandMeetsMinimum) {
+    blockerKeys.push('minimum_viable_capacity');
+    blockers.push(
+      `Candidate demand is ${candidateDemand}/${minimumViableCapacity} minimum viable class size.`
+    );
+  } else if (candidateDemand < capacity) {
+    warnings.push(`Candidate demand is ${candidateDemand}/${capacity}; class is not at full capacity.`);
+  }
+
+  const supply = classDocumentId
+    ? await interviewRequestService(strapi).checkClassInterviewSupply({ classDocumentId })
+    : {
+        availableInterviewCapacity: 0,
+        capacityShortfall: 0,
+        contingencyPercentage: 0,
+        eligibleEmployerCount: 0,
+        employerCapacityBreakdown: [],
+        ready: false,
+        requiredInterviewCapacity: 0,
+        reason: 'Class has not been created yet.',
+      };
+
+  if (!supply.ready) {
+    blockerKeys.push('employer_capacity');
+    blockers.push(supply.reason || 'Employer interview capacity is below the required level.');
+  }
+
+  const uniqueBlockerKeys = Array.from(new Set(blockerKeys));
+  const uniqueBlockers = Array.from(new Set(blockers));
+  const ready = uniqueBlockerKeys.length === 0;
+  const category = ready
+    ? 'ready'
+    : uniqueBlockerKeys.includes('employer_capacity')
+      ? 'needs_employer_capacity'
+      : uniqueBlockerKeys.includes('course_setup')
+        ? 'needs_course_setup'
+        : 'blocked';
+  const checkedAt = new Date().toISOString();
+
+  return {
+    automaticOpeningReadinessStatus: ready ? 'ready' : 'not_ready',
+    openingReadinessCheckedAt: checkedAt,
+    openingReadinessStatus: ready ? 'ready' : 'blocked',
+    openingReadinessSummary: {
+      availableInterviewCapacity: supply.availableInterviewCapacity,
+      blockerKeys: uniqueBlockerKeys,
+      blockers: uniqueBlockers,
+      capacity,
+      candidateDemand,
+      category,
+      checkedAt,
+      contingencyPercentage: supply.contingencyPercentage ?? null,
+      demandMeetsMinimum,
+      eligibleEmployerCount: supply.eligibleEmployerCount ?? 0,
+      employerCapacityBreakdown: Array.isArray(supply.employerCapacityBreakdown)
+        ? supply.employerCapacityBreakdown
+        : [],
+      minimumViableCapacity,
+      ready,
+      reason: ready ? null : uniqueBlockers[0] || supply.reason || 'Class opening readiness is blocked.',
+      requiredInterviewCapacity: supply.requiredInterviewCapacity,
+      shortfallByRegion: supply.capacityShortfall || 0,
+      warnings,
+    },
+  };
+};
+
+const updateClassOpeningReadiness = async ({
+  classRecord,
+  enrollments,
+  strapi,
+}: {
+  classRecord: DocumentRecord;
+  enrollments: DocumentRecord[];
+  strapi: StrapiService;
+}) => {
+  const classDocumentId = getDocumentId(classRecord);
+
+  if (!classDocumentId) {
+    return classRecord;
+  }
+
+  const readiness = await calculateClassOpeningReadiness({
+    classRecord,
+    enrollments,
+    strapi,
+  });
+
+  return documents(strapi, 'api::class.class').update({
+    documentId: classDocumentId,
+    data: readiness,
+    populate: classPopulate,
+  });
+};
+
+const readinessAllowsOpening = (classRecord: DocumentRecord) => {
+  const summary = readinessSummary(classRecord);
+  return classRecord.openingReadinessStatus === 'ready' ||
+    classRecord.automaticOpeningReadinessStatus === 'ready' ||
+    summary.ready === true;
+};
+
+const shouldOpenByMode = (classRecord: DocumentRecord, enrollments: DocumentRecord[], now: number) => {
+  const openingMode = classRecord.openingMode || 'manual_readiness';
+
+  if (openingMode === 'manual_readiness' || openingMode === 'admin_immediate') {
+    return false;
+  }
+
+  if (openingMode === 'admin_scheduled') {
     return Boolean(
       classRecord.scheduledEnrollmentOpenAt &&
       Date.parse(String(classRecord.scheduledEnrollmentOpenAt)) <= now
     );
   }
 
-  if (classRecord.openingMode !== 'automatic') {
-    return false;
-  }
-
   if (classRecord.scheduledEnrollmentOpenAt && Date.parse(String(classRecord.scheduledEnrollmentOpenAt)) > now) {
     return false;
   }
 
-  const capacity = Number(classRecord.capacity || 0);
-  const thresholdPercentage = Number(classRecord.interestThresholdPercentage || 100);
-  const requiredInterest = Math.max(1, Math.ceil(capacity * (thresholdPercentage / 100)));
-  const interestCount = enrollments.filter((enrollment) => enrollmentState(enrollment) === 'interest_registered').length;
+  if (openingMode === 'automatic' || openingMode === 'automatic_when_ready') {
+    return true;
+  }
 
-  return capacity > 0 && interestCount >= requiredInterest;
+  if (openingMode !== 'automatic_at_capacity') {
+    return false;
+  }
+
+  const capacity = Math.max(1, integerValue(classRecord.capacity, 1));
+  const counts = classCounts(classRecord, enrollments);
+
+  return counts.capacityHeld + counts.interestRegistered >= capacity;
+};
+
+const createOpeningCapacityReservation = (classRecord: DocumentRecord) => {
+  const summary = readinessSummary(classRecord);
+  const breakdown = Array.isArray(summary.employerCapacityBreakdown)
+    ? summary.employerCapacityBreakdown.map(objectValue)
+    : [];
+  let remaining = integerValue(summary.requiredInterviewCapacity, 0);
+  const allocations: Array<Record<string, unknown>> = [];
+
+  for (const employerCapacity of breakdown) {
+    if (remaining <= 0) {
+      break;
+    }
+
+    const available = integerValue(employerCapacity.available, 0);
+    const reserved = Math.min(available, remaining);
+
+    if (reserved <= 0 || !employerCapacity.employerDocumentId) {
+      continue;
+    }
+
+    allocations.push({
+      contactDocumentId: employerCapacity.contactDocumentId || null,
+      contactEmail: employerCapacity.contactEmail || null,
+      employerDocumentId: employerCapacity.employerDocumentId,
+      employerName: employerCapacity.employerName || null,
+      reserved,
+    });
+    remaining -= reserved;
+  }
+
+  return {
+    allocations,
+    classDocumentId: getDocumentId(classRecord),
+    createdAt: new Date().toISOString(),
+    requiredInterviewCapacity: integerValue(summary.requiredInterviewCapacity, 0),
+    unallocated: Math.max(0, remaining),
+  };
+};
+
+const shouldAutoOpenClass = (classRecord: DocumentRecord, enrollments: DocumentRecord[], now: number) => {
+  return shouldOpenByMode(classRecord, enrollments, now) && readinessAllowsOpening(classRecord);
 };
 
 export default ({ strapi }: { strapi: StrapiService }) => ({
@@ -1808,6 +2137,7 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
     });
     const filteredClasses = classes
       .filter((classRecord) => body.state === 'all' || classRecord.state === body.state)
+      .filter((classRecord) => classMatchesReadiness(classRecord, body.readiness))
       .filter((classRecord) => matchesSearch(classRecord, body.search))
       .sort(compareClasses(body.sortBy, body.sortDirection));
     const classDocumentIds = filteredClasses.map(getDocumentId).filter((documentId): documentId is string => Boolean(documentId));
@@ -1844,22 +2174,27 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
 
     const enrollments = await findEnrollmentsForClasses(strapi, [body.classDocumentId]);
     const enrollmentDocumentIds = enrollments.map(getDocumentId).filter((documentId): documentId is string => Boolean(documentId));
+    const refreshedClass = await updateClassOpeningReadiness({
+      classRecord,
+      enrollments,
+      strapi,
+    });
     const [reservationsByEnrollment, paymentsByEnrollment, progressByEnrollment, courseSetup, announcements] = await Promise.all([
       findReservationsForEnrollments(strapi, enrollmentDocumentIds),
       findPaymentsForEnrollments(strapi, enrollmentDocumentIds),
       findCourseProgressForEnrollments(strapi, enrollmentDocumentIds),
-      courseSetupForClass(strapi, classRecord),
+      courseSetupForClass(strapi, refreshedClass),
       findClassAnnouncements(strapi, body.classDocumentId),
     ]);
     const courseItemKeys = setupItemKeys(courseSetup);
 
     return {
       announcements: announcements.map(publicClassAnnouncement),
-      class: publicClassSummary(classRecord, enrollments, permissions),
+      class: publicClassSummary(refreshedClass, enrollments, permissions),
       courseSetup,
       enrollments: enrollments.map((enrollment) =>
         publicEnrollment({
-          classRecord,
+          classRecord: refreshedClass,
           courseItemKeys,
           enrollment,
           payment: paymentsByEnrollment.get(getDocumentId(enrollment) || ''),
@@ -1907,19 +2242,24 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
       data: normalizeClassData(body.class),
       populate: classPopulate,
     });
+    const refreshedClass = await updateClassOpeningReadiness({
+      classRecord,
+      enrollments: [],
+      strapi,
+    });
 
     await recordClassAudit({
-      classRecord,
+      classRecord: refreshedClass,
       context: requestContext,
       eventType: 'admin.class_created',
-      newState: summarizeClass(classRecord),
+      newState: summarizeClass(refreshedClass),
       session,
       strapi,
     });
-    await publishClassAdminChange(strapi, getDocumentId(classRecord));
+    await publishClassAdminChange(strapi, getDocumentId(refreshedClass));
 
     return {
-      class: publicClassSummary(classRecord, [], classPermissions(session)),
+      class: publicClassSummary(refreshedClass, [], classPermissions(session)),
       created: true,
       user: session.user,
     };
@@ -1948,21 +2288,26 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
       populate: classPopulate,
     });
     const enrollments = await findEnrollmentsForClasses(strapi, [body.classDocumentId]);
+    const refreshedClass = await updateClassOpeningReadiness({
+      classRecord: updatedClass,
+      enrollments,
+      strapi,
+    });
 
     await recordClassAudit({
-      classRecord: updatedClass,
+      classRecord: refreshedClass,
       context: requestContext,
       eventType: 'admin.class_updated',
-      newState: summarizeClass(updatedClass),
+      newState: summarizeClass(refreshedClass),
       previousState: summarizeClass(existingClass),
       session,
       strapi,
     });
     await publishClassAdminChange(strapi, body.classDocumentId);
-    await publishClassCandidateChanges(strapi, updatedClass, enrollments);
+    await publishClassCandidateChanges(strapi, refreshedClass, enrollments);
 
     return {
-      class: publicClassSummary(updatedClass, enrollments, classPermissions(session)),
+      class: publicClassSummary(refreshedClass, enrollments, classPermissions(session)),
       updated: true,
       user: session.user,
     };
@@ -2181,8 +2526,44 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
     }
 
     if (body.action === 'open_enrollment') {
-      const openedClass = await openEnrollmentForClass({
+      const enrollmentsBeforeOpen = await findEnrollmentsForClasses(strapi, [body.classDocumentId]);
+      const readinessClass = await updateClassOpeningReadiness({
         classRecord: existingClass,
+        enrollments: enrollmentsBeforeOpen,
+        strapi,
+      });
+      const canOverrideReadiness = session.user.roleKeys.includes('super_admin');
+      const readyToOpen = readinessAllowsOpening(readinessClass);
+
+      if (!readyToOpen && !canOverrideReadiness) {
+        const summary = readinessSummary(readinessClass);
+        throw new ValidationError(
+          typeof summary.reason === 'string'
+            ? summary.reason
+            : 'Class opening readiness is blocked.'
+        );
+      }
+
+      if (!readyToOpen && canOverrideReadiness && !body.reason) {
+        throw new ValidationError('A Super Admin override reason is required to open a blocked class.');
+      }
+
+      if (!readyToOpen && canOverrideReadiness) {
+        await recordClassAudit({
+          classRecord: readinessClass,
+          context: requestContext,
+          eventType: 'admin.class_opening_readiness_override_used',
+          metadata: {
+            reason: body.reason,
+            readiness: readinessSummary(readinessClass),
+          },
+          session,
+          strapi,
+        });
+      }
+
+      const openedClass = await openEnrollmentForClass({
+        classRecord: readinessClass,
         requestContext,
         session,
         strapi,
@@ -2256,10 +2637,10 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
     const classes = await documents(strapi, 'api::class.class').findMany({
       filters: {
         openingMode: {
-          $in: ['admin_scheduled', 'automatic'],
+          $in: ['admin_scheduled', 'automatic', 'automatic_when_ready', 'automatic_at_capacity'],
         },
         state: {
-          $in: ['coming_soon', 'waitlist_open'],
+          $in: ['draft', 'coming_soon', 'waitlist_open'],
         },
       },
       limit,
@@ -2275,56 +2656,68 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
       const classDocumentId = getDocumentId(classRecord);
       const classEnrollments = enrollmentsByClass.get(classDocumentId || '') || [];
 
-      if (!classDocumentId || !shouldAutoOpenClass(classRecord, classEnrollments, now)) {
+      if (!classDocumentId) {
         continue;
       }
 
       try {
-        const supply = await interviewRequestService(strapi).checkClassInterviewSupply({
-          classDocumentId,
+        const readinessClass = await updateClassOpeningReadiness({
+          classRecord,
+          enrollments: classEnrollments,
+          strapi,
         });
+        const readiness = readinessSummary(readinessClass);
+        const statusChanged = readinessClass.openingReadinessStatus !== classRecord.openingReadinessStatus;
 
-        if (!supply.ready) {
-          if (classRecord.automaticOpeningReadinessStatus !== 'not_ready') {
-            await documents(strapi, 'api::class.class').update({
-              documentId: classDocumentId,
-              data: {
-                automaticOpeningReadinessStatus: 'not_ready',
-              },
-            });
+        if (!readinessAllowsOpening(readinessClass)) {
+          if (statusChanged) {
             await auditEvents(strapi).record({
               actorType: 'system',
-              eventCategory: 'interview',
-              eventType: 'class.interview_capacity_shortfall',
+              eventCategory: 'course',
+              eventType: 'class.opening_readiness_blocked',
               metadata: {
-                availableInterviewCapacity: supply.availableInterviewCapacity,
-                requiredInterviewCapacity: supply.requiredInterviewCapacity,
+                readiness,
                 source: 'scheduled_class_opening',
               },
               requestId: requestContext.requestId,
               serviceName: requestContext.serviceName,
-              severity: 'error',
+              severity: readiness.blockerKeys && Array.isArray(readiness.blockerKeys)
+                ? 'warning'
+                : 'info',
               source: 'core_api',
               subjectDisplayName: classRecord.displayTitle || classRecord.name || classDocumentId,
               subjectId: classDocumentId,
               subjectType: 'class',
             });
           }
-
           continue;
         }
 
-        if (classRecord.automaticOpeningReadinessStatus !== 'ready') {
-          await documents(strapi, 'api::class.class').update({
-            documentId: classDocumentId,
-            data: {
-              automaticOpeningReadinessStatus: 'ready',
+        if (statusChanged) {
+          await auditEvents(strapi).record({
+            actorType: 'system',
+            eventCategory: 'course',
+            eventType: 'class.opening_readiness_passed',
+            metadata: {
+              readiness,
+              source: 'scheduled_class_opening',
             },
+            requestId: requestContext.requestId,
+            serviceName: requestContext.serviceName,
+            severity: 'info',
+            source: 'core_api',
+            subjectDisplayName: classRecord.displayTitle || classRecord.name || classDocumentId,
+            subjectId: classDocumentId,
+            subjectType: 'class',
           });
         }
 
+        if (!shouldAutoOpenClass(readinessClass, classEnrollments, now)) {
+          continue;
+        }
+
         const openedClass = await openEnrollmentForClass({
-          classRecord,
+          classRecord: readinessClass,
           requestContext,
           session: serviceSession,
           strapi,

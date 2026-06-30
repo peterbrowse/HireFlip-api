@@ -52,6 +52,7 @@ type DocumentRecord = Record<string, unknown> & {
   candidateResponseDeadline?: string;
   candidateRespondedAt?: string;
   class?: DocumentRecord;
+  classArea?: DocumentRecord;
   companyName?: string;
   completedAt?: string;
   courseTestAttempt?: DocumentRecord;
@@ -59,6 +60,7 @@ type DocumentRecord = Record<string, unknown> & {
   currency?: string;
   deliveryState?: string;
   documentId?: string;
+  displayTitle?: string;
   email?: string;
   enrollment?: DocumentRecord;
   enrollmentState?: string;
@@ -81,6 +83,10 @@ type DocumentRecord = Record<string, unknown> & {
   feedbackDueAt?: string;
   feedbackOverdueDetectedAt?: string;
   metadata?: unknown;
+  name?: string;
+  openingReadinessCheckedAt?: string;
+  openingReadinessStatus?: string;
+  openingReadinessSummary?: unknown;
   occurredAt?: string;
   payment?: DocumentRecord;
   paymentState?: string;
@@ -94,11 +100,13 @@ type DocumentRecord = Record<string, unknown> & {
   relatedType?: string;
   reservation?: DocumentRecord;
   reservationState?: string;
+  region?: string;
   resolvedAt?: string | null;
   requestedDetailsAt?: string;
   scheduledEndTime?: string;
   scheduledStartTime?: string;
   severity?: string;
+  sector?: string;
   sourceDocumentId?: string;
   sourceType?: AdminTaskSourceType;
   submittedAt?: string;
@@ -112,6 +120,7 @@ type DocumentRecord = Record<string, unknown> & {
   templateKey?: string;
   title?: string;
   updatedAt?: string;
+  workSector?: DocumentRecord;
 };
 
 type DocumentCollection = {
@@ -129,6 +138,7 @@ type AdminTaskPriority = 'low' | 'normal' | 'high' | 'urgent';
 type AdminTaskSourceType =
   | 'assessment_appeal'
   | 'audit_event'
+  | 'class'
   | 'enrollment'
   | 'interview'
   | 'interview_feedback'
@@ -143,6 +153,7 @@ type AdminTaskState = 'acknowledged' | 'dismissed' | 'open' | 'resolved';
 type AdminTaskType =
   | 'assessment_appeal'
   | 'ai_feedback_review'
+  | 'class_readiness'
   | 'interview_operation'
   | 'notification_failure'
   | 'privacy_request'
@@ -223,6 +234,8 @@ const notificationIssuePath = (notificationEventDocumentId: string) =>
   `/support/notification-issues/${encodeURIComponent(notificationEventDocumentId)}`;
 const privacyRequestPath = (requestDocumentId: string) =>
   `/support/privacy-requests/${encodeURIComponent(requestDocumentId)}`;
+const classPath = (classDocumentId: string) =>
+  `/classes/${encodeURIComponent(classDocumentId)}`;
 const interviewOperationsPath = (params?: Record<string, string | undefined>) => {
   const searchParams = new URLSearchParams();
 
@@ -265,6 +278,7 @@ const sourceTimestamp = (record: DocumentRecord) =>
 const taskTypeLabels: Record<AdminTaskType, string> = {
   assessment_appeal: 'Assessment appeal',
   ai_feedback_review: 'AI feedback review',
+  class_readiness: 'Class readiness',
   interview_operation: 'Interview operation',
   notification_failure: 'Notification failure',
   privacy_request: 'Privacy request',
@@ -285,6 +299,7 @@ const priorityRank: Record<AdminTaskPriority, number> = {
 const monitoredTaskTypes: AdminTaskType[] = [
   'assessment_appeal',
   'ai_feedback_review',
+  'class_readiness',
   'interview_operation',
   'privacy_request',
   'payment_review',
@@ -1506,6 +1521,97 @@ const collectPrivacyRequestTasks = async (strapi: StrapiDocumentService) => {
   return requests.map(privacyRequestTask).filter((task): task is AdminTaskDraft => Boolean(task));
 };
 
+const classDisplayName = (classRecord: DocumentRecord) =>
+  String(classRecord.displayTitle || classRecord.name || classRecord.documentId || 'Class');
+
+const classReadinessTask = (classRecord: DocumentRecord): AdminTaskDraft | null => {
+  const documentId = getDocumentId(classRecord);
+  const summary = objectValue(classRecord.openingReadinessSummary);
+  const ready = summary.ready === true || classRecord.openingReadinessStatus === 'ready';
+  const blockerKeys = Array.isArray(summary.blockerKeys) ? summary.blockerKeys.map(String) : [];
+
+  if (!documentId || ready || classRecord.openingReadinessStatus !== 'blocked') {
+    return null;
+  }
+
+  const title = blockerKeys.includes('employer_capacity')
+    ? 'Class needs employer capacity'
+    : blockerKeys.includes('course_setup')
+      ? 'Class needs course setup'
+      : 'Class opening is blocked';
+  const regionName = documentRecordValue(classRecord.classArea)?.name || classRecord.region;
+  const sectorName = documentRecordValue(classRecord.workSector)?.name || classRecord.sector;
+  const required = typeof summary.requiredInterviewCapacity === 'number'
+    ? summary.requiredInterviewCapacity
+    : null;
+  const available = typeof summary.availableInterviewCapacity === 'number'
+    ? summary.availableInterviewCapacity
+    : null;
+  const shortfall = typeof summary.shortfallByRegion === 'number'
+    ? summary.shortfallByRegion
+    : required !== null && available !== null
+      ? Math.max(0, required - available)
+      : null;
+  const sourceDetectedAt =
+    classRecord.openingReadinessCheckedAt || String(summary.checkedAt || '') || sourceTimestamp(classRecord);
+
+  return {
+    actionLabel: 'Review class',
+    actionPath: classPath(documentId),
+    metadata: {
+      availableInterviewCapacity: available,
+      blockerKeys,
+      className: classDisplayName(classRecord),
+      minimumViableCapacity: summary.minimumViableCapacity ?? null,
+      regionName: regionName || null,
+      requiredInterviewCapacity: required,
+      sectorName: sectorName || null,
+      shortfall,
+      sourceCreatedAt: classRecord.createdAt,
+      sourceDetectedAt,
+      visibleRoleKeys: blockerKeys.includes('employer_capacity')
+        ? ['sales', 'admin', 'super_admin']
+        : ['admin', 'super_admin'],
+    },
+    priority: blockerKeys.includes('employer_capacity') ? 'high' : 'normal',
+    relatedDocumentId: documentId,
+    relatedType: 'class',
+    sourceDocumentId: documentId,
+    sourceType: 'class',
+    summary: trimToLength(
+      [
+        classDisplayName(classRecord),
+        regionName ? `Region: ${regionName}.` : '',
+        sectorName ? `Sector: ${sectorName}.` : '',
+        shortfall && shortfall > 0
+          ? `Interview capacity shortfall: ${shortfall} slot(s).`
+          : '',
+        typeof summary.reason === 'string' ? summary.reason : '',
+      ].filter(Boolean).join(' '),
+      500
+    ),
+    taskKey: `class-readiness:${documentId}`,
+    taskType: 'class_readiness',
+    title,
+  };
+};
+
+const collectClassReadinessTasks = async (strapi: StrapiDocumentService) => {
+  const classes = await documents(strapi, 'api::class.class').findMany({
+    filters: {
+      openingReadinessStatus: 'blocked',
+      state: {
+        $in: ['draft', 'coming_soon', 'waitlist_open'],
+      },
+    },
+    limit: 100,
+    populate: ['classArea', 'workSector'],
+    sort: ['openingReadinessCheckedAt:desc', 'updatedAt:desc', 'createdAt:desc'],
+  });
+
+  return classes.map(classReadinessTask).filter((task): task is AdminTaskDraft => Boolean(task));
+};
+
 const collectAiFeedbackFailureTasks = async (strapi: StrapiDocumentService) => {
   const feedbackRecords = await documents(strapi, 'api::interview-feedback.interview-feedback').findMany({
     filters: {
@@ -1626,6 +1732,7 @@ const collectTaskDrafts = async (strapi: StrapiDocumentService) => {
     privacyRequests,
     auditEvents,
     aiFeedbackFailures,
+    classReadiness,
     supportCases,
   ] = await Promise.all([
     collectAssessmentAppealTasks(strapi),
@@ -1640,6 +1747,7 @@ const collectTaskDrafts = async (strapi: StrapiDocumentService) => {
     collectPrivacyRequestTasks(strapi),
     collectAuditTasks(strapi),
     collectAiFeedbackFailureTasks(strapi),
+    collectClassReadinessTasks(strapi),
     collectSupportCaseTasks(strapi),
   ]);
 
@@ -1656,6 +1764,7 @@ const collectTaskDrafts = async (strapi: StrapiDocumentService) => {
     ...privacyRequests,
     ...auditEvents,
     ...aiFeedbackFailures,
+    ...classReadiness,
     ...supportCases,
   ];
 };
@@ -1721,6 +1830,7 @@ const taskCounts = (tasks: ReturnType<typeof publicTask>[]) => {
 
   return {
     assessmentAppeals: tasks.filter((task) => task.taskType === 'assessment_appeal').length,
+    classReadiness: tasks.filter((task) => task.taskType === 'class_readiness').length,
     criticalEvents: tasks.filter((task) => task.taskType === 'system_alert').length,
     interviewOperations: tasks.filter((task) => task.taskType === 'interview_operation').length,
     notificationFailures: tasks.filter((task) => task.taskType === 'notification_failure').length,

@@ -23,6 +23,7 @@
       "enum": [
         "assessment_appeal",
         "ai_feedback_review",
+        "class_readiness",
         "interview_operation",
         "privacy_request",
         "payment_review",
@@ -77,7 +78,8 @@
         "interview",
         "privacy_rights_request",
         "notification_event",
-        "audit_event"
+        "audit_event",
+        "class"
       ],
       "required": true
     },
