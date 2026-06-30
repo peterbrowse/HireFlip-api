@@ -200,15 +200,12 @@ const ensureAuth0User = async ({
     `/users-by-email?email=${encodeURIComponent(normalizedEmail)}`
   );
   const existingUser = existingUsers.find((user) => isConnectionUser(user, connectionName));
-  const data = {
+  const profileData = {
     blocked: false,
-    connection: connectionName,
     email_verified: true,
     family_name: lastName || undefined,
     given_name: firstName || undefined,
     name: name || [firstName, lastName].filter(Boolean).join(' ') || normalizedEmail,
-    password,
-    verify_email: false,
   };
 
   if (existingUser) {
@@ -216,10 +213,18 @@ const ensureAuth0User = async ({
       config,
       `/users/${encodeURIComponent(existingUser.user_id)}`,
       {
-        body: JSON.stringify(data),
+        body: JSON.stringify(profileData),
         method: 'PATCH',
       }
     );
+
+    await requestManagementApi(config, `/users/${encodeURIComponent(existingUser.user_id)}`, {
+      body: JSON.stringify({
+        connection: connectionName,
+        password,
+      }),
+      method: 'PATCH',
+    });
 
     return {
       created: false,
@@ -229,9 +234,11 @@ const ensureAuth0User = async ({
 
   const createdUser = await requestManagementApi(config, '/users', {
     body: JSON.stringify({
-      ...data,
+      ...profileData,
       connection: connectionName,
       email: normalizedEmail,
+      password,
+      verify_email: false,
     }),
     method: 'POST',
   });
