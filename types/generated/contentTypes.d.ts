@@ -762,6 +762,7 @@ export interface ApiAuditEventAuditEvent extends Struct.CollectionTypeSchema {
         'recruitment',
         'refund',
         'security',
+        'support',
         'system',
       ]
     > &

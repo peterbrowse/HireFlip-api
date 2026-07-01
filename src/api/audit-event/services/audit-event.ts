@@ -18,6 +18,7 @@ const auditEventSchema = z.object({
     'recruitment',
     'refund',
     'security',
+    'support',
     'system',
   ]),
   severity: z.enum(['info', 'warning', 'error', 'critical']).default('info'),
