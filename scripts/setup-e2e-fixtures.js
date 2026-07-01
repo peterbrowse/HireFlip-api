@@ -369,6 +369,40 @@ const ensureActiveCheckoutTermsPolicy = async (strapi) => {
   });
 };
 
+const ensureActiveEmployerTermsPolicy = async (strapi) => {
+  const existingPolicy = await findFirst(strapi, 'api::policy-document.policy-document', {
+    policyState: 'active',
+    policyType: 'employer_terms',
+  });
+
+  if (existingPolicy) {
+    return existingPolicy;
+  }
+
+  return documents(strapi, 'api::policy-document.policy-document').create({
+    data: {
+      acceptanceLabel:
+        'I confirm I am authorised to set up this employer account and accept the HireFlip employer terms.',
+      body: [
+        'E2E employer terms paragraph one. Employer dashboard access is provided to invited contacts so they can manage interview availability, assignment, feedback, and participation records.',
+        'E2E employer terms paragraph two. Employer contacts must keep dashboard access secure and only use candidate information for the HireFlip interview workflow.',
+        'E2E employer terms paragraph three. Interview capacity, operating regions, and employer contact coverage must be kept accurate so candidate expectations remain accurate.',
+        'E2E employer terms paragraph four. HireFlip may review, pause, or revoke employer access if records become inaccurate or if candidate privacy and safety requirements are not met.',
+        'E2E employer terms paragraph five. These terms exist for browser smoke testing only; final legal wording remains outside this fixture.',
+      ].join('\n\n'),
+      effectiveFrom: new Date().toISOString(),
+      internalNotes:
+        'E2E employer terms for onboarding browser smoke tests. Existing active employer terms are left untouched.',
+      introCopy: 'Review and accept the employer terms before opening the dashboard.',
+      policyKey: 'e2e:employer-terms',
+      policyState: 'active',
+      policyType: 'employer_terms',
+      title: 'E2E Employer Terms',
+      version: 'e2e-employer-terms-v1',
+    },
+  });
+};
+
 const ensureContent = async (strapi) => {
   const areaSlug = safeSlug(optionalEnv('HIREFLIP_E2E_CLASS_AREA_SLUG', 'e2e-london'));
   const coverageAreaSlug = safeSlug(
@@ -454,6 +488,7 @@ const ensureContent = async (strapi) => {
       });
 
   await ensureActiveCheckoutTermsPolicy(strapi);
+  await ensureActiveEmployerTermsPolicy(strapi);
 
   return {
     area,
@@ -2770,6 +2805,126 @@ const ensureEmployer = async (strapi, auth0User, content) => {
   };
 };
 
+const ensureOnboardingEmployer = async (strapi, auth0User, content) => {
+  const email = normalizeEmail(
+    optionalEnv('HIREFLIP_E2E_ONBOARDING_EMPLOYER_EMAIL', 'e2e-onboarding-employer@hireflip.work')
+  );
+  const teamContactEmail = normalizeEmail(
+    optionalEnv(
+      'HIREFLIP_E2E_ONBOARDING_EMPLOYER_TEAM_CONTACT_EMAIL',
+      'e2e-onboarding-team-contact@hireflip.work'
+    )
+  );
+  const companyName = optionalEnv(
+    'HIREFLIP_E2E_ONBOARDING_EMPLOYER_COMPANY',
+    'HireFlip E2E Onboarding Employer'
+  );
+  const now = new Date().toISOString();
+
+  await deleteMany(strapi, 'api::employer-invite.employer-invite', {
+    inviteEmail: email,
+  });
+  await deleteMany(strapi, 'api::employer-contact.employer-contact', {
+    email,
+  });
+  await deleteMany(strapi, 'api::employer-contact.employer-contact', {
+    authIdentityId: auth0User.userId,
+  });
+  await deleteMany(strapi, 'api::employer-contact.employer-contact', {
+    email: teamContactEmail,
+  });
+
+  const staleEmployers = await documents(strapi, 'api::employer.employer').findMany({
+    filters: {
+      companyName,
+    },
+    limit: 100,
+  });
+
+  for (const staleEmployer of staleEmployers) {
+    await deleteMany(strapi, 'api::employer-invite.employer-invite', {
+      employer: { documentId: staleEmployer.documentId },
+    });
+    await deleteMany(strapi, 'api::employer-contact.employer-contact', {
+      employer: { documentId: staleEmployer.documentId },
+    });
+    await deleteMany(strapi, 'api::employer-region-commitment.employer-region-commitment', {
+      employer: { documentId: staleEmployer.documentId },
+    });
+    await deleteDocument(strapi, 'api::employer.employer', staleEmployer.documentId);
+  }
+
+  const employer = await documents(strapi, 'api::employer.employer').create({
+    data: {
+      assignmentMode: 'automatic',
+      commitmentMode: 'global',
+      companyName,
+      dashboardOnboardingMetadata: {
+        fixture: 'employer-onboarding-e2e',
+        resetAt: now,
+      },
+      dashboardOnboardingState: 'not_started',
+      employerState: 'invited',
+      initialInterviewCommitmentCadence: 'quarterly',
+      initialInterviewCommitmentVolume: 6,
+      interviewCommitmentCadence: 'quarterly',
+      interviewCommitmentVolume: 6,
+      operatingRegions: connect(content.area),
+      region: content.area.name,
+      salesOwnerStaffEmail: normalizeEmail(requireEnv('HIREFLIP_E2E_ADMIN_EMAIL')),
+      salesOwnerStaffDisplayName: 'E2E Admin',
+    },
+    populate: ['operatingRegions'],
+  });
+
+  const contact = await documents(strapi, 'api::employer-contact.employer-contact').create({
+    data: {
+      accountCreatedAt: now,
+      authIdentityId: auth0User.userId,
+      authProvider: 'auth0',
+      contactRole: 'lead_contact',
+      contactState: 'active',
+      coverageRegions: connect(content.area),
+      email,
+      employer: connect(employer),
+      firstName: '',
+      lastName: '',
+      notificationPreferences: {
+        channels: {
+          email: true,
+        },
+      },
+      roleTitle: '',
+    },
+    populate: ['coverageRegions', 'employer'],
+  });
+
+  return {
+    contact,
+    employer,
+  };
+};
+
+const resetBlockedEmployerAuth0Fixture = async (strapi, auth0User) => {
+  const email = normalizeEmail(
+    optionalEnv('HIREFLIP_E2E_BLOCKED_EMPLOYER_EMAIL', 'e2e-blocked-employer@hireflip.work')
+  );
+
+  await deleteMany(strapi, 'api::employer-invite.employer-invite', {
+    inviteEmail: email,
+  });
+  await deleteMany(strapi, 'api::employer-contact.employer-contact', {
+    email,
+  });
+  await deleteMany(strapi, 'api::employer-contact.employer-contact', {
+    authIdentityId: auth0User.userId,
+  });
+
+  return {
+    email,
+  };
+};
+
 const ensureAdminActionEmployer = async (strapi, content) => {
   const now = new Date().toISOString();
   const companyName = optionalEnv(
@@ -2924,6 +3079,20 @@ const main = async () => {
       lastName: optionalEnv('HIREFLIP_E2E_EMPLOYER_LAST_NAME', 'Employer'),
       password: requireEnv('HIREFLIP_E2E_EMPLOYER_PASSWORD'),
     });
+    const onboardingEmployerAuth0User = await ensureAuth0User({
+      connectionName: requireEnv('AUTH0_EMPLOYER_CONNECTION_NAME'),
+      email: optionalEnv('HIREFLIP_E2E_ONBOARDING_EMPLOYER_EMAIL', 'e2e-onboarding-employer@hireflip.work'),
+      firstName: optionalEnv('HIREFLIP_E2E_ONBOARDING_EMPLOYER_FIRST_NAME', 'E2E'),
+      lastName: optionalEnv('HIREFLIP_E2E_ONBOARDING_EMPLOYER_LAST_NAME', 'Onboarding Employer'),
+      password: optionalEnv('HIREFLIP_E2E_ONBOARDING_EMPLOYER_PASSWORD', requireEnv('HIREFLIP_E2E_EMPLOYER_PASSWORD')),
+    });
+    const blockedEmployerAuth0User = await ensureAuth0User({
+      connectionName: requireEnv('AUTH0_EMPLOYER_CONNECTION_NAME'),
+      email: optionalEnv('HIREFLIP_E2E_BLOCKED_EMPLOYER_EMAIL', 'e2e-blocked-employer@hireflip.work'),
+      firstName: optionalEnv('HIREFLIP_E2E_BLOCKED_EMPLOYER_FIRST_NAME', 'E2E'),
+      lastName: optionalEnv('HIREFLIP_E2E_BLOCKED_EMPLOYER_LAST_NAME', 'Blocked Employer'),
+      password: optionalEnv('HIREFLIP_E2E_BLOCKED_EMPLOYER_PASSWORD', requireEnv('HIREFLIP_E2E_EMPLOYER_PASSWORD')),
+    });
     const candidate = await ensureCandidate(strapi, candidateAuth0User, content);
     const courseProgressCandidate = await ensureCourseProgressCandidate(
       strapi,
@@ -2939,6 +3108,15 @@ const main = async () => {
       assessmentContent
     );
     const employer = await ensureEmployer(strapi, employerAuth0User, content);
+    const onboardingEmployer = await ensureOnboardingEmployer(
+      strapi,
+      onboardingEmployerAuth0User,
+      content
+    );
+    const blockedEmployer = await resetBlockedEmployerAuth0Fixture(
+      strapi,
+      blockedEmployerAuth0User
+    );
     const adminActionEmployer = await ensureAdminActionEmployer(strapi, content);
     const resetAnnouncements = await resetClassAnnouncements(strapi, content.classRecord);
     const candidatePrivacyExportRequest = await ensureCandidatePrivacyExportRequest(strapi, candidate);
@@ -3102,6 +3280,12 @@ const main = async () => {
           documentId: employer.employer.documentId,
           email: employer.contact.email,
         },
+        onboardingEmployer: {
+          contactDocumentId: onboardingEmployer.contact.documentId,
+          documentId: onboardingEmployer.employer.documentId,
+          email: onboardingEmployer.contact.email,
+        },
+        blockedEmployer,
         adminActionEmployer: {
           contactDocumentId: adminActionEmployer.contact.documentId,
           documentId: adminActionEmployer.employer.documentId,
