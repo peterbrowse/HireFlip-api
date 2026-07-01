@@ -747,6 +747,18 @@ const resetCandidateInterviewRecords = async (strapi, candidate) => {
     });
   }
 
+  const supportCases = await documents(strapi, 'api::support-case.support-case').findMany({
+    filters: candidateFilter,
+    limit: 100,
+  });
+
+  for (const supportCase of supportCases) {
+    await deleteMany(strapi, 'api::support-message.support-message', {
+      supportCase: { documentId: supportCase.documentId },
+    });
+    await deleteDocument(strapi, 'api::support-case.support-case', supportCase.documentId);
+  }
+
   await deleteMany(strapi, 'api::interview-slot-offer.interview-slot-offer', candidateFilter);
   await deleteMany(strapi, 'api::candidate-interview-strike.candidate-interview-strike', candidateFilter);
   await deleteMany(strapi, 'api::interview.interview', candidateFilter);
@@ -965,10 +977,28 @@ const ensureInterviewCandidate = async (strapi, auth0User, content, employerCont
     });
   }
 
+  const activeStrike = options.seedActiveStrike
+    ? await documents(strapi, 'api::candidate-interview-strike.candidate-interview-strike').create({
+        data: {
+          appliedAt: isoDaysFrom(nowDate, -2),
+          candidate: connect(candidate),
+          enrollment: connect(enrollment),
+          metadata: {
+            source: 'e2e_fixture',
+            scenario: 'candidate_interview_strike_dispute',
+          },
+          reason: 'candidate_declined_all_slots',
+          strikeNumber: 1,
+          strikeState: 'active',
+        },
+      })
+    : null;
+
   if (!includeHistory) {
     return {
       activeOffer,
       candidate,
+      activeStrike,
     };
   }
 
@@ -1517,6 +1547,7 @@ const main = async () => {
         includeHistory: false,
         lastName: optionalEnv('HIREFLIP_E2E_DECLINE_CANDIDATE_LAST_NAME', 'Decline Candidate'),
         phone: optionalEnv('HIREFLIP_E2E_DECLINE_CANDIDATE_PHONE', '+447700900125'),
+        seedActiveStrike: true,
       }
     );
     const availabilityClaim = await ensureEmployerAvailabilityClaim(strapi, content, employer);
@@ -1539,6 +1570,7 @@ const main = async () => {
         declineCandidate: {
           documentId: declineCandidate.candidate.documentId,
           email: declineCandidate.candidate.email,
+          strikeDocumentId: declineCandidate.activeStrike?.documentId || null,
         },
         availabilityClaim: {
           candidateEmail: availabilityClaim.candidate.email,
