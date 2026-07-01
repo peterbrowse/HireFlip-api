@@ -3799,6 +3799,7 @@ const progressionPayload = (offer: DocumentRecord) => ({
       state: offer.employerFollowUpState || offer.followUpState || 'not_due',
     },
   },
+  interviewDocumentId: getDocumentId(offer.interview) || null,
   progressionType: offer.progressionType || null,
   progressionTypeLabel: progressionTypeLabel(offer.progressionType),
   responseDeadline: offer.candidateResponseDeadline || null,
@@ -6341,9 +6342,19 @@ export default ({ strapi }) => ({
             documentId: employerDocumentId,
           },
           ...scopedEmployerContactFilter,
-          progressionState: {
-            $in: ['requested', 'candidate_notified', 'details_released'],
-          },
+          $or: [
+            {
+              progressionState: {
+                $in: ['requested', 'candidate_notified', 'details_released'],
+              },
+            },
+            {
+              employerFollowUpState: {
+                $in: ['sent', 'reminded'],
+              },
+              progressionState: 'accepted',
+            },
+          ],
         },
         limit: 100,
         populate: ['candidate', 'interview'],
