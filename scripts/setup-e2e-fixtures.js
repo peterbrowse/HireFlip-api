@@ -459,7 +459,125 @@ const ensureContent = async (strapi) => {
     area,
     classRecord,
     coverageGapArea,
+    course,
     sector,
+  };
+};
+
+const ensureCourseAssessmentContent = async (strapi, content) => {
+  const sectionTitle = 'E2E Appeal Section';
+  const moduleTitle = 'E2E Appeal Module';
+  const testTitle = 'E2E Appeal Assessment';
+  const questionPrompt = 'Which answer should pass the E2E appeal assessment?';
+  const existingSection = await findFirst(strapi, 'api::course-section.course-section', {
+    course: { documentId: content.course.documentId },
+    title: sectionTitle,
+  });
+  const sectionData = {
+    course: connect(content.course),
+    description: 'Synthetic section for browser assessment appeal coverage.',
+    required: true,
+    sectionState: 'active',
+    sortOrder: 1,
+    title: sectionTitle,
+  };
+  const section = existingSection?.documentId
+    ? await documents(strapi, 'api::course-section.course-section').update({
+        documentId: existingSection.documentId,
+        data: sectionData,
+        populate: ['course'],
+      })
+    : await documents(strapi, 'api::course-section.course-section').create({
+        data: sectionData,
+        populate: ['course'],
+      });
+  const existingModule = await findFirst(strapi, 'api::course-module.course-module', {
+    courseSection: { documentId: section.documentId },
+    title: moduleTitle,
+  });
+  const moduleData = {
+    courseSection: connect(section),
+    description: 'Synthetic module for browser assessment appeal coverage.',
+    moduleState: 'active',
+    required: true,
+    sortOrder: 1,
+    title: moduleTitle,
+  };
+  const module = existingModule?.documentId
+    ? await documents(strapi, 'api::course-module.course-module').update({
+        documentId: existingModule.documentId,
+        data: moduleData,
+        populate: ['courseSection'],
+      })
+    : await documents(strapi, 'api::course-module.course-module').create({
+        data: moduleData,
+        populate: ['courseSection'],
+      });
+  const existingTest = await findFirst(strapi, 'api::course-test.course-test', {
+    courseModule: { documentId: module.documentId },
+    title: testTitle,
+  });
+  const testData = {
+    attemptLimit: 2,
+    copyPasteRestrictionEnabled: true,
+    course: connect(content.course),
+    courseModule: connect(module),
+    description: 'Synthetic test for browser assessment appeal coverage.',
+    maxScore: 1,
+    passMark: 100,
+    questionRandomizationEnabled: false,
+    testState: 'active',
+    timeLimitMinutes: 10,
+    title: testTitle,
+  };
+  const test = existingTest?.documentId
+    ? await documents(strapi, 'api::course-test.course-test').update({
+        documentId: existingTest.documentId,
+        data: testData,
+        populate: ['course', 'courseModule'],
+      })
+    : await documents(strapi, 'api::course-test.course-test').create({
+        data: testData,
+        populate: ['course', 'courseModule'],
+      });
+  const existingQuestion = await findFirst(strapi, 'api::course-question.course-question', {
+    courseTest: { documentId: test.documentId },
+    prompt: questionPrompt,
+  });
+  const questionData = {
+    correctAnswerPayload: {
+      correctOptionIds: ['correct'],
+    },
+    courseTest: connect(test),
+    options: [
+      { id: 'incorrect', label: 'Incorrect E2E option' },
+      { id: 'correct', label: 'Correct E2E option' },
+    ],
+    prompt: questionPrompt,
+    questionState: 'active',
+    questionType: 'single_choice',
+    scoringRubric: {
+      maxScore: 1,
+      passScore: 1,
+    },
+    sortOrder: 1,
+  };
+  const question = existingQuestion?.documentId
+    ? await documents(strapi, 'api::course-question.course-question').update({
+        documentId: existingQuestion.documentId,
+        data: questionData,
+        populate: ['courseTest'],
+      })
+    : await documents(strapi, 'api::course-question.course-question').create({
+        data: questionData,
+        populate: ['courseTest'],
+      });
+
+  return {
+    module,
+    question,
+    section,
+    test,
   };
 };
 
@@ -834,6 +952,424 @@ const resetCandidateInterviewRecords = async (strapi, candidate) => {
   await deleteMany(strapi, 'api::interview-request.interview-request', candidateFilter);
   await deleteMany(strapi, 'api::candidate-profile.candidate-profile', candidateFilter);
   await deleteMany(strapi, 'api::enrollment.enrollment', candidateFilter);
+};
+
+const resetCandidateReviewRecords = async (strapi, candidate) => {
+  if (!candidate?.documentId) {
+    return;
+  }
+
+  const candidateFilter = { candidate: { documentId: candidate.documentId } };
+  const supportCases = await documents(strapi, 'api::support-case.support-case').findMany({
+    filters: candidateFilter,
+    limit: 100,
+  });
+
+  for (const supportCase of supportCases) {
+    await deleteMany(strapi, 'api::support-message.support-message', {
+      supportCase: { documentId: supportCase.documentId },
+    });
+    await deleteDocument(strapi, 'api::support-case.support-case', supportCase.documentId);
+  }
+
+  const interviews = await documents(strapi, 'api::interview.interview').findMany({
+    filters: candidateFilter,
+    limit: 100,
+  });
+
+  for (const interview of interviews) {
+    await deleteMany(strapi, 'api::interview-feedback.interview-feedback', {
+      interview: { documentId: interview.documentId },
+    });
+    await deleteMany(strapi, 'api::interview-feedback-invite.interview-feedback-invite', {
+      interview: { documentId: interview.documentId },
+    });
+    await deleteMany(strapi, 'api::offer.offer', {
+      interview: { documentId: interview.documentId },
+    });
+    await deleteDocument(strapi, 'api::interview.interview', interview.documentId);
+  }
+
+  await deleteMany(strapi, 'api::course-answer-submission.course-answer-submission', candidateFilter);
+  await deleteMany(strapi, 'api::assessment-appeal.assessment-appeal', candidateFilter);
+  await deleteMany(strapi, 'api::course-test-result.course-test-result', candidateFilter);
+  await deleteMany(strapi, 'api::course-progress.course-progress', candidateFilter);
+  await deleteMany(strapi, 'api::course-test-attempt.course-test-attempt', candidateFilter);
+  await deleteMany(strapi, 'api::course-module-result.course-module-result', candidateFilter);
+  await deleteMany(strapi, 'api::course-section-result.course-section-result', candidateFilter);
+  await deleteMany(strapi, 'api::course-result.course-result', candidateFilter);
+  await deleteMany(strapi, 'api::candidate-interview-strike.candidate-interview-strike', candidateFilter);
+  await deleteMany(strapi, 'api::refund.refund', candidateFilter);
+  await deleteMany(strapi, 'api::payment.payment', candidateFilter);
+  await deleteMany(strapi, 'api::reservation.reservation', candidateFilter);
+  await deleteMany(strapi, 'api::notification-event.notification-event', candidateFilter);
+  await deleteMany(strapi, 'api::enrollment.enrollment', candidateFilter);
+};
+
+const ensureReviewCandidate = async (strapi, content, options) => {
+  const email = normalizeEmail(options.email);
+  const now = new Date().toISOString();
+  const existing = await findFirst(strapi, 'api::candidate.candidate', { email });
+
+  if (existing?.documentId) {
+    await resetCandidateReviewRecords(strapi, existing);
+    await deleteDocument(strapi, 'api::candidate.candidate', existing.documentId);
+  }
+
+  return documents(strapi, 'api::candidate.candidate').create({
+    data: {
+      accountCreatedAt: now,
+      accountOnboardingCompletedAt: now,
+      accountRestrictionAppealStatus: 'not_applicable',
+      accountRestrictionStatus: 'active',
+      authProvider: 'manual',
+      candidateState: options.candidateState || 'in_class',
+      classAreaPreferences: preferenceSelection(content.area.slug),
+      dateOfBirth: options.dateOfBirth || '1998-04-12',
+      email,
+      firstName: options.firstName || 'E2E',
+      gender: 'prefer_not_to_say',
+      lastName: options.lastName,
+      marketingConsentCapturedAt: now,
+      marketingConsentState: 'opted_out',
+      marketingConsentWordingVersion: 'e2e-candidate-account-v1',
+      notificationPreferences: {
+        channels: {
+          email: true,
+          phone: false,
+          sms: false,
+        },
+        preferredCommunicationChannel: 'email',
+      },
+      phone: options.phone,
+      preferredCommunicationChannel: 'email',
+      profileSettings: {
+        accountOnboarding: {
+          completedAt: now,
+        },
+      },
+      recruitmentPlatformVisibility: 'visible',
+      region: content.area.name,
+      sector: content.sector.name,
+      workSectorPreferences: preferenceSelection(content.sector.slug),
+    },
+  });
+};
+
+const createReviewEnrollment = async (strapi, candidate, content, options = {}) => {
+  const nowDate = new Date();
+
+  return documents(strapi, 'api::enrollment.enrollment').create({
+    data: {
+      beganClassAt: isoDaysFrom(nowDate, -35),
+      candidate: connect(candidate),
+      class: connect(content.classRecord),
+      completedAt: options.completedAt ?? null,
+      completionStatus: options.completionStatus || 'in_progress',
+      courseCompletionDeadline: options.courseCompletionDeadline || isoDaysFrom(nowDate, 10),
+      enrolledAt: isoDaysFrom(nowDate, -40),
+      enrollmentState: options.enrollmentState || 'in_class',
+      interviewGuaranteeDeadline: options.interviewGuaranteeDeadline || isoDaysFrom(nowDate, -2),
+      interviewGuaranteeWindowStartsAt: options.interviewGuaranteeWindowStartsAt || isoDaysFrom(nowDate, -20),
+      passStatus: options.passStatus || 'not_assessed',
+      passedAt: options.passedAt ?? null,
+      paymentStatus: options.paymentStatus || 'paid',
+      qualifyingInterviewsDeliveredCount: options.qualifyingInterviewsDeliveredCount || 0,
+      refundEligibilityState: options.refundEligibilityState || 'not_assessed',
+    },
+  });
+};
+
+const ensureAssessmentAppealReviewFixture = async (
+  strapi,
+  content,
+  assessmentContent,
+  options
+) => {
+  const nowDate = new Date();
+  const candidate = await ensureReviewCandidate(strapi, content, {
+    candidateState: 'in_class',
+    email: options.email,
+    firstName: 'E2E',
+    lastName: options.lastName,
+    phone: options.phone,
+  });
+  const enrollment = await createReviewEnrollment(strapi, candidate, content, {
+    completionStatus: 'missed_deadline',
+    enrollmentState: 'failed',
+    passStatus: 'failed',
+    refundEligibilityState: 'not_eligible',
+  });
+  const attempt = await documents(strapi, 'api::course-test-attempt.course-test-attempt').create({
+    data: {
+      attemptNumber: options.attemptNumber || 2,
+      attemptState: 'appealed',
+      candidate: connect(candidate),
+      courseTest: connect(assessmentContent.test),
+      enrollment: connect(enrollment),
+      maxScore: 1,
+      metadata: {
+        scenario: options.scenario,
+        source: 'e2e_fixture',
+      },
+      passed: false,
+      passMarkSnapshot: 100,
+      retryEligibilityState: 'exhausted',
+      retryType: 'conditional_retry',
+      score: 0,
+      startedAt: isoDaysFrom(nowDate, -3),
+      submittedAt: isoDaysFrom(nowDate, -2),
+      timeTakenSeconds: 420,
+    },
+  });
+  const answer = await documents(strapi, 'api::course-answer-submission.course-answer-submission').create({
+    data: {
+      answerPayload: {
+        selectedOptionIds: ['incorrect'],
+      },
+      candidate: connect(candidate),
+      courseQuestion: connect(assessmentContent.question),
+      courseTestAttempt: connect(attempt),
+      feedback: 'The selected E2E option did not meet the pass criteria.',
+      flagState: 'flagged',
+      score: 0,
+      submittedAt: isoDaysFrom(nowDate, -2),
+      metadata: {
+        scenario: options.scenario,
+        source: 'e2e_fixture',
+      },
+    },
+  });
+  const testResult = await documents(strapi, 'api::course-test-result.course-test-result').create({
+    data: {
+      attemptNumber: attempt.attemptNumber,
+      candidate: connect(candidate),
+      courseTest: connect(assessmentContent.test),
+      courseTestAttempt: connect(attempt),
+      decidedAt: isoDaysFrom(nowDate, -2),
+      enrollment: connect(enrollment),
+      maxScore: 1,
+      metadata: {
+        scenario: options.scenario,
+        source: 'e2e_fixture',
+      },
+      passed: false,
+      passMarkSnapshot: 100,
+      resultState: 'appealed',
+      retryEligibilityState: 'exhausted',
+      score: 0,
+    },
+  });
+  await documents(strapi, 'api::course-result.course-result').create({
+    data: {
+      candidate: connect(candidate),
+      completionDeadline: enrollment.courseCompletionDeadline,
+      course: connect(content.course),
+      deadlineExtensionSeconds: 0,
+      enrollment: connect(enrollment),
+      metadata: {
+        scenario: options.scenario,
+        source: 'e2e_fixture',
+      },
+      requiredSectionsPassed: 0,
+      requiredSectionsTotal: 1,
+      resultState: 'failed',
+      score: 0,
+      maxScore: 1,
+      startedAt: isoDaysFrom(nowDate, -35),
+    },
+  });
+  const appeal = await documents(strapi, 'api::assessment-appeal.assessment-appeal').create({
+    data: {
+      appealState: 'submitted',
+      candidate: connect(candidate),
+      courseAnswerSubmission: connect(answer),
+      courseTestAttempt: connect(attempt),
+      enrollment: connect(enrollment),
+      metadata: {
+        scenario: options.scenario,
+        source: 'e2e_fixture',
+        testResultDocumentId: testResult.documentId,
+      },
+      reason: options.reason,
+      submittedAt: isoDaysFrom(nowDate, -1),
+    },
+  });
+
+  await documents(strapi, 'api::audit-event.audit-event').create({
+    data: {
+      actorDisplayName: 'E2E fixture',
+      actorId: 'e2e-fixture',
+      actorType: 'system',
+      eventCategory: 'assessment',
+      eventType: 'e2e.assessment_appeal_seeded',
+      metadata: {
+        answerDocumentId: answer.documentId,
+        attemptDocumentId: attempt.documentId,
+        scenario: options.scenario,
+      },
+      occurredAt: isoDaysFrom(nowDate, -1),
+      severity: 'info',
+      source: 'system',
+      subjectDisplayName: `${candidate.firstName} ${candidate.lastName}`.trim(),
+      subjectId: appeal.documentId,
+      subjectType: 'assessment_appeal',
+    },
+  });
+
+  return {
+    appeal,
+    candidate,
+    enrollment,
+  };
+};
+
+const ensureRefundReviewFixture = async (strapi, content, employerContext, options) => {
+  const nowDate = new Date();
+  const candidate = await ensureReviewCandidate(strapi, content, {
+    candidateState: 'interview_phase',
+    email: options.email,
+    firstName: 'E2E',
+    lastName: options.lastName,
+    phone: options.phone,
+  });
+  const enrollment = await createReviewEnrollment(strapi, candidate, content, {
+    completedAt: isoDaysFrom(nowDate, -25),
+    completionStatus: 'completed',
+    enrollmentState: 'interview_phase',
+    interviewGuaranteeDeadline: isoDaysFrom(nowDate, -1),
+    interviewGuaranteeWindowStartsAt: isoDaysFrom(nowDate, -25),
+    passStatus: 'passed',
+    passedAt: isoDaysFrom(nowDate, -25),
+    qualifyingInterviewsDeliveredCount: 1,
+    refundEligibilityState: 'refund_requested',
+  });
+  const reservation = await documents(strapi, 'api::reservation.reservation').create({
+    data: {
+      amountPence: options.originalAmountPence,
+      candidate: connect(candidate),
+      class: connect(content.classRecord),
+      currency: 'GBP',
+      enrollment: connect(enrollment),
+      expiresAt: isoDaysFrom(nowDate, -30),
+      paidAt: isoDaysFrom(nowDate, -31),
+      reservationStartedAt: isoDaysFrom(nowDate, -32),
+      reservationState: 'paid',
+      source: 'candidate_dashboard',
+      termsAcceptedAt: isoDaysFrom(nowDate, -31),
+      termsVersion: 'e2e-checkout-terms-v1',
+      metadata: {
+        scenario: options.scenario,
+        source: 'e2e_fixture',
+      },
+    },
+  });
+  const payment = await documents(strapi, 'api::payment.payment').create({
+    data: {
+      amountPence: options.originalAmountPence,
+      candidate: connect(candidate),
+      createdByService: 'e2e-fixture',
+      currency: 'GBP',
+      enrollment: connect(enrollment),
+      metadata: {
+        scenario: options.scenario,
+        source: 'e2e_fixture',
+      },
+      paidAt: isoDaysFrom(nowDate, -31),
+      paymentProvider: 'stripe',
+      paymentState: 'paid',
+      paymentType: 'course_payment',
+      providerCheckoutSessionId: `cs_test_${options.scenario}`,
+      providerPaymentIntentId: `pi_test_${options.scenario}`,
+      reservation: connect(reservation),
+    },
+  });
+  const interview = await documents(strapi, 'api::interview.interview').create({
+    data: {
+      candidate: connect(candidate),
+      completedAt: isoDaysFrom(nowDate, -10),
+      confirmedAt: isoDaysFrom(nowDate, -12),
+      countsTowardGuarantee: true,
+      employer: connect(employerContext.employer),
+      employerContact: connect(employerContext.contact),
+      enrollment: connect(enrollment),
+      feedbackDueAt: isoDaysFrom(nowDate, -7),
+      interviewState: 'completed',
+      locationType: 'in_person',
+      metadata: {
+        scenario: options.scenario,
+        source: 'e2e_fixture',
+      },
+      scheduledEndTime: isoDaysHoursFrom(nowDate, -10, 1),
+      scheduledStartTime: isoDaysFrom(nowDate, -10),
+    },
+  });
+  await documents(strapi, 'api::interview-feedback.interview-feedback').create({
+    data: {
+      candidateReportState: 'pending',
+      concerns: 'Candidate needs more practice answering scenario questions.',
+      interview: connect(interview),
+      metadata: {
+        scenario: options.scenario,
+        source: 'e2e_fixture',
+      },
+      nextStep: 'Use the first interview feedback to prepare for the next opportunity.',
+      notes: 'Synthetic employer feedback used in refund evidence.',
+      outcome: 'neutral',
+      rating: 3,
+      strengths: 'Arrived prepared and communicated clearly.',
+      submittedAt: isoDaysFrom(nowDate, -9),
+      submittedById: employerContext.contact.documentId,
+      submittedByType: 'employer_contact',
+    },
+  });
+  const refund = await documents(strapi, 'api::refund.refund').create({
+    data: {
+      amountPence: options.originalAmountPence,
+      candidate: connect(candidate),
+      currency: 'GBP',
+      eligibilitySource: 'candidate_request',
+      enrollment: connect(enrollment),
+      metadata: {
+        originalAmountPence: options.originalAmountPence,
+        scenario: options.scenario,
+        source: 'e2e_fixture',
+      },
+      payment: connect(payment),
+      paymentProvider: 'stripe',
+      qualifyingInterviewsDeliveredCount: 1,
+      reason: options.reason,
+      refundState: 'requested',
+      requestedAt: isoDaysFrom(nowDate, -1),
+    },
+  });
+
+  await documents(strapi, 'api::audit-event.audit-event').create({
+    data: {
+      actorDisplayName: 'E2E fixture',
+      actorId: 'e2e-fixture',
+      actorType: 'system',
+      eventCategory: 'refund',
+      eventType: 'e2e.refund_review_seeded',
+      metadata: {
+        paymentDocumentId: payment.documentId,
+        scenario: options.scenario,
+      },
+      occurredAt: isoDaysFrom(nowDate, -1),
+      severity: 'info',
+      source: 'system',
+      subjectDisplayName: `${candidate.firstName} ${candidate.lastName}`.trim(),
+      subjectId: refund.documentId,
+      subjectType: 'refund',
+    },
+  });
+
+  return {
+    candidate,
+    enrollment,
+    payment,
+    refund,
+  };
 };
 
 const ensureInterviewCandidate = async (strapi, auth0User, content, employerContext, options = {}) => {
@@ -1920,6 +2456,7 @@ const main = async () => {
 
   try {
     const content = await ensureContent(strapi);
+    const assessmentContent = await ensureCourseAssessmentContent(strapi, content);
     const staffUser = await ensureStaffUser(strapi);
     const candidateAuth0User = await ensureAuth0User({
       connectionName: requireEnv('AUTH0_CANDIDATE_CONNECTION_NAME'),
@@ -1982,6 +2519,63 @@ const main = async () => {
       }
     );
     const availabilityClaims = await ensureEmployerAvailabilityClaims(strapi, content, employer);
+    const approvedAppealReview = await ensureAssessmentAppealReviewFixture(
+      strapi,
+      content,
+      assessmentContent,
+      {
+        email: optionalEnv(
+          'HIREFLIP_E2E_APPEAL_APPROVE_CANDIDATE_EMAIL',
+          'e2e-appeal-approve-candidate@hireflip.work'
+        ),
+        lastName: 'Appeal Approve Candidate',
+        phone: '+447700900131',
+        reason:
+          'E2E browser appeal approval fixture: I ran out of attempts while waiting for support review.',
+        scenario: 'appeal_approve',
+      }
+    );
+    const rejectedAppealReview = await ensureAssessmentAppealReviewFixture(
+      strapi,
+      content,
+      assessmentContent,
+      {
+        attemptNumber: 3,
+        email: optionalEnv(
+          'HIREFLIP_E2E_APPEAL_REJECT_CANDIDATE_EMAIL',
+          'e2e-appeal-reject-candidate@hireflip.work'
+        ),
+        lastName: 'Appeal Reject Candidate',
+        phone: '+447700900132',
+        reason:
+          'E2E browser appeal rejection fixture: I disagree with the score but have no new evidence.',
+        scenario: 'appeal_reject',
+      }
+    );
+    const refusedRefundReview = await ensureRefundReviewFixture(strapi, content, employer, {
+      email: optionalEnv(
+        'HIREFLIP_E2E_REFUND_REFUSE_CANDIDATE_EMAIL',
+        'e2e-refund-refuse-candidate@hireflip.work'
+      ),
+      lastName: 'Refund Refuse Candidate',
+      originalAmountPence: 10000,
+      phone: '+447700900133',
+      reason:
+        'E2E browser refund refusal fixture: candidate asks for refund despite receiving qualifying interview support.',
+      scenario: 'refund_refuse',
+    });
+    const escalatedRefundReview = await ensureRefundReviewFixture(strapi, content, employer, {
+      email: optionalEnv(
+        'HIREFLIP_E2E_REFUND_ESCALATE_CANDIDATE_EMAIL',
+        'e2e-refund-escalate-candidate@hireflip.work'
+      ),
+      lastName: 'Refund Escalate Candidate',
+      originalAmountPence: 12000,
+      phone: '+447700900134',
+      reason:
+        'E2E browser refund escalation fixture: candidate missed the guaranteed interview threshold.',
+      scenario: 'refund_escalate',
+    });
 
     strapi.log.info(
       `E2E fixtures ready: ${JSON.stringify({
@@ -2029,6 +2623,16 @@ const main = async () => {
             documentId: availabilityClaims.capacityShortfall.interviewRequest.documentId,
           },
         },
+        assessmentAppeals: {
+          approve: {
+            candidateEmail: approvedAppealReview.candidate.email,
+            documentId: approvedAppealReview.appeal.documentId,
+          },
+          reject: {
+            candidateEmail: rejectedAppealReview.candidate.email,
+            documentId: rejectedAppealReview.appeal.documentId,
+          },
+        },
         class: {
           documentId: content.classRecord.documentId,
           resetAnnouncements,
@@ -2043,6 +2647,16 @@ const main = async () => {
           contactDocumentId: adminActionEmployer.contact.documentId,
           documentId: adminActionEmployer.employer.documentId,
           email: adminActionEmployer.contact.email,
+        },
+        refundReviews: {
+          escalate: {
+            candidateEmail: escalatedRefundReview.candidate.email,
+            documentId: escalatedRefundReview.refund.documentId,
+          },
+          refuse: {
+            candidateEmail: refusedRefundReview.candidate.email,
+            documentId: refusedRefundReview.refund.documentId,
+          },
         },
       })}`
     );
