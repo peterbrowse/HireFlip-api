@@ -628,10 +628,19 @@ const ensureInterviewCandidate = async (strapi, auth0User, content, employerCont
       completedAt: isoDaysFrom(nowDate, -1),
       education: [
         {
-          endDate: '2024',
+          end: {
+            month: 6,
+            year: 2024,
+          },
           institution: 'E2E College',
+          level: 'Foundation',
+          notes: 'Seeded profile history for browser readiness tests.',
           qualification: 'Marketing Foundation',
-          startDate: '2022',
+          start: {
+            month: 9,
+            year: 2022,
+          },
+          subject: 'Marketing',
         },
       ],
       experience: [],
