@@ -495,6 +495,16 @@ const resetCandidateNotificationEvents = async (strapi, candidate) => {
   });
 };
 
+const resetClassAnnouncements = async (strapi, classRecord) => {
+  if (!classRecord?.documentId) {
+    return 0;
+  }
+
+  return deleteMany(strapi, 'api::class-announcement.class-announcement', {
+    class: { documentId: classRecord.documentId },
+  });
+};
+
 const ensureCandidate = async (strapi, auth0User, content) => {
   const email = normalizeEmail(requireEnv('HIREFLIP_E2E_CANDIDATE_EMAIL'));
   const now = new Date().toISOString();
@@ -1486,6 +1496,7 @@ const main = async () => {
     const candidate = await ensureCandidate(strapi, candidateAuth0User, content);
     const employer = await ensureEmployer(strapi, employerAuth0User, content);
     const adminActionEmployer = await ensureAdminActionEmployer(strapi, content);
+    const resetAnnouncements = await resetClassAnnouncements(strapi, content.classRecord);
     const candidatePrivacyExportRequest = await ensureCandidatePrivacyExportRequest(strapi, candidate);
     const candidateNotificationIssue = await ensureCandidateNotificationIssue(strapi, candidate);
     const interviewCandidate = await ensureInterviewCandidate(
@@ -1535,6 +1546,7 @@ const main = async () => {
         },
         class: {
           documentId: content.classRecord.documentId,
+          resetAnnouncements,
           title: content.classRecord.displayTitle,
         },
         employer: {
