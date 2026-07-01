@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+const { createHash } = require('node:crypto');
 const { compileStrapi, createStrapi } = require('@strapi/strapi');
 
 process.env.CLASS_WORKFLOW_BOOTSTRAP_ENABLED = 'false';
@@ -27,6 +28,8 @@ const requireEnv = (name) => {
 const optionalEnv = (name, fallback = '') => process.env[name]?.trim() || fallback;
 
 const normalizeEmail = (value) => value.trim().toLowerCase();
+
+const hashInviteToken = (token) => createHash('sha256').update(token).digest('hex');
 
 const safeSlug = (value) =>
   String(value || 'e2e')
@@ -548,6 +551,13 @@ const ensureInterviewCandidate = async (strapi, auth0User, content, employerCont
   const email = normalizeEmail(
     optionalEnv('HIREFLIP_E2E_INTERVIEW_CANDIDATE_EMAIL', 'e2e-interview-candidate@hireflip.work')
   );
+  const feedbackInviteEmail = normalizeEmail(
+    optionalEnv('HIREFLIP_E2E_FEEDBACK_INVITE_EMAIL', 'e2e-feedback-attendee@hireflip.work')
+  );
+  const feedbackInviteToken = optionalEnv(
+    'HIREFLIP_E2E_FEEDBACK_INVITE_TOKEN',
+    'e2e-feedback-invite-token'
+  );
   const nowDate = new Date();
   const now = nowDate.toISOString();
   const existing =
@@ -833,6 +843,24 @@ const ensureInterviewCandidate = async (strapi, auth0User, content, employerCont
       requiredSlotCount: 3,
       selectedInterview: connect(completedInterview),
       selectedSlot: connect(completedSlot),
+    },
+  });
+
+  await documents(strapi, 'api::interview-feedback-invite.interview-feedback-invite').create({
+    data: {
+      createdByEmployerContact: connect(employerContext.contact),
+      deliveryState: 'not_required',
+      employer: connect(employerContext.employer),
+      expiresAt: isoDaysFrom(nowDate, 5),
+      interview: connect(completedInterview),
+      inviteEmail: feedbackInviteEmail,
+      inviteState: 'pending',
+      inviteeName: 'E2E Feedback Attendee',
+      inviteeRoleTitle: 'Panel interviewer',
+      metadata: {
+        source: 'e2e_fixture_public_feedback_invite',
+      },
+      tokenHash: hashInviteToken(feedbackInviteToken),
     },
   });
 
