@@ -950,6 +950,7 @@ const ensureEmployerPrivacyExportRequest = async (strapi, employerContact) => {
 
 const ensureCandidateNotificationIssue = async (strapi, candidate) => {
   const nowDate = new Date();
+  const nowIso = nowDate.toISOString();
   const eventType = optionalEnv(
     'HIREFLIP_E2E_NOTIFICATION_ISSUE_EVENT_TYPE',
     'candidate.e2e_notification_issue'
@@ -978,7 +979,7 @@ const ensureCandidateNotificationIssue = async (strapi, candidate) => {
       notificationPreferences: {
         ...(candidate.notificationPreferences || {}),
         emailDeliveryIssue: {
-          detectedAt: isoDaysFrom(nowDate, -1),
+          detectedAt: nowIso,
           deliveryState: 'bounced',
           provider: 'sendgrid',
           providerMessageId,
@@ -995,14 +996,14 @@ const ensureCandidateNotificationIssue = async (strapi, candidate) => {
       deliveryState: 'bounced',
       errorMessage: reason,
       eventType,
-      failedAt: isoDaysFrom(nowDate, -1),
+      failedAt: nowIso,
       metadata: {
         notificationServiceJobId: 'e2e-notification-job',
         providerDelivery: {
           deliveryState: 'bounced',
           event: 'bounce',
           notificationServiceJobId: 'e2e-notification-job',
-          occurredAt: isoDaysFrom(nowDate, -1),
+          occurredAt: nowIso,
           provider: 'sendgrid',
           providerEventId: 'e2e-provider-event',
           providerMessageId,
@@ -1014,7 +1015,7 @@ const ensureCandidateNotificationIssue = async (strapi, candidate) => {
             deliveryState: 'processed',
             event: 'processed',
             notificationServiceJobId: 'e2e-notification-job',
-            occurredAt: isoDaysFrom(nowDate, -1),
+            occurredAt: nowIso,
             provider: 'sendgrid',
             providerEventId: 'e2e-provider-processed',
             providerMessageId,
@@ -1025,7 +1026,7 @@ const ensureCandidateNotificationIssue = async (strapi, candidate) => {
             deliveryState: 'bounced',
             event: 'bounce',
             notificationServiceJobId: 'e2e-notification-job',
-            occurredAt: isoDaysFrom(nowDate, -1),
+            occurredAt: nowIso,
             provider: 'sendgrid',
             providerEventId: 'e2e-provider-bounce',
             providerMessageId,
