@@ -2210,39 +2210,43 @@ const ensureInterviewCandidate = async (strapi, auth0User, content, employerCont
     },
   });
 
-  const activeOffer = await documents(strapi, 'api::interview-slot-offer.interview-slot-offer').create({
-    data: {
-      candidate: connect(candidate),
-      candidateNotifiedAt: isoDaysFrom(nowDate, -1),
-      candidateResponseDeadline: isoDaysFrom(nowDate, 2),
-      candidateWarningState: 'none',
-      capacityClaim: connect(capacityClaim),
-      employer: connect(employerContext.employer),
-      employerContact: connect(employerContext.contact),
-      enrollment: connect(enrollment),
-      interviewRequest: connect(interviewRequest),
-      offerState: 'sent',
-      requiredSlotCount: 3,
-    },
-  });
+  let activeOffer = null;
 
-  for (const [index, locationType] of ['in_person', 'online', 'in_person'].entries()) {
-    await documents(strapi, 'api::interview-slot.interview-slot').create({
+  if (options.seedActiveSlotOffer !== false) {
+    activeOffer = await documents(strapi, 'api::interview-slot-offer.interview-slot-offer').create({
       data: {
-        capacity: 1,
+        candidate: connect(candidate),
+        candidateNotifiedAt: isoDaysFrom(nowDate, -1),
+        candidateResponseDeadline: isoDaysFrom(nowDate, 2),
+        candidateWarningState: 'none',
+        capacityClaim: connect(capacityClaim),
         employer: connect(employerContext.employer),
         employerContact: connect(employerContext.contact),
-        endTime: isoDaysHoursFrom(nowDate, 8 + index, 1),
-        locationDetails: locationType === 'in_person' ? 'E2E Employer Office' : '',
-        locationType,
-        meetingUrl: locationType === 'online' ? 'https://meet.example.test/e2e-interview' : '',
-        region: connect(content.area),
-        slotOffer: connect(activeOffer),
-        slotState: 'offered',
-        startTime: isoDaysFrom(nowDate, 8 + index),
-        workSector: connect(content.sector),
+        enrollment: connect(enrollment),
+        interviewRequest: connect(interviewRequest),
+        offerState: 'sent',
+        requiredSlotCount: 3,
       },
     });
+
+    for (const [index, locationType] of ['in_person', 'online', 'in_person'].entries()) {
+      await documents(strapi, 'api::interview-slot.interview-slot').create({
+        data: {
+          capacity: 1,
+          employer: connect(employerContext.employer),
+          employerContact: connect(employerContext.contact),
+          endTime: isoDaysHoursFrom(nowDate, 8 + index, 1),
+          locationDetails: locationType === 'in_person' ? 'E2E Employer Office' : '',
+          locationType,
+          meetingUrl: locationType === 'online' ? 'https://meet.example.test/e2e-interview' : '',
+          region: connect(content.area),
+          slotOffer: connect(activeOffer),
+          slotState: 'offered',
+          startTime: isoDaysFrom(nowDate, 8 + index),
+          workSector: connect(content.sector),
+        },
+      });
+    }
   }
 
   const activeStrike = options.seedActiveStrike
@@ -2573,6 +2577,216 @@ const ensureInterviewCandidate = async (strapi, auth0User, content, employerCont
       },
     });
   };
+
+  const createCompletedProgressionOffer = async ({
+    candidateFollowUpState = 'not_due',
+    dayOffset,
+    employerFollowUpState = 'not_due',
+    followUpState = 'not_due',
+    label,
+    progressionState = 'accepted',
+    requestedDaysOffset,
+    responseDaysOffset,
+  }) => {
+    const slot = await documents(strapi, 'api::interview-slot.interview-slot').create({
+      data: {
+        capacity: 1,
+        employer: connect(employerContext.employer),
+        employerContact: connect(employerContext.contact),
+        endTime: isoDaysHoursFrom(nowDate, dayOffset, 1),
+        locationDetails: 'E2E Employer Office',
+        locationType: 'in_person',
+        region: connect(content.area),
+        slotState: 'completed',
+        startTime: isoDaysFrom(nowDate, dayOffset),
+        workSector: connect(content.sector),
+      },
+    });
+    const interview = await documents(strapi, 'api::interview.interview').create({
+      data: {
+        arrivalInstructions: `Report to reception for the ${label}.`,
+        candidate: connect(candidate),
+        candidateInstructions: 'Bring a notebook and ID.',
+        completedAt: isoDaysFrom(nowDate, dayOffset),
+        countsTowardGuarantee: true,
+        detailsProvidedAt: isoDaysFrom(nowDate, dayOffset - 1),
+        employer: connect(employerContext.employer),
+        employerContact: connect(employerContext.contact),
+        enrollment: connect(enrollment),
+        interviewSlot: connect(slot),
+        interviewerName: `E2E ${label} Interviewer`,
+        interviewState: 'completed',
+        locationDetails: 'E2E Employer Office',
+        locationType: 'in_person',
+        scheduledEndTime: isoDaysHoursFrom(nowDate, dayOffset, 1),
+        scheduledStartTime: isoDaysFrom(nowDate, dayOffset),
+      },
+    });
+
+    await createCompletedCandidateOffer(interview, slot, {
+      respondedDays: dayOffset - 2,
+      responseDeadlineDays: dayOffset - 2,
+    });
+
+    const requestedAt = isoDaysFrom(nowDate, requestedDaysOffset ?? dayOffset + 1);
+    const respondedAt =
+      progressionState === 'requested' || progressionState === 'candidate_notified'
+        ? null
+        : isoDaysFrom(nowDate, responseDaysOffset ?? dayOffset + 2);
+
+    const progressionRequest = await documents(strapi, 'api::offer.offer').create({
+      data: {
+        candidate: connect(candidate),
+        candidateFollowUpDueAt:
+          candidateFollowUpState === 'not_due' ? null : isoDaysFrom(nowDate, -1),
+        candidateFollowUpSentAt:
+          candidateFollowUpState === 'not_due' ? null : isoDaysFrom(nowDate, -2),
+        candidateFollowUpState,
+        candidateMessage: `E2E ${label} request for browser coverage.`,
+        candidateNotifiedAt: requestedAt,
+        candidateResponse:
+          progressionState === 'accepted'
+            ? 'accepted'
+            : progressionState === 'declined'
+              ? 'declined'
+              : progressionState === 'expired'
+                ? 'expired'
+                : null,
+        candidateResponseDeadline:
+          progressionState === 'expired' ? isoDaysFrom(nowDate, -1) : isoDaysFrom(nowDate, 5),
+        candidateRespondedAt: respondedAt,
+        detailsReleasedAt: progressionState === 'accepted' ? respondedAt : null,
+        employer: connect(employerContext.employer),
+        employerFollowUpDueAt:
+          employerFollowUpState === 'not_due' ? null : isoDaysFrom(nowDate, -1),
+        employerFollowUpSentAt:
+          employerFollowUpState === 'not_due' ? null : isoDaysFrom(nowDate, -2),
+        employerFollowUpState,
+        followUpState,
+        internalProcessNotes: `E2E seeded ${label} progression coverage.`,
+        interview: connect(interview),
+        metadata: {
+          source: 'e2e_fixture_progression_state_coverage',
+        },
+        progressionState,
+        progressionType: 'second_interview',
+        requestedByEmployerContact: connect(employerContext.contact),
+        requestedDetailsAt: requestedAt,
+      },
+    });
+
+    return {
+      interview,
+      progressionRequest,
+      slot,
+    };
+  };
+
+  if (options.seedCandidateProgressionStateCoverage) {
+    const confirmedSlot = await documents(strapi, 'api::interview-slot.interview-slot').create({
+      data: {
+        capacity: 1,
+        employer: connect(employerContext.employer),
+        employerContact: connect(employerContext.contact),
+        endTime: isoDaysHoursFrom(nowDate, 7, 1),
+        locationDetails: 'E2E confirmed office',
+        locationType: 'in_person',
+        region: connect(content.area),
+        slotState: 'booked',
+        startTime: isoDaysFrom(nowDate, 7),
+        workSector: connect(content.sector),
+      },
+    });
+    const confirmedInterview = await documents(strapi, 'api::interview.interview').create({
+      data: {
+        arrivalInstructions: 'Ask for the E2E confirmed interview team at reception.',
+        candidate: connect(candidate),
+        candidateInstructions: 'Bring photo ID and your portfolio.',
+        confirmedAt: isoDaysFrom(nowDate, -1),
+        countsTowardGuarantee: false,
+        detailsProvidedAt: isoDaysFrom(nowDate, -1),
+        employer: connect(employerContext.employer),
+        employerContact: connect(employerContext.contact),
+        enrollment: connect(enrollment),
+        interviewSlot: connect(confirmedSlot),
+        interviewerName: 'E2E Confirmed Interviewer',
+        interviewState: 'confirmed',
+        locationDetails: 'E2E confirmed office',
+        locationType: 'in_person',
+        scheduledEndTime: isoDaysHoursFrom(nowDate, 7, 1),
+        scheduledStartTime: isoDaysFrom(nowDate, 7),
+      },
+    });
+
+    await documents(strapi, 'api::interview-slot-offer.interview-slot-offer').create({
+      data: {
+        candidate: connect(candidate),
+        candidateInterviewFormatPreference: 'in_person',
+        candidateRespondedAt: isoDaysFrom(nowDate, -1),
+        candidateResponseDeadline: isoDaysFrom(nowDate, -1),
+        capacityClaim: connect(capacityClaim),
+        employer: connect(employerContext.employer),
+        employerContact: connect(employerContext.contact),
+        enrollment: connect(enrollment),
+        interviewRequest: connect(interviewRequest),
+        offerState: 'candidate_selected',
+        requiredSlotCount: 3,
+        selectedInterview: connect(confirmedInterview),
+        selectedSlot: connect(confirmedSlot),
+      },
+    });
+
+    await createCompletedProgressionOffer({
+      dayOffset: -16,
+      label: 'Decline Progression',
+      progressionState: 'requested',
+      requestedDaysOffset: -15,
+    });
+    await createCompletedProgressionOffer({
+      candidateFollowUpState: 'sent',
+      dayOffset: -34,
+      followUpState: 'sent',
+      label: 'Candidate Normal Follow Up',
+      progressionState: 'accepted',
+      requestedDaysOffset: -33,
+      responseDaysOffset: -32,
+    });
+    await createCompletedProgressionOffer({
+      dayOffset: -20,
+      label: 'Declined Progression History',
+      progressionState: 'declined',
+      requestedDaysOffset: -19,
+      responseDaysOffset: -18,
+    });
+    await createCompletedProgressionOffer({
+      dayOffset: -24,
+      label: 'Expired Progression History',
+      progressionState: 'expired',
+      requestedDaysOffset: -23,
+      responseDaysOffset: -21,
+    });
+    await createCompletedProgressionOffer({
+      candidateFollowUpState: 'closed_no_response',
+      dayOffset: -50,
+      followUpState: 'completed',
+      label: 'Closed Follow Up History',
+      progressionState: 'accepted',
+      requestedDaysOffset: -49,
+      responseDaysOffset: -48,
+    });
+  }
+
+  if (options.seedEmployerProgressionFollowUpCoverage) {
+    await createCompletedProgressionOffer({
+      dayOffset: -35,
+      employerFollowUpState: 'sent',
+      followUpState: 'sent',
+      label: 'Employer Normal Follow Up',
+      progressionState: 'accepted',
+      requestedDaysOffset: -34,
+      responseDaysOffset: -33,
+    });
+  }
 
   const expiredProgressionInterview = await createCompletedProgressionInterview({
     dayOffset: -12,
@@ -3395,6 +3609,29 @@ const main = async () => {
       lastName: optionalEnv('HIREFLIP_E2E_INTERVIEW_CANDIDATE_LAST_NAME', 'Interview Candidate'),
       password: optionalEnv('HIREFLIP_E2E_INTERVIEW_CANDIDATE_PASSWORD', requireEnv('HIREFLIP_E2E_CANDIDATE_PASSWORD')),
     });
+    const progressionCandidateAuth0User = await ensureAuth0User({
+      connectionName: requireEnv('AUTH0_CANDIDATE_CONNECTION_NAME'),
+      email: optionalEnv('HIREFLIP_E2E_PROGRESSION_CANDIDATE_EMAIL', 'e2e-progression-candidate@hireflip.work'),
+      firstName: optionalEnv('HIREFLIP_E2E_PROGRESSION_CANDIDATE_FIRST_NAME', 'E2E'),
+      lastName: optionalEnv('HIREFLIP_E2E_PROGRESSION_CANDIDATE_LAST_NAME', 'Progression Candidate'),
+      password: optionalEnv('HIREFLIP_E2E_PROGRESSION_CANDIDATE_PASSWORD', requireEnv('HIREFLIP_E2E_CANDIDATE_PASSWORD')),
+    });
+    const employerFollowUpCandidateAuth0User = await ensureAuth0User({
+      connectionName: requireEnv('AUTH0_CANDIDATE_CONNECTION_NAME'),
+      email: optionalEnv(
+        'HIREFLIP_E2E_EMPLOYER_FOLLOW_UP_CANDIDATE_EMAIL',
+        'e2e-employer-follow-up-candidate@hireflip.work'
+      ),
+      firstName: optionalEnv('HIREFLIP_E2E_EMPLOYER_FOLLOW_UP_CANDIDATE_FIRST_NAME', 'E2E'),
+      lastName: optionalEnv(
+        'HIREFLIP_E2E_EMPLOYER_FOLLOW_UP_CANDIDATE_LAST_NAME',
+        'Employer Follow Up Candidate'
+      ),
+      password: optionalEnv(
+        'HIREFLIP_E2E_EMPLOYER_FOLLOW_UP_CANDIDATE_PASSWORD',
+        requireEnv('HIREFLIP_E2E_CANDIDATE_PASSWORD')
+      ),
+    });
     const declineCandidateEmail = optionalEnv(
       'HIREFLIP_E2E_DECLINE_CANDIDATE_EMAIL',
       'e2e-decline-candidate@hireflip.work'
@@ -3515,6 +3752,39 @@ const main = async () => {
       content,
       employer
     );
+    const progressionCandidate = await ensureInterviewCandidate(
+      strapi,
+      progressionCandidateAuth0User,
+      content,
+      employer,
+      {
+        email: optionalEnv('HIREFLIP_E2E_PROGRESSION_CANDIDATE_EMAIL', 'e2e-progression-candidate@hireflip.work'),
+        firstName: optionalEnv('HIREFLIP_E2E_PROGRESSION_CANDIDATE_FIRST_NAME', 'E2E'),
+        lastName: optionalEnv('HIREFLIP_E2E_PROGRESSION_CANDIDATE_LAST_NAME', 'Progression Candidate'),
+        phone: optionalEnv('HIREFLIP_E2E_PROGRESSION_CANDIDATE_PHONE', '+447700900137'),
+        seedActiveSlotOffer: false,
+        seedCandidateProgressionStateCoverage: true,
+      }
+    );
+    const employerFollowUpCandidate = await ensureInterviewCandidate(
+      strapi,
+      employerFollowUpCandidateAuth0User,
+      content,
+      employer,
+      {
+        email: optionalEnv(
+          'HIREFLIP_E2E_EMPLOYER_FOLLOW_UP_CANDIDATE_EMAIL',
+          'e2e-employer-follow-up-candidate@hireflip.work'
+        ),
+        firstName: optionalEnv('HIREFLIP_E2E_EMPLOYER_FOLLOW_UP_CANDIDATE_FIRST_NAME', 'E2E'),
+        lastName: optionalEnv(
+          'HIREFLIP_E2E_EMPLOYER_FOLLOW_UP_CANDIDATE_LAST_NAME',
+          'Employer Follow Up Candidate'
+        ),
+        phone: optionalEnv('HIREFLIP_E2E_EMPLOYER_FOLLOW_UP_CANDIDATE_PHONE', '+447700900138'),
+        seedEmployerProgressionFollowUpCoverage: true,
+      }
+    );
     const declineCandidate = await ensureInterviewCandidate(
       strapi,
       declineCandidateAuth0User,
@@ -3627,6 +3897,14 @@ const main = async () => {
         interviewCandidate: {
           documentId: interviewCandidate.candidate.documentId,
           email: interviewCandidate.candidate.email,
+        },
+        progressionCandidate: {
+          documentId: progressionCandidate.candidate.documentId,
+          email: progressionCandidate.candidate.email,
+        },
+        employerFollowUpCandidate: {
+          documentId: employerFollowUpCandidate.candidate.documentId,
+          email: employerFollowUpCandidate.candidate.email,
         },
         declineCandidate: {
           documentId: declineCandidate.candidate.documentId,
