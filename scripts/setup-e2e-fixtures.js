@@ -228,6 +228,13 @@ const ensureAuth0User = async ({
   };
 
   if (existingUser) {
+    if (optionalEnv('HIREFLIP_E2E_SYNC_AUTH0_USERS', 'false') !== 'true') {
+      return {
+        created: false,
+        userId: existingUser.user_id,
+      };
+    }
+
     const updatedUser = await requestManagementApi(
       config,
       `/users/${encodeURIComponent(existingUser.user_id)}`,
