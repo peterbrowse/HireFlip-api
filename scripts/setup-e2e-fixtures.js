@@ -2905,6 +2905,128 @@ const ensureOnboardingEmployer = async (strapi, auth0User, content) => {
   };
 };
 
+const ensureInviteCompleteEmployer = async (strapi, auth0User, content) => {
+  const email = normalizeEmail(
+    optionalEnv(
+      'HIREFLIP_E2E_INVITE_COMPLETE_EMPLOYER_EMAIL',
+      'e2e-invite-complete-employer@hireflip.work'
+    )
+  );
+  const companyName = optionalEnv(
+    'HIREFLIP_E2E_INVITE_COMPLETE_EMPLOYER_COMPANY',
+    'HireFlip E2E Invite Complete Employer'
+  );
+  const inviteToken = optionalEnv(
+    'HIREFLIP_E2E_INVITE_COMPLETE_TOKEN',
+    'e2e-invite-complete-token'
+  );
+  const now = new Date().toISOString();
+
+  await deleteMany(strapi, 'api::employer-invite.employer-invite', {
+    inviteEmail: email,
+  });
+  await deleteMany(strapi, 'api::employer-invite.employer-invite', {
+    authIdentityId: auth0User.userId,
+  });
+  await deleteMany(strapi, 'api::employer-contact.employer-contact', {
+    email,
+  });
+  await deleteMany(strapi, 'api::employer-contact.employer-contact', {
+    authIdentityId: auth0User.userId,
+  });
+
+  const staleEmployers = await documents(strapi, 'api::employer.employer').findMany({
+    filters: {
+      companyName,
+    },
+    limit: 100,
+  });
+
+  for (const staleEmployer of staleEmployers) {
+    await deleteMany(strapi, 'api::employer-invite.employer-invite', {
+      employer: { documentId: staleEmployer.documentId },
+    });
+    await deleteMany(strapi, 'api::employer-contact.employer-contact', {
+      employer: { documentId: staleEmployer.documentId },
+    });
+    await deleteMany(strapi, 'api::employer-region-commitment.employer-region-commitment', {
+      employer: { documentId: staleEmployer.documentId },
+    });
+    await deleteDocument(strapi, 'api::employer.employer', staleEmployer.documentId);
+  }
+
+  const employer = await documents(strapi, 'api::employer.employer').create({
+    data: {
+      assignmentMode: 'automatic',
+      commitmentMode: 'global',
+      companyName,
+      dashboardOnboardingMetadata: {
+        fixture: 'employer-invite-complete-e2e',
+        resetAt: now,
+      },
+      dashboardOnboardingState: 'not_started',
+      employerState: 'invited',
+      initialInterviewCommitmentCadence: 'quarterly',
+      initialInterviewCommitmentVolume: 4,
+      interviewCommitmentCadence: 'quarterly',
+      interviewCommitmentVolume: 4,
+      operatingRegions: connect(content.area),
+      region: content.area.name,
+      salesOwnerStaffEmail: normalizeEmail(requireEnv('HIREFLIP_E2E_ADMIN_EMAIL')),
+      salesOwnerStaffDisplayName: 'E2E Admin',
+    },
+    populate: ['operatingRegions'],
+  });
+
+  const contact = await documents(strapi, 'api::employer-contact.employer-contact').create({
+    data: {
+      authProvider: 'auth0',
+      contactRole: 'lead_contact',
+      contactState: 'invited',
+      coverageRegions: connect(content.area),
+      email,
+      employer: connect(employer),
+      firstName: 'E2E',
+      lastName: 'Invite Complete',
+      notificationPreferences: {
+        channels: {
+          email: true,
+        },
+      },
+      roleTitle: 'Hiring lead',
+    },
+    populate: ['coverageRegions', 'employer'],
+  });
+
+  const invite = await documents(strapi, 'api::employer-invite.employer-invite').create({
+    data: {
+      authIdentityId: auth0User.userId,
+      authProvisionedAt: now,
+      createdByStaffDisplayName: 'E2E Admin',
+      createdByStaffEmail: normalizeEmail(requireEnv('HIREFLIP_E2E_ADMIN_EMAIL')),
+      deliveryState: 'queued',
+      employer: connect(employer),
+      employerContact: connect(contact),
+      expiresAt: isoDaysFrom(new Date(), 7),
+      inviteEmail: email,
+      inviteState: 'pending',
+      lastSentAt: now,
+      metadata: {
+        fixture: 'employer-invite-complete-e2e',
+        resetAt: now,
+      },
+      tokenHash: hashInviteToken(inviteToken),
+    },
+    populate: ['employer', 'employerContact'],
+  });
+
+  return {
+    contact,
+    employer,
+    invite,
+  };
+};
+
 const resetBlockedEmployerAuth0Fixture = async (strapi, auth0User) => {
   const email = normalizeEmail(
     optionalEnv('HIREFLIP_E2E_BLOCKED_EMPLOYER_EMAIL', 'e2e-blocked-employer@hireflip.work')
@@ -3086,6 +3208,22 @@ const main = async () => {
       lastName: optionalEnv('HIREFLIP_E2E_ONBOARDING_EMPLOYER_LAST_NAME', 'Onboarding Employer'),
       password: optionalEnv('HIREFLIP_E2E_ONBOARDING_EMPLOYER_PASSWORD', requireEnv('HIREFLIP_E2E_EMPLOYER_PASSWORD')),
     });
+    const inviteCompleteEmployerAuth0User = await ensureAuth0User({
+      connectionName: requireEnv('AUTH0_EMPLOYER_CONNECTION_NAME'),
+      email: optionalEnv(
+        'HIREFLIP_E2E_INVITE_COMPLETE_EMPLOYER_EMAIL',
+        'e2e-invite-complete-employer@hireflip.work'
+      ),
+      firstName: optionalEnv('HIREFLIP_E2E_INVITE_COMPLETE_EMPLOYER_FIRST_NAME', 'E2E'),
+      lastName: optionalEnv(
+        'HIREFLIP_E2E_INVITE_COMPLETE_EMPLOYER_LAST_NAME',
+        'Invite Complete Employer'
+      ),
+      password: optionalEnv(
+        'HIREFLIP_E2E_INVITE_COMPLETE_EMPLOYER_PASSWORD',
+        requireEnv('HIREFLIP_E2E_EMPLOYER_PASSWORD')
+      ),
+    });
     const blockedEmployerAuth0User = await ensureAuth0User({
       connectionName: requireEnv('AUTH0_EMPLOYER_CONNECTION_NAME'),
       email: optionalEnv('HIREFLIP_E2E_BLOCKED_EMPLOYER_EMAIL', 'e2e-blocked-employer@hireflip.work'),
@@ -3111,6 +3249,11 @@ const main = async () => {
     const onboardingEmployer = await ensureOnboardingEmployer(
       strapi,
       onboardingEmployerAuth0User,
+      content
+    );
+    const inviteCompleteEmployer = await ensureInviteCompleteEmployer(
+      strapi,
+      inviteCompleteEmployerAuth0User,
       content
     );
     const blockedEmployer = await resetBlockedEmployerAuth0Fixture(
@@ -3284,6 +3427,12 @@ const main = async () => {
           contactDocumentId: onboardingEmployer.contact.documentId,
           documentId: onboardingEmployer.employer.documentId,
           email: onboardingEmployer.contact.email,
+        },
+        inviteCompleteEmployer: {
+          contactDocumentId: inviteCompleteEmployer.contact.documentId,
+          documentId: inviteCompleteEmployer.employer.documentId,
+          email: inviteCompleteEmployer.contact.email,
+          inviteDocumentId: inviteCompleteEmployer.invite.documentId,
         },
         blockedEmployer,
         adminActionEmployer: {
