@@ -1076,8 +1076,36 @@ const ensureEmployer = async (strapi, auth0User, content) => {
   const e2eTeamContactEmail = normalizeEmail(
     optionalEnv('HIREFLIP_E2E_EMPLOYER_TEAM_CONTACT_EMAIL', 'e2e-team-contact@hireflip.work')
   );
+  const e2eAdminEmployerInviteEmail = normalizeEmail(
+    optionalEnv('HIREFLIP_E2E_ADMIN_EMPLOYER_INVITE_EMAIL', 'e2e-admin-employer-invite@hireflip.work')
+  );
+  const e2eAdminEmployerInviteCompany = optionalEnv(
+    'HIREFLIP_E2E_ADMIN_EMPLOYER_INVITE_COMPANY',
+    'HireFlip E2E Admin Invite Employer'
+  );
   const now = new Date().toISOString();
   const companyName = optionalEnv('HIREFLIP_E2E_EMPLOYER_COMPANY', 'HireFlip E2E Employer');
+
+  await deleteMany(strapi, 'api::employer-invite.employer-invite', {
+    inviteEmail: e2eAdminEmployerInviteEmail,
+  });
+  await deleteMany(strapi, 'api::employer-contact.employer-contact', {
+    email: e2eAdminEmployerInviteEmail,
+  });
+  const staleAdminInviteEmployers = await documents(strapi, 'api::employer.employer').findMany({
+    filters: {
+      companyName: e2eAdminEmployerInviteCompany,
+    },
+    limit: 100,
+  });
+
+  for (const staleEmployer of staleAdminInviteEmployers) {
+    await deleteMany(strapi, 'api::employer-region-commitment.employer-region-commitment', {
+      employer: { documentId: staleEmployer.documentId },
+    });
+    await deleteDocument(strapi, 'api::employer.employer', staleEmployer.documentId);
+  }
+
   const existingEmployer = await findFirst(strapi, 'api::employer.employer', { companyName }, [
     'operatingRegions',
   ]);
