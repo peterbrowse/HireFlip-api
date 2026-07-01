@@ -31,6 +31,9 @@ const normalizeEmail = (value) => value.trim().toLowerCase();
 
 const hashInviteToken = (token) => createHash('sha256').update(token).digest('hex');
 
+const hashPrivacyDownloadCode = ({ code, requestDocumentId, salt }) =>
+  createHash('sha256').update(`${requestDocumentId}:${code}:${salt}`).digest('hex');
+
 const safeSlug = (value) =>
   String(value || 'e2e')
     .toLowerCase()
@@ -454,6 +457,16 @@ const resetCandidateCheckoutRecords = async (strapi, candidate) => {
   };
 };
 
+const resetCandidatePrivacyRecords = async (strapi, candidate) => {
+  if (!candidate?.documentId) {
+    return 0;
+  }
+
+  return deleteMany(strapi, 'api::privacy-rights-request.privacy-rights-request', {
+    candidate: { documentId: candidate.documentId },
+  });
+};
+
 const ensureCandidate = async (strapi, auth0User, content) => {
   const email = normalizeEmail(requireEnv('HIREFLIP_E2E_CANDIDATE_EMAIL'));
   const now = new Date().toISOString();
@@ -462,6 +475,7 @@ const ensureCandidate = async (strapi, auth0User, content) => {
     (await findFirst(strapi, 'api::candidate.candidate', { authIdentityId: auth0User.userId }));
 
   if (existing?.documentId) {
+    await resetCandidatePrivacyRecords(strapi, existing);
     await resetCandidateCheckoutRecords(strapi, existing);
     await deleteDocument(strapi, 'api::candidate.candidate', existing.documentId);
   }
@@ -506,6 +520,58 @@ const ensureCandidate = async (strapi, auth0User, content) => {
   };
 
   return documents(strapi, 'api::candidate.candidate').create({ data });
+};
+
+const ensureCandidatePrivacyExportRequest = async (strapi, candidate) => {
+  const nowDate = new Date();
+  const code = optionalEnv('HIREFLIP_E2E_PRIVACY_DOWNLOAD_CODE', '123456');
+  const salt = optionalEnv('HIREFLIP_E2E_PRIVACY_DOWNLOAD_SALT', 'e2e-privacy-download-salt');
+  const request = await documents(strapi, 'api::privacy-rights-request.privacy-rights-request').create({
+    data: {
+      candidate: connect(candidate),
+      completedAt: isoDaysFrom(nowDate, -1),
+      deletionJobStatus: 'not_required',
+      downstreamProviderSyncStatus: 'not_required',
+      dueAt: isoDaysFrom(nowDate, 30),
+      identityVerificationStatus: 'pending',
+      receivedAt: isoDaysFrom(nowDate, -2),
+      requestState: 'completed',
+      requestingUserId: candidate.authIdentityId,
+      requestingUserType: 'candidate',
+      requestType: 'access',
+      subjectUserId: candidate.documentId,
+      subjectUserType: 'candidate',
+      metadata: {
+        exportScope: 'personal',
+        publicResponse:
+          'Your E2E privacy export is ready. Use the seeded browser test code to download the PDF.',
+        requesterMessage: 'E2E completed privacy export fixture for browser download coverage.',
+      },
+    },
+  });
+  const downloadChallenge = {
+    actorId: candidate.authIdentityId || null,
+    actorType: 'candidate',
+    attempts: 0,
+    codeHash: hashPrivacyDownloadCode({
+      code,
+      requestDocumentId: request.documentId,
+      salt,
+    }),
+    expiresAt: isoDaysFrom(nowDate, 1),
+    requestedAt: new Date().toISOString(),
+    salt,
+  };
+
+  return documents(strapi, 'api::privacy-rights-request.privacy-rights-request').update({
+    documentId: request.documentId,
+    data: {
+      metadata: {
+        ...(request.metadata || {}),
+        downloadChallenge,
+      },
+    },
+  });
 };
 
 const resetCandidateInterviewRecords = async (strapi, candidate) => {
@@ -1164,6 +1230,7 @@ const main = async () => {
     });
     const candidate = await ensureCandidate(strapi, candidateAuth0User, content);
     const employer = await ensureEmployer(strapi, employerAuth0User, content);
+    const candidatePrivacyExportRequest = await ensureCandidatePrivacyExportRequest(strapi, candidate);
     const interviewCandidate = await ensureInterviewCandidate(
       strapi,
       interviewCandidateAuth0User,
@@ -1190,6 +1257,9 @@ const main = async () => {
       `E2E fixtures ready: ${JSON.stringify({
         admin: { email: staffUser.email, roleKey: staffUser.roleKey },
         candidate: { documentId: candidate.documentId, email: candidate.email },
+        candidatePrivacyExportRequest: {
+          documentId: candidatePrivacyExportRequest.documentId,
+        },
         interviewCandidate: {
           documentId: interviewCandidate.candidate.documentId,
           email: interviewCandidate.candidate.email,

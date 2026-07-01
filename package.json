@@ -1,6 +1,6 @@
 {
   "name": "hireflip-api",
-  "version": "0.1.40",
+  "version": "0.1.41",
   "private": true,
   "description": "HireFlip core Strapi API",
   "scripts": {
