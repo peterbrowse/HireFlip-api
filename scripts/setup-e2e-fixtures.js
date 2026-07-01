@@ -467,6 +467,16 @@ const resetCandidatePrivacyRecords = async (strapi, candidate) => {
   });
 };
 
+const resetCandidateNotificationEvents = async (strapi, candidate) => {
+  if (!candidate?.documentId) {
+    return 0;
+  }
+
+  return deleteMany(strapi, 'api::notification-event.notification-event', {
+    candidate: { documentId: candidate.documentId },
+  });
+};
+
 const ensureCandidate = async (strapi, auth0User, content) => {
   const email = normalizeEmail(requireEnv('HIREFLIP_E2E_CANDIDATE_EMAIL'));
   const now = new Date().toISOString();
@@ -476,6 +486,7 @@ const ensureCandidate = async (strapi, auth0User, content) => {
 
   if (existing?.documentId) {
     await resetCandidatePrivacyRecords(strapi, existing);
+    await resetCandidateNotificationEvents(strapi, existing);
     await resetCandidateCheckoutRecords(strapi, existing);
     await deleteDocument(strapi, 'api::candidate.candidate', existing.documentId);
   }
@@ -570,6 +581,105 @@ const ensureCandidatePrivacyExportRequest = async (strapi, candidate) => {
         ...(request.metadata || {}),
         downloadChallenge,
       },
+    },
+  });
+};
+
+const ensureCandidateNotificationIssue = async (strapi, candidate) => {
+  const nowDate = new Date();
+  const eventType = optionalEnv(
+    'HIREFLIP_E2E_NOTIFICATION_ISSUE_EVENT_TYPE',
+    'candidate.e2e_notification_issue'
+  );
+  const templateKey = optionalEnv(
+    'HIREFLIP_E2E_NOTIFICATION_ISSUE_TEMPLATE_KEY',
+    'generic_branded_message'
+  );
+  const providerMessageId = optionalEnv(
+    'HIREFLIP_E2E_NOTIFICATION_ISSUE_PROVIDER_MESSAGE_ID',
+    'e2e-notification-provider-message'
+  );
+  const reason = optionalEnv(
+    'HIREFLIP_E2E_NOTIFICATION_ISSUE_REASON',
+    'E2E seeded provider bounce for notification issue browser coverage.'
+  );
+
+  await deleteMany(strapi, 'api::notification-event.notification-event', {
+    eventType,
+    recipientEmail: candidate.email,
+  });
+
+  await documents(strapi, 'api::candidate.candidate').update({
+    documentId: candidate.documentId,
+    data: {
+      notificationPreferences: {
+        ...(candidate.notificationPreferences || {}),
+        emailDeliveryIssue: {
+          detectedAt: isoDaysFrom(nowDate, -1),
+          deliveryState: 'bounced',
+          provider: 'sendgrid',
+          providerMessageId,
+          reason,
+        },
+      },
+    },
+  });
+
+  return documents(strapi, 'api::notification-event.notification-event').create({
+    data: {
+      candidate: connect(candidate),
+      channel: 'email',
+      deliveryState: 'bounced',
+      errorMessage: reason,
+      eventType,
+      failedAt: isoDaysFrom(nowDate, -1),
+      metadata: {
+        notificationServiceJobId: 'e2e-notification-job',
+        providerDelivery: {
+          deliveryState: 'bounced',
+          event: 'bounce',
+          notificationServiceJobId: 'e2e-notification-job',
+          occurredAt: isoDaysFrom(nowDate, -1),
+          provider: 'sendgrid',
+          providerEventId: 'e2e-provider-event',
+          providerMessageId,
+          reason,
+          source: 'e2e_fixture',
+        },
+        providerDeliveryHistory: [
+          {
+            deliveryState: 'processed',
+            event: 'processed',
+            notificationServiceJobId: 'e2e-notification-job',
+            occurredAt: isoDaysFrom(nowDate, -1),
+            provider: 'sendgrid',
+            providerEventId: 'e2e-provider-processed',
+            providerMessageId,
+            reason: 'Message accepted by provider before seeded bounce.',
+            source: 'e2e_fixture',
+          },
+          {
+            deliveryState: 'bounced',
+            event: 'bounce',
+            notificationServiceJobId: 'e2e-notification-job',
+            occurredAt: isoDaysFrom(nowDate, -1),
+            provider: 'sendgrid',
+            providerEventId: 'e2e-provider-bounce',
+            providerMessageId,
+            reason,
+            source: 'e2e_fixture',
+          },
+        ],
+      },
+      priority: 'high',
+      provider: 'sendgrid',
+      providerMessageId,
+      recipientEmail: candidate.email,
+      recipientId: candidate.documentId,
+      recipientType: 'candidate',
+      relatedId: candidate.documentId,
+      relatedType: 'candidate',
+      templateKey,
     },
   });
 };
@@ -1259,6 +1369,7 @@ const main = async () => {
     const candidate = await ensureCandidate(strapi, candidateAuth0User, content);
     const employer = await ensureEmployer(strapi, employerAuth0User, content);
     const candidatePrivacyExportRequest = await ensureCandidatePrivacyExportRequest(strapi, candidate);
+    const candidateNotificationIssue = await ensureCandidateNotificationIssue(strapi, candidate);
     const interviewCandidate = await ensureInterviewCandidate(
       strapi,
       interviewCandidateAuth0User,
@@ -1287,6 +1398,10 @@ const main = async () => {
         candidate: { documentId: candidate.documentId, email: candidate.email },
         candidatePrivacyExportRequest: {
           documentId: candidatePrivacyExportRequest.documentId,
+        },
+        candidateNotificationIssue: {
+          documentId: candidateNotificationIssue.documentId,
+          eventType: candidateNotificationIssue.eventType,
         },
         interviewCandidate: {
           documentId: interviewCandidate.candidate.documentId,
