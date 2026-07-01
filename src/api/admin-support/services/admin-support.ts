@@ -1674,7 +1674,7 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
       direction: 'internal',
       employer: supportCaseRecord.employer,
       employerContact: supportCaseRecord.employerContact,
-      messageType: 'state_change',
+      messageType: 'system_update',
       metadata: {
         changedByAdminEmail: session.user.email,
         changedByAdminId: session.user.id,
