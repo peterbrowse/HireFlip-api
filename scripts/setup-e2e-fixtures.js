@@ -68,6 +68,9 @@ const isoDaysFrom = (date, days) => addDays(date, days).toISOString();
 const isoDaysHoursFrom = (date, days, hours) => addHours(addDays(date, days), hours).toISOString();
 
 const connect = (record) => ({ connect: [{ documentId: record.documentId }] });
+const connectMany = (records) => ({
+  connect: records.map((record) => ({ documentId: record.documentId })),
+});
 
 const documents = (strapi, uid) => strapi.documents(uid);
 
@@ -362,6 +365,9 @@ const ensureActiveCheckoutTermsPolicy = async (strapi) => {
 
 const ensureContent = async (strapi) => {
   const areaSlug = safeSlug(optionalEnv('HIREFLIP_E2E_CLASS_AREA_SLUG', 'e2e-london'));
+  const coverageAreaSlug = safeSlug(
+    optionalEnv('HIREFLIP_E2E_COVERAGE_GAP_AREA_SLUG', 'e2e-manchester')
+  );
   const sectorSlug = safeSlug(optionalEnv('HIREFLIP_E2E_WORK_SECTOR_SLUG', 'e2e-marketing'));
   const classSlug = safeSlug(optionalEnv('HIREFLIP_E2E_CLASS_SLUG', 'hireflip-e2e-checkout-class'));
   const year = Math.max(2026, new Date().getUTCFullYear());
@@ -371,6 +377,17 @@ const ensureContent = async (strapi) => {
     slug: areaSlug,
     state: 'active',
   });
+  const coverageGapArea = await upsertBySlug(
+    strapi,
+    'api::class-area.class-area',
+    coverageAreaSlug,
+    {
+      country: 'United Kingdom',
+      name: optionalEnv('HIREFLIP_E2E_COVERAGE_GAP_AREA_NAME', 'E2E Manchester'),
+      slug: coverageAreaSlug,
+      state: 'active',
+    }
+  );
   const sector = await upsertBySlug(strapi, 'api::work-sector.work-sector', sectorSlug, {
     name: optionalEnv('HIREFLIP_E2E_WORK_SECTOR_NAME', 'E2E Marketing'),
     slug: sectorSlug,
@@ -435,6 +452,7 @@ const ensureContent = async (strapi) => {
   return {
     area,
     classRecord,
+    coverageGapArea,
     sector,
   };
 };
@@ -1327,6 +1345,105 @@ const ensureEmployer = async (strapi, auth0User, content) => {
   };
 };
 
+const ensureAdminActionEmployer = async (strapi, content) => {
+  const now = new Date().toISOString();
+  const companyName = optionalEnv(
+    'HIREFLIP_E2E_ADMIN_ACTION_EMPLOYER_COMPANY',
+    'HireFlip E2E Admin Action Employer'
+  );
+  const contactEmail = normalizeEmail(
+    optionalEnv('HIREFLIP_E2E_ADMIN_ACTION_EMPLOYER_EMAIL', 'e2e-admin-action-employer@hireflip.work')
+  );
+  const staleEmployers = await documents(strapi, 'api::employer.employer').findMany({
+    filters: {
+      companyName,
+    },
+    limit: 100,
+  });
+
+  for (const staleEmployer of staleEmployers) {
+    await deleteMany(strapi, 'api::employer-invite.employer-invite', {
+      employer: { documentId: staleEmployer.documentId },
+    });
+    await deleteMany(strapi, 'api::employer-contact.employer-contact', {
+      employer: { documentId: staleEmployer.documentId },
+    });
+    await deleteMany(strapi, 'api::employer-region-commitment.employer-region-commitment', {
+      employer: { documentId: staleEmployer.documentId },
+    });
+    await deleteDocument(strapi, 'api::employer.employer', staleEmployer.documentId);
+  }
+
+  await deleteMany(strapi, 'api::employer-contact.employer-contact', {
+    email: contactEmail,
+  });
+
+  const employer = await documents(strapi, 'api::employer.employer').create({
+    data: {
+      assignmentMode: 'automatic',
+      commitmentMode: 'global',
+      companyName,
+      dashboardOnboardingCompletedAt: now,
+      dashboardOnboardingState: 'complete',
+      employerState: 'active',
+      employerTermsAcceptedAt: now,
+      employerTermsAcceptedByEmail: contactEmail,
+      employerTermsPolicyVersion: 'e2e-employer-terms-v1',
+      initialInterviewCommitmentCadence: 'quarterly',
+      initialInterviewCommitmentVolume: 6,
+      interviewCommitmentCadence: 'quarterly',
+      interviewCommitmentVolume: 6,
+      operatingRegions: connectMany([content.area, content.coverageGapArea]),
+      region: content.area.name,
+      salesOwnerStaffEmail: normalizeEmail(requireEnv('HIREFLIP_E2E_ADMIN_EMAIL')),
+      salesOwnerStaffDisplayName: 'E2E Admin',
+    },
+    populate: ['operatingRegions'],
+  });
+
+  const contact = await documents(strapi, 'api::employer-contact.employer-contact').create({
+    data: {
+      accountCreatedAt: now,
+      authProvider: 'auth0',
+      contactRole: 'lead_contact',
+      contactState: 'active',
+      coverageConfirmedAt: now,
+      coverageConfirmedByEmail: contactEmail,
+      coverageRegions: connect(content.area),
+      email: contactEmail,
+      employer: connect(employer),
+      firstName: 'E2E',
+      lastName: 'Action Employer',
+      notificationPreferences: {
+        channels: {
+          email: true,
+        },
+      },
+      roleTitle: 'Lead contact',
+    },
+    populate: ['coverageRegions', 'employer'],
+  });
+
+  for (const region of [content.area, content.coverageGapArea]) {
+    await documents(strapi, 'api::employer-region-commitment.employer-region-commitment').create({
+      data: {
+        commitmentState: 'active',
+        effectiveFrom: now,
+        employer: connect(employer),
+        interviewCommitmentCadence: 'quarterly',
+        interviewCommitmentVolume: 3,
+        region: connect(region),
+        updatedByEmployerContactEmail: contactEmail,
+      },
+    });
+  }
+
+  return {
+    contact,
+    employer,
+  };
+};
+
 const main = async () => {
   const appContext = await compileStrapi();
   const strapi = await createStrapi(appContext).load();
@@ -1368,6 +1485,7 @@ const main = async () => {
     });
     const candidate = await ensureCandidate(strapi, candidateAuth0User, content);
     const employer = await ensureEmployer(strapi, employerAuth0User, content);
+    const adminActionEmployer = await ensureAdminActionEmployer(strapi, content);
     const candidatePrivacyExportRequest = await ensureCandidatePrivacyExportRequest(strapi, candidate);
     const candidateNotificationIssue = await ensureCandidateNotificationIssue(strapi, candidate);
     const interviewCandidate = await ensureInterviewCandidate(
@@ -1423,6 +1541,11 @@ const main = async () => {
           contactDocumentId: employer.contact.documentId,
           documentId: employer.employer.documentId,
           email: employer.contact.email,
+        },
+        adminActionEmployer: {
+          contactDocumentId: adminActionEmployer.contact.documentId,
+          documentId: adminActionEmployer.employer.documentId,
+          email: adminActionEmployer.contact.email,
         },
       })}`
     );
