@@ -63,6 +63,12 @@ const addHours = (date, hours) => {
   return next;
 };
 
+const addMinutes = (date, minutes) => {
+  const next = new Date(date.getTime());
+  next.setUTCMinutes(next.getUTCMinutes() + minutes);
+  return next;
+};
+
 const isoDaysFrom = (date, days) => addDays(date, days).toISOString();
 
 const isoDaysHoursFrom = (date, days, hours) => addHours(addDays(date, days), hours).toISOString();
@@ -1121,121 +1127,336 @@ const ensureInterviewCandidate = async (strapi, auth0User, content, employerCont
     },
   });
 
+  const createCompletedProgressionInterview = async ({ dayOffset, label }) => {
+    const slot = await documents(strapi, 'api::interview-slot.interview-slot').create({
+      data: {
+        capacity: 1,
+        employer: connect(employerContext.employer),
+        employerContact: connect(employerContext.contact),
+        endTime: isoDaysHoursFrom(nowDate, dayOffset, 1),
+        locationDetails: 'E2E Employer Office',
+        locationType: 'in_person',
+        region: connect(content.area),
+        slotState: 'completed',
+        startTime: isoDaysFrom(nowDate, dayOffset),
+        workSector: connect(content.sector),
+      },
+    });
+
+    return documents(strapi, 'api::interview.interview').create({
+      data: {
+        arrivalInstructions: `Report to reception for the ${label}.`,
+        candidate: connect(candidate),
+        candidateInstructions: 'Bring a notebook and ID.',
+        completedAt: isoDaysFrom(nowDate, dayOffset),
+        countsTowardGuarantee: true,
+        detailsProvidedAt: isoDaysFrom(nowDate, dayOffset - 1),
+        employer: connect(employerContext.employer),
+        employerContact: connect(employerContext.contact),
+        enrollment: connect(enrollment),
+        interviewSlot: connect(slot),
+        interviewerName: `E2E ${label} Interviewer`,
+        interviewState: 'completed',
+        locationDetails: 'E2E Employer Office',
+        locationType: 'in_person',
+        scheduledEndTime: isoDaysHoursFrom(nowDate, dayOffset, 1),
+        scheduledStartTime: isoDaysFrom(nowDate, dayOffset),
+      },
+    });
+  };
+
+  const expiredProgressionInterview = await createCompletedProgressionInterview({
+    dayOffset: -12,
+    label: 'Expired Progression',
+  });
+  await documents(strapi, 'api::offer.offer').create({
+    data: {
+      candidate: connect(candidate),
+      candidateMessage: 'E2E expired progression request for admin interview operations.',
+      candidateNotifiedAt: isoDaysFrom(nowDate, -11),
+      candidateResponse: 'expired',
+      candidateResponseDeadline: isoDaysFrom(nowDate, -9),
+      candidateRespondedAt: isoDaysFrom(nowDate, -8),
+      employer: connect(employerContext.employer),
+      followUpState: 'not_due',
+      internalProcessNotes: 'E2E seeded expired progression request.',
+      interview: connect(expiredProgressionInterview),
+      metadata: {
+        source: 'e2e_fixture_progression_expired',
+      },
+      progressionState: 'expired',
+      progressionType: 'second_interview',
+      requestedByEmployerContact: connect(employerContext.contact),
+      requestedDetailsAt: isoDaysFrom(nowDate, -11),
+    },
+  });
+
+  const followUpConcernInterview = await createCompletedProgressionInterview({
+    dayOffset: -40,
+    label: 'Follow Up Concern',
+  });
+  await documents(strapi, 'api::offer.offer').create({
+    data: {
+      candidate: connect(candidate),
+      candidateFollowUpDueAt: isoDaysFrom(nowDate, -7),
+      candidateFollowUpState: 'sent',
+      candidateMessage: 'E2E accepted progression request for follow-up concern coverage.',
+      candidateNotifiedAt: isoDaysFrom(nowDate, -39),
+      candidateResponse: 'accepted',
+      candidateRespondedAt: isoDaysFrom(nowDate, -38),
+      candidateResponseDeadline: isoDaysFrom(nowDate, -37),
+      detailsReleasedAt: isoDaysFrom(nowDate, -38),
+      employer: connect(employerContext.employer),
+      employerFollowUpCompletedAt: isoDaysFrom(nowDate, -1),
+      employerFollowUpDueAt: isoDaysFrom(nowDate, -7),
+      employerFollowUpNotes: 'E2E employer could not get a response from the candidate.',
+      employerFollowUpOutcome: 'no_response_from_candidate',
+      employerFollowUpResponses: {
+        candidateRespondedSince: false,
+        supportRequested: true,
+      },
+      employerFollowUpState: 'completed',
+      followUpState: 'completed',
+      internalProcessNotes: 'E2E seeded progression follow-up concern.',
+      interview: connect(followUpConcernInterview),
+      metadata: {
+        source: 'e2e_fixture_progression_follow_up_concern',
+      },
+      progressionState: 'accepted',
+      progressionType: 'second_interview',
+      requestedByEmployerContact: connect(employerContext.contact),
+      requestedDetailsAt: isoDaysFrom(nowDate, -39),
+    },
+  });
+
   return {
     candidate,
     completedInterview,
+    expiredProgressionInterview,
+    followUpConcernInterview,
     pendingInterview,
   };
 };
 
-const ensureEmployerAvailabilityClaim = async (strapi, content, employerContext) => {
-  const email = normalizeEmail(
-    optionalEnv('HIREFLIP_E2E_AVAILABILITY_CANDIDATE_EMAIL', 'e2e-availability-candidate@hireflip.work')
-  );
+const ensureEmployerAvailabilityClaims = async (strapi, content, employerContext) => {
   const nowDate = new Date();
   const now = nowDate.toISOString();
-  const existing = await findFirst(strapi, 'api::candidate.candidate', { email });
+  const lockedByEmail = normalizeEmail(
+    optionalEnv('HIREFLIP_E2E_AVAILABILITY_LOCK_CONTACT_EMAIL', 'e2e-availability-lock-contact@hireflip.work')
+  );
 
-  if (existing?.documentId) {
-    await resetCandidateInterviewRecords(strapi, existing);
-    await deleteDocument(strapi, 'api::candidate.candidate', existing.documentId);
-  }
+  await deleteMany(strapi, 'api::employer-contact.employer-contact', {
+    email: lockedByEmail,
+  });
 
-  const candidate = await documents(strapi, 'api::candidate.candidate').create({
+  const lockContact = await documents(strapi, 'api::employer-contact.employer-contact').create({
     data: {
-      accountCreatedAt: existing?.accountCreatedAt || now,
-      accountOnboardingCompletedAt: now,
-      accountRestrictionAppealStatus: 'not_applicable',
-      accountRestrictionStatus: 'active',
+      accountCreatedAt: now,
       authProvider: 'manual',
-      candidateState: 'interview_phase',
-      classAreaPreferences: preferenceSelection(content.area.slug),
-      dateOfBirth: '1997-03-10',
-      email,
+      contactRole: 'team_contact',
+      contactState: 'active',
+      coverageConfirmedAt: now,
+      coverageConfirmedByEmail: lockedByEmail,
+      coverageRegions: connect(content.area),
+      email: lockedByEmail,
+      employer: connect(employerContext.employer),
       firstName: 'E2E',
-      gender: 'prefer_not_to_say',
-      lastName: 'Availability Candidate',
-      marketingConsentCapturedAt: now,
-      marketingConsentState: 'opted_out',
-      marketingConsentWordingVersion: 'e2e-candidate-account-v1',
+      lastName: 'Lock Contact',
       notificationPreferences: {
         channels: {
           email: true,
-          phone: false,
-          sms: false,
         },
+      },
+      roleTitle: 'Interview coordinator',
+    },
+  });
+
+  const createScenario = async ({
+    assignmentNote,
+    candidateVisibleState = 'arranging_interviews',
+    claimedInterviewCount = 1,
+    email,
+    firstName = 'E2E',
+    fulfilledInterviewCount = 0,
+    insufficientCapacityDetectedAt = null,
+    insufficientCapacityReason = null,
+    lastName,
+    metadata = {},
+    phone,
+    requestState = 'employer_notified',
+    requiredSlotCount = 3,
+    seedCapacityClaim = true,
+    currentlyOpenByContact = null,
+  }) => {
+    const normalizedEmail = normalizeEmail(email);
+    const existing = await findFirst(strapi, 'api::candidate.candidate', { email: normalizedEmail });
+
+    if (existing?.documentId) {
+      await resetCandidateInterviewRecords(strapi, existing);
+      await deleteDocument(strapi, 'api::candidate.candidate', existing.documentId);
+    }
+
+    const candidate = await documents(strapi, 'api::candidate.candidate').create({
+      data: {
+        accountCreatedAt: existing?.accountCreatedAt || now,
+        accountOnboardingCompletedAt: now,
+        accountRestrictionAppealStatus: 'not_applicable',
+        accountRestrictionStatus: 'active',
+        authProvider: 'manual',
+        candidateState: 'interview_phase',
+        classAreaPreferences: preferenceSelection(content.area.slug),
+        dateOfBirth: '1997-03-10',
+        email: normalizedEmail,
+        firstName,
+        gender: 'prefer_not_to_say',
+        lastName,
+        marketingConsentCapturedAt: now,
+        marketingConsentState: 'opted_out',
+        marketingConsentWordingVersion: 'e2e-candidate-account-v1',
+        notificationPreferences: {
+          channels: {
+            email: true,
+            phone: false,
+            sms: false,
+          },
+          preferredCommunicationChannel: 'email',
+        },
+        phone,
         preferredCommunicationChannel: 'email',
-      },
-      phone: '+447700900126',
-      preferredCommunicationChannel: 'email',
-      profileSettings: {
-        accountOnboarding: {
-          completedAt: now,
+        profileSettings: {
+          accountOnboarding: {
+            completedAt: now,
+          },
         },
+        recruitmentPlatformVisibility: 'visible',
+        region: content.area.name,
+        sector: content.sector.name,
+        workSectorPreferences: preferenceSelection(content.sector.slug),
       },
-      recruitmentPlatformVisibility: 'visible',
-      region: content.area.name,
-      sector: content.sector.name,
-      workSectorPreferences: preferenceSelection(content.sector.slug),
-    },
-  });
+    });
 
-  const enrollment = await documents(strapi, 'api::enrollment.enrollment').create({
-    data: {
-      beganClassAt: isoDaysFrom(nowDate, -40),
-      candidate: connect(candidate),
-      class: connect(content.classRecord),
-      completedAt: isoDaysFrom(nowDate, -4),
-      completionStatus: 'completed',
-      enrolledAt: isoDaysFrom(nowDate, -45),
-      enrollmentState: 'interview_phase',
-      interviewGuaranteeDeadline: isoDaysFrom(nowDate, 50),
-      interviewGuaranteeWindowStartsAt: isoDaysFrom(nowDate, -4),
-      passStatus: 'passed',
-      passedAt: isoDaysFrom(nowDate, -4),
-      paymentStatus: 'paid',
-      qualifyingInterviewsDeliveredCount: 0,
-      refundEligibilityState: 'not_assessed',
-    },
-  });
+    const enrollment = await documents(strapi, 'api::enrollment.enrollment').create({
+      data: {
+        beganClassAt: isoDaysFrom(nowDate, -40),
+        candidate: connect(candidate),
+        class: connect(content.classRecord),
+        completedAt: isoDaysFrom(nowDate, -4),
+        completionStatus: 'completed',
+        enrolledAt: isoDaysFrom(nowDate, -45),
+        enrollmentState: 'interview_phase',
+        interviewGuaranteeDeadline: isoDaysFrom(nowDate, 50),
+        interviewGuaranteeWindowStartsAt: isoDaysFrom(nowDate, -4),
+        passStatus: 'passed',
+        passedAt: isoDaysFrom(nowDate, -4),
+        paymentStatus: 'paid',
+        qualifyingInterviewsDeliveredCount: 0,
+        refundEligibilityState: 'not_assessed',
+      },
+    });
 
-  const interviewRequest = await documents(strapi, 'api::interview-request.interview-request').create({
-    data: {
-      candidate: connect(candidate),
-      candidateVisibleState: 'arranging_interviews',
-      claimedInterviewCount: 1,
-      class: connect(content.classRecord),
-      employerResponseDeadline: isoDaysFrom(nowDate, 2),
-      enrollment: connect(enrollment),
-      fulfilledInterviewCount: 0,
-      lastRoutedAt: isoDaysFrom(nowDate, -1),
-      region: connect(content.area),
-      requestedInterviewCount: 2,
-      requestState: 'employer_notified',
-      responseSlaWorkingDays: 2,
-    },
-  });
+    const interviewRequest = await documents(strapi, 'api::interview-request.interview-request').create({
+      data: {
+        candidate: connect(candidate),
+        candidateVisibleState,
+        claimedInterviewCount,
+        class: connect(content.classRecord),
+        employerResponseDeadline: isoDaysFrom(nowDate, 2),
+        enrollment: connect(enrollment),
+        fulfilledInterviewCount,
+        insufficientCapacityDetectedAt,
+        insufficientCapacityReason,
+        lastRoutedAt: isoDaysFrom(nowDate, -1),
+        region: connect(content.area),
+        requestedInterviewCount: 2,
+        requestState,
+        responseSlaWorkingDays: 2,
+      },
+    });
 
-  const capacityClaim = await documents(strapi, 'api::employer-capacity-claim.employer-capacity-claim').create({
-    data: {
-      assignmentNote: 'E2E browser fixture open employer availability claim.',
-      claimCount: 1,
-      claimState: 'notified',
-      employer: connect(employerContext.employer),
-      employerContact: connect(employerContext.contact),
-      expiresAt: isoDaysFrom(nowDate, 2),
-      interviewRequest: connect(interviewRequest),
-      notifiedAt: isoDaysFrom(nowDate, -1),
-      region: connect(content.area),
-      requiredSlotCount: 3,
+    const capacityClaim = seedCapacityClaim
+      ? await documents(strapi, 'api::employer-capacity-claim.employer-capacity-claim').create({
+          data: {
+            assignmentNote,
+            claimCount: 1,
+            claimState: 'notified',
+            ...(currentlyOpenByContact
+              ? {
+                  currentlyOpenAt: now,
+                  currentlyOpenByContact: connect(currentlyOpenByContact),
+                  currentlyOpenExpiresAt: addMinutes(nowDate, 15).toISOString(),
+                }
+              : {}),
+            employer: connect(employerContext.employer),
+            employerContact: connect(employerContext.contact),
+            expiresAt: isoDaysFrom(nowDate, 2),
+            interviewRequest: connect(interviewRequest),
+            metadata,
+            notifiedAt: isoDaysFrom(nowDate, -1),
+            region: connect(content.area),
+            requiredSlotCount,
+          },
+        })
+      : null;
+
+    return {
+      candidate,
+      capacityClaim,
+      enrollment,
+      interviewRequest,
+    };
+  };
+
+  const standard = await createScenario({
+    assignmentNote: 'E2E browser fixture open employer availability claim.',
+    email: optionalEnv('HIREFLIP_E2E_AVAILABILITY_CANDIDATE_EMAIL', 'e2e-availability-candidate@hireflip.work'),
+    lastName: 'Availability Candidate',
+    phone: '+447700900126',
+  });
+  const topUp = await createScenario({
+    assignmentNote: 'E2E browser fixture reusable top-up availability claim.',
+    email: optionalEnv('HIREFLIP_E2E_AVAILABILITY_TOP_UP_CANDIDATE_EMAIL', 'e2e-availability-top-up-candidate@hireflip.work'),
+    lastName: 'Availability Top Up Candidate',
+    metadata: {
+      purpose: 'reusable_slot_top_up',
+      source: 'e2e_fixture',
     },
+    phone: '+447700900127',
+    requiredSlotCount: 1,
+  });
+  const decline = await createScenario({
+    assignmentNote: 'E2E browser fixture employer decline availability claim.',
+    email: optionalEnv('HIREFLIP_E2E_AVAILABILITY_DECLINE_CANDIDATE_EMAIL', 'e2e-availability-decline-candidate@hireflip.work'),
+    lastName: 'Availability Decline Candidate',
+    phone: '+447700900128',
+  });
+  const locked = await createScenario({
+    assignmentNote: 'E2E browser fixture locked employer availability claim.',
+    currentlyOpenByContact: lockContact,
+    email: optionalEnv('HIREFLIP_E2E_AVAILABILITY_LOCKED_CANDIDATE_EMAIL', 'e2e-availability-locked-candidate@hireflip.work'),
+    lastName: 'Availability Locked Candidate',
+    phone: '+447700900129',
+  });
+  const capacityShortfall = await createScenario({
+    assignmentNote: 'E2E browser fixture capacity shortfall request.',
+    candidateVisibleState: 'arranging_interviews',
+    claimedInterviewCount: 0,
+    email: optionalEnv('HIREFLIP_E2E_CAPACITY_SHORTFALL_CANDIDATE_EMAIL', 'e2e-capacity-shortfall-candidate@hireflip.work'),
+    fulfilledInterviewCount: 0,
+    insufficientCapacityDetectedAt: isoDaysFrom(nowDate, -1),
+    insufficientCapacityReason: 'E2E capacity shortfall for browser testing.',
+    lastName: 'Capacity Shortfall Candidate',
+    phone: '+447700900130',
+    requestState: 'pending_capacity',
+    seedCapacityClaim: false,
   });
 
   return {
-    candidate,
-    capacityClaim,
-    enrollment,
-    interviewRequest,
+    capacityShortfall,
+    decline,
+    locked,
+    lockContact,
+    standard,
+    topUp,
   };
 };
 
@@ -1550,7 +1771,7 @@ const main = async () => {
         seedActiveStrike: true,
       }
     );
-    const availabilityClaim = await ensureEmployerAvailabilityClaim(strapi, content, employer);
+    const availabilityClaims = await ensureEmployerAvailabilityClaims(strapi, content, employer);
 
     strapi.log.info(
       `E2E fixtures ready: ${JSON.stringify({
@@ -1572,9 +1793,28 @@ const main = async () => {
           email: declineCandidate.candidate.email,
           strikeDocumentId: declineCandidate.activeStrike?.documentId || null,
         },
-        availabilityClaim: {
-          candidateEmail: availabilityClaim.candidate.email,
-          documentId: availabilityClaim.capacityClaim.documentId,
+        availabilityClaims: {
+          standard: {
+            candidateEmail: availabilityClaims.standard.candidate.email,
+            documentId: availabilityClaims.standard.capacityClaim?.documentId || null,
+          },
+          topUp: {
+            candidateEmail: availabilityClaims.topUp.candidate.email,
+            documentId: availabilityClaims.topUp.capacityClaim?.documentId || null,
+          },
+          decline: {
+            candidateEmail: availabilityClaims.decline.candidate.email,
+            documentId: availabilityClaims.decline.capacityClaim?.documentId || null,
+          },
+          locked: {
+            candidateEmail: availabilityClaims.locked.candidate.email,
+            documentId: availabilityClaims.locked.capacityClaim?.documentId || null,
+            lockedBy: availabilityClaims.lockContact.email,
+          },
+          capacityShortfall: {
+            candidateEmail: availabilityClaims.capacityShortfall.candidate.email,
+            documentId: availabilityClaims.capacityShortfall.interviewRequest.documentId,
+          },
         },
         class: {
           documentId: content.classRecord.documentId,
