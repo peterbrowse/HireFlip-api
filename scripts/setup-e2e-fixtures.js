@@ -34,6 +34,8 @@ const hashInviteToken = (token) => createHash('sha256').update(token).digest('he
 const hashPrivacyDownloadCode = ({ code, requestDocumentId, salt }) =>
   createHash('sha256').update(`${requestDocumentId}:${code}:${salt}`).digest('hex');
 
+const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
 const safeSlug = (value) =>
   String(value || 'e2e')
     .toLowerCase()
@@ -171,23 +173,44 @@ const parseAuth0Response = async (response, fallbackMessage) => {
   return payload;
 };
 
+const auth0RetryDelayMs = (response, attempt) => {
+  const retryAfter = Number(response.headers.get('retry-after'));
+
+  if (Number.isFinite(retryAfter) && retryAfter > 0) {
+    return Math.min(retryAfter * 1000, 60_000);
+  }
+
+  return Math.min(2_000 * 2 ** attempt, 30_000);
+};
+
 const getManagementToken = async (config) => {
   if (cachedManagementToken?.expiresAt > Date.now() + 60_000) {
     return cachedManagementToken.accessToken;
   }
 
-  const response = await fetch(`https://${config.domain}/oauth/token`, {
-    body: JSON.stringify({
-      audience: config.audience,
-      client_id: config.clientId,
-      client_secret: config.clientSecret,
-      grant_type: 'client_credentials',
-    }),
-    headers: {
-      'content-type': 'application/json',
-    },
-    method: 'POST',
-  });
+  let response = null;
+
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    response = await fetch(`https://${config.domain}/oauth/token`, {
+      body: JSON.stringify({
+        audience: config.audience,
+        client_id: config.clientId,
+        client_secret: config.clientSecret,
+        grant_type: 'client_credentials',
+      }),
+      headers: {
+        'content-type': 'application/json',
+      },
+      method: 'POST',
+    });
+
+    if (![429, 500, 502, 503, 504].includes(response.status) || attempt === 5) {
+      break;
+    }
+
+    await sleep(auth0RetryDelayMs(response, attempt));
+  }
+
   const payload = await parseAuth0Response(response, 'Auth0 Management token request failed.');
 
   cachedManagementToken = {
@@ -200,14 +223,24 @@ const getManagementToken = async (config) => {
 
 const requestManagementApi = async (config, path, init = {}) => {
   const accessToken = await getManagementToken(config);
-  const response = await fetch(`https://${config.domain}/api/v2${path}`, {
-    ...init,
-    headers: {
-      ...(init.body ? { 'content-type': 'application/json' } : {}),
-      ...(init.headers || {}),
-      authorization: `Bearer ${accessToken}`,
-    },
-  });
+  let response = null;
+
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    response = await fetch(`https://${config.domain}/api/v2${path}`, {
+      ...init,
+      headers: {
+        ...(init.body ? { 'content-type': 'application/json' } : {}),
+        ...(init.headers || {}),
+        authorization: `Bearer ${accessToken}`,
+      },
+    });
+
+    if (![429, 500, 502, 503, 504].includes(response.status) || attempt === 5) {
+      break;
+    }
+
+    await sleep(auth0RetryDelayMs(response, attempt));
+  }
 
   return parseAuth0Response(response, 'Auth0 Management API request failed.');
 };
