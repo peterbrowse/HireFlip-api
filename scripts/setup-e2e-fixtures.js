@@ -547,17 +547,26 @@ const resetCandidateInterviewRecords = async (strapi, candidate) => {
   await deleteMany(strapi, 'api::enrollment.enrollment', candidateFilter);
 };
 
-const ensureInterviewCandidate = async (strapi, auth0User, content, employerContext) => {
+const ensureInterviewCandidate = async (strapi, auth0User, content, employerContext, options = {}) => {
   const email = normalizeEmail(
-    optionalEnv('HIREFLIP_E2E_INTERVIEW_CANDIDATE_EMAIL', 'e2e-interview-candidate@hireflip.work')
+    options.email ||
+      optionalEnv('HIREFLIP_E2E_INTERVIEW_CANDIDATE_EMAIL', 'e2e-interview-candidate@hireflip.work')
   );
   const feedbackInviteEmail = normalizeEmail(
-    optionalEnv('HIREFLIP_E2E_FEEDBACK_INVITE_EMAIL', 'e2e-feedback-attendee@hireflip.work')
+    options.feedbackInviteEmail ||
+      optionalEnv('HIREFLIP_E2E_FEEDBACK_INVITE_EMAIL', 'e2e-feedback-attendee@hireflip.work')
   );
-  const feedbackInviteToken = optionalEnv(
-    'HIREFLIP_E2E_FEEDBACK_INVITE_TOKEN',
-    'e2e-feedback-invite-token'
-  );
+  const feedbackInviteToken =
+    options.feedbackInviteToken ||
+    optionalEnv('HIREFLIP_E2E_FEEDBACK_INVITE_TOKEN', 'e2e-feedback-invite-token');
+  const firstName = options.firstName || optionalEnv('HIREFLIP_E2E_INTERVIEW_CANDIDATE_FIRST_NAME', 'E2E');
+  const lastName =
+    options.lastName || optionalEnv('HIREFLIP_E2E_INTERVIEW_CANDIDATE_LAST_NAME', 'Interview Candidate');
+  const phone = options.phone || optionalEnv('HIREFLIP_E2E_INTERVIEW_CANDIDATE_PHONE', '+447700900124');
+  const dateOfBirth =
+    options.dateOfBirth || optionalEnv('HIREFLIP_E2E_INTERVIEW_CANDIDATE_DATE_OF_BIRTH', '1996-02-20');
+  const assignmentNote = options.assignmentNote || 'E2E browser fixture active slot offer.';
+  const includeHistory = options.includeHistory !== false;
   const nowDate = new Date();
   const now = nowDate.toISOString();
   const existing =
@@ -579,11 +588,11 @@ const ensureInterviewCandidate = async (strapi, auth0User, content, employerCont
       authProvider: 'auth0',
       candidateState: 'interview_phase',
       classAreaPreferences: preferenceSelection(content.area.slug),
-      dateOfBirth: optionalEnv('HIREFLIP_E2E_INTERVIEW_CANDIDATE_DATE_OF_BIRTH', '1996-02-20'),
+      dateOfBirth,
       email,
-      firstName: optionalEnv('HIREFLIP_E2E_INTERVIEW_CANDIDATE_FIRST_NAME', 'E2E'),
+      firstName,
       gender: 'prefer_not_to_say',
-      lastName: optionalEnv('HIREFLIP_E2E_INTERVIEW_CANDIDATE_LAST_NAME', 'Interview Candidate'),
+      lastName,
       marketingConsentCapturedAt: now,
       marketingConsentState: 'opted_out',
       marketingConsentWordingVersion:
@@ -596,7 +605,7 @@ const ensureInterviewCandidate = async (strapi, auth0User, content, employerCont
         },
         preferredCommunicationChannel: 'email',
       },
-      phone: optionalEnv('HIREFLIP_E2E_INTERVIEW_CANDIDATE_PHONE', '+447700900124'),
+      phone,
       preferredCommunicationChannel: 'email',
       profileSettings: {
         accountOnboarding: {
@@ -696,7 +705,7 @@ const ensureInterviewCandidate = async (strapi, auth0User, content, employerCont
   const capacityClaim = await documents(strapi, 'api::employer-capacity-claim.employer-capacity-claim').create({
     data: {
       acceptedAt: isoDaysFrom(nowDate, -1),
-      assignmentNote: 'E2E browser fixture active slot offer.',
+      assignmentNote,
       claimCount: 1,
       claimState: 'fulfilled',
       employer: connect(employerContext.employer),
@@ -743,6 +752,13 @@ const ensureInterviewCandidate = async (strapi, auth0User, content, employerCont
         workSector: connect(content.sector),
       },
     });
+  }
+
+  if (!includeHistory) {
+    return {
+      activeOffer,
+      candidate,
+    };
   }
 
   const pendingSlot = await documents(strapi, 'api::interview-slot.interview-slot').create({
@@ -1010,6 +1026,17 @@ const main = async () => {
       lastName: optionalEnv('HIREFLIP_E2E_INTERVIEW_CANDIDATE_LAST_NAME', 'Interview Candidate'),
       password: optionalEnv('HIREFLIP_E2E_INTERVIEW_CANDIDATE_PASSWORD', requireEnv('HIREFLIP_E2E_CANDIDATE_PASSWORD')),
     });
+    const declineCandidateEmail = optionalEnv(
+      'HIREFLIP_E2E_DECLINE_CANDIDATE_EMAIL',
+      'e2e-decline-candidate@hireflip.work'
+    );
+    const declineCandidateAuth0User = await ensureAuth0User({
+      connectionName: requireEnv('AUTH0_CANDIDATE_CONNECTION_NAME'),
+      email: declineCandidateEmail,
+      firstName: optionalEnv('HIREFLIP_E2E_DECLINE_CANDIDATE_FIRST_NAME', 'E2E'),
+      lastName: optionalEnv('HIREFLIP_E2E_DECLINE_CANDIDATE_LAST_NAME', 'Decline Candidate'),
+      password: optionalEnv('HIREFLIP_E2E_DECLINE_CANDIDATE_PASSWORD', requireEnv('HIREFLIP_E2E_CANDIDATE_PASSWORD')),
+    });
     const employerAuth0User = await ensureAuth0User({
       connectionName: requireEnv('AUTH0_EMPLOYER_CONNECTION_NAME'),
       email: requireEnv('HIREFLIP_E2E_EMPLOYER_EMAIL'),
@@ -1025,6 +1052,20 @@ const main = async () => {
       content,
       employer
     );
+    const declineCandidate = await ensureInterviewCandidate(
+      strapi,
+      declineCandidateAuth0User,
+      content,
+      employer,
+      {
+        assignmentNote: 'E2E browser fixture decline-all slot offer.',
+        email: declineCandidateEmail,
+        firstName: optionalEnv('HIREFLIP_E2E_DECLINE_CANDIDATE_FIRST_NAME', 'E2E'),
+        includeHistory: false,
+        lastName: optionalEnv('HIREFLIP_E2E_DECLINE_CANDIDATE_LAST_NAME', 'Decline Candidate'),
+        phone: optionalEnv('HIREFLIP_E2E_DECLINE_CANDIDATE_PHONE', '+447700900125'),
+      }
+    );
 
     strapi.log.info(
       `E2E fixtures ready: ${JSON.stringify({
@@ -1033,6 +1074,10 @@ const main = async () => {
         interviewCandidate: {
           documentId: interviewCandidate.candidate.documentId,
           email: interviewCandidate.candidate.email,
+        },
+        declineCandidate: {
+          documentId: declineCandidate.candidate.documentId,
+          email: declineCandidate.candidate.email,
         },
         class: {
           documentId: content.classRecord.documentId,
