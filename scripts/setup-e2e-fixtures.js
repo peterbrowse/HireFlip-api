@@ -3261,6 +3261,16 @@ const main = async () => {
       blockedEmployerAuth0User
     );
     const adminActionEmployer = await ensureAdminActionEmployer(strapi, content);
+    const adminActionCandidate = await ensureReviewCandidate(strapi, content, {
+      candidateState: 'in_class',
+      email: optionalEnv(
+        'HIREFLIP_E2E_ADMIN_ACTION_CANDIDATE_EMAIL',
+        'e2e-admin-action-candidate@hireflip.work'
+      ),
+      firstName: optionalEnv('HIREFLIP_E2E_ADMIN_ACTION_CANDIDATE_FIRST_NAME', 'E2E'),
+      lastName: optionalEnv('HIREFLIP_E2E_ADMIN_ACTION_CANDIDATE_LAST_NAME', 'Admin Action Candidate'),
+      phone: optionalEnv('HIREFLIP_E2E_ADMIN_ACTION_CANDIDATE_PHONE', '+447700900136'),
+    });
     const resetAnnouncements = await resetClassAnnouncements(strapi, content.classRecord);
     const candidatePrivacyExportRequest = await ensureCandidatePrivacyExportRequest(strapi, candidate);
     const employerPrivacyExportRequest = await ensureEmployerPrivacyExportRequest(strapi, employer.contact);
@@ -3370,6 +3380,10 @@ const main = async () => {
         candidateNotificationIssue: {
           documentId: candidateNotificationIssue.documentId,
           eventType: candidateNotificationIssue.eventType,
+        },
+        adminActionCandidate: {
+          documentId: adminActionCandidate.documentId,
+          email: adminActionCandidate.email,
         },
         interviewCandidate: {
           documentId: interviewCandidate.candidate.documentId,
