@@ -836,6 +836,9 @@ const ensureInterviewCandidate = async (strapi, auth0User, content, employerCont
 
 const ensureEmployer = async (strapi, auth0User, content) => {
   const email = normalizeEmail(requireEnv('HIREFLIP_E2E_EMPLOYER_EMAIL'));
+  const e2eTeamContactEmail = normalizeEmail(
+    optionalEnv('HIREFLIP_E2E_EMPLOYER_TEAM_CONTACT_EMAIL', 'e2e-team-contact@hireflip.work')
+  );
   const now = new Date().toISOString();
   const companyName = optionalEnv('HIREFLIP_E2E_EMPLOYER_COMPANY', 'HireFlip E2E Employer');
   const existingEmployer = await findFirst(strapi, 'api::employer.employer', { companyName }, [
@@ -870,6 +873,14 @@ const ensureEmployer = async (strapi, auth0User, content) => {
         data: employerData,
         populate: ['operatingRegions'],
       });
+
+  await deleteMany(strapi, 'api::employer-invite.employer-invite', {
+    inviteEmail: e2eTeamContactEmail,
+  });
+  await deleteMany(strapi, 'api::employer-contact.employer-contact', {
+    email: e2eTeamContactEmail,
+  });
+
   const existingContact =
     (await findFirst(strapi, 'api::employer-contact.employer-contact', { email })) ||
     (await findFirst(strapi, 'api::employer-contact.employer-contact', {
