@@ -2455,72 +2455,76 @@ const ensureInterviewCandidate = async (strapi, auth0User, content, employerCont
     },
   });
 
-  const followUpDueSlot = await documents(strapi, 'api::interview-slot.interview-slot').create({
-    data: {
-      capacity: 1,
-      employer: connect(employerContext.employer),
-      employerContact: connect(employerContext.contact),
-      endTime: isoDaysHoursFrom(nowDate, -36, 1),
-      locationDetails: 'E2E Employer Office',
-      locationType: 'in_person',
-      region: connect(content.area),
-      slotState: 'completed',
-      startTime: isoDaysFrom(nowDate, -36),
-      workSector: connect(content.sector),
-    },
-  });
-  const followUpDueInterview = await documents(strapi, 'api::interview.interview').create({
-    data: {
-      arrivalInstructions: 'Report to reception for the E2E follow-up interview.',
-      candidate: connect(candidate),
-      candidateInstructions: 'Bring your portfolio.',
-      completedAt: isoDaysFrom(nowDate, -36),
-      countsTowardGuarantee: true,
-      detailsProvidedAt: isoDaysFrom(nowDate, -37),
-      employer: connect(employerContext.employer),
-      employerContact: connect(employerContext.contact),
-      enrollment: connect(enrollment),
-      interviewSlot: connect(followUpDueSlot),
-      interviewerName: 'E2E Follow Up Due Interviewer',
-      interviewState: 'completed',
-      locationDetails: 'E2E Employer Office',
-      locationType: 'in_person',
-      scheduledEndTime: isoDaysHoursFrom(nowDate, -36, 1),
-      scheduledStartTime: isoDaysFrom(nowDate, -36),
-    },
-  });
-  await createCompletedCandidateOffer(followUpDueInterview, followUpDueSlot, {
-    respondedDays: -38,
-    responseDeadlineDays: -38,
-  });
-  await documents(strapi, 'api::offer.offer').create({
-    data: {
-      candidate: connect(candidate),
-      candidateFollowUpDueAt: isoDaysFrom(nowDate, -1),
-      candidateFollowUpSentAt: isoDaysFrom(nowDate, -2),
-      candidateFollowUpState: 'sent',
-      candidateMessage: 'E2E accepted progression request with follow-up due.',
-      candidateNotifiedAt: isoDaysFrom(nowDate, -35),
-      candidateResponse: 'accepted',
-      candidateRespondedAt: isoDaysFrom(nowDate, -34),
-      candidateResponseDeadline: isoDaysFrom(nowDate, -33),
-      detailsReleasedAt: isoDaysFrom(nowDate, -34),
-      employer: connect(employerContext.employer),
-      employerFollowUpDueAt: isoDaysFrom(nowDate, -1),
-      employerFollowUpSentAt: isoDaysFrom(nowDate, -2),
-      employerFollowUpState: 'sent',
-      followUpState: 'sent',
-      internalProcessNotes: 'E2E seeded accepted progression with one-month follow-up due.',
-      interview: connect(followUpDueInterview),
-      metadata: {
-        source: 'e2e_fixture_progression_follow_up_due',
+  let followUpDueInterview = null;
+
+  if (options.seedDefaultProgressionFollowUp !== false) {
+    const followUpDueSlot = await documents(strapi, 'api::interview-slot.interview-slot').create({
+      data: {
+        capacity: 1,
+        employer: connect(employerContext.employer),
+        employerContact: connect(employerContext.contact),
+        endTime: isoDaysHoursFrom(nowDate, -36, 1),
+        locationDetails: 'E2E Employer Office',
+        locationType: 'in_person',
+        region: connect(content.area),
+        slotState: 'completed',
+        startTime: isoDaysFrom(nowDate, -36),
+        workSector: connect(content.sector),
       },
-      progressionState: 'accepted',
-      progressionType: 'second_interview',
-      requestedByEmployerContact: connect(employerContext.contact),
-      requestedDetailsAt: isoDaysFrom(nowDate, -35),
-    },
-  });
+    });
+    followUpDueInterview = await documents(strapi, 'api::interview.interview').create({
+      data: {
+        arrivalInstructions: 'Report to reception for the E2E follow-up interview.',
+        candidate: connect(candidate),
+        candidateInstructions: 'Bring your portfolio.',
+        completedAt: isoDaysFrom(nowDate, -36),
+        countsTowardGuarantee: true,
+        detailsProvidedAt: isoDaysFrom(nowDate, -37),
+        employer: connect(employerContext.employer),
+        employerContact: connect(employerContext.contact),
+        enrollment: connect(enrollment),
+        interviewSlot: connect(followUpDueSlot),
+        interviewerName: 'E2E Follow Up Due Interviewer',
+        interviewState: 'completed',
+        locationDetails: 'E2E Employer Office',
+        locationType: 'in_person',
+        scheduledEndTime: isoDaysHoursFrom(nowDate, -36, 1),
+        scheduledStartTime: isoDaysFrom(nowDate, -36),
+      },
+    });
+    await createCompletedCandidateOffer(followUpDueInterview, followUpDueSlot, {
+      respondedDays: -38,
+      responseDeadlineDays: -38,
+    });
+    await documents(strapi, 'api::offer.offer').create({
+      data: {
+        candidate: connect(candidate),
+        candidateFollowUpDueAt: isoDaysFrom(nowDate, -1),
+        candidateFollowUpSentAt: isoDaysFrom(nowDate, -2),
+        candidateFollowUpState: 'sent',
+        candidateMessage: 'E2E accepted progression request with follow-up due.',
+        candidateNotifiedAt: isoDaysFrom(nowDate, -35),
+        candidateResponse: 'accepted',
+        candidateRespondedAt: isoDaysFrom(nowDate, -34),
+        candidateResponseDeadline: isoDaysFrom(nowDate, -33),
+        detailsReleasedAt: isoDaysFrom(nowDate, -34),
+        employer: connect(employerContext.employer),
+        employerFollowUpDueAt: isoDaysFrom(nowDate, -1),
+        employerFollowUpSentAt: isoDaysFrom(nowDate, -2),
+        employerFollowUpState: 'sent',
+        followUpState: 'sent',
+        internalProcessNotes: 'E2E seeded accepted progression with one-month follow-up due.',
+        interview: connect(followUpDueInterview),
+        metadata: {
+          source: 'e2e_fixture_progression_follow_up_due',
+        },
+        progressionState: 'accepted',
+        progressionType: 'second_interview',
+        requestedByEmployerContact: connect(employerContext.contact),
+        requestedDetailsAt: isoDaysFrom(nowDate, -35),
+      },
+    });
+  }
 
   if (options.seedPublicFeedbackInvite !== false) {
     await documents(strapi, 'api::interview-feedback-invite.interview-feedback-invite').create({
@@ -3766,6 +3770,7 @@ const main = async () => {
         phone: optionalEnv('HIREFLIP_E2E_PROGRESSION_CANDIDATE_PHONE', '+447700900137'),
         seedActiveSlotOffer: false,
         seedCandidateProgressionStateCoverage: true,
+        seedDefaultProgressionFollowUp: false,
         seedPublicFeedbackInvite: false,
       }
     );
@@ -3785,6 +3790,7 @@ const main = async () => {
           'Employer Follow Up Candidate'
         ),
         phone: optionalEnv('HIREFLIP_E2E_EMPLOYER_FOLLOW_UP_CANDIDATE_PHONE', '+447700900138'),
+        seedDefaultProgressionFollowUp: false,
         seedEmployerProgressionFollowUpCoverage: true,
         seedPublicFeedbackInvite: false,
       }
