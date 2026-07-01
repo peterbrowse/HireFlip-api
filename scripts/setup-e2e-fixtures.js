@@ -464,9 +464,64 @@ const ensureContent = async (strapi) => {
   };
 };
 
+const ensureCourseProgressClass = async (strapi, content) => {
+  const classSlug = safeSlug(
+    optionalEnv('HIREFLIP_E2E_COURSE_CLASS_SLUG', 'hireflip-e2e-course-progress-class')
+  );
+  const classCode = optionalEnv('HIREFLIP_E2E_COURSE_CLASS_CODE', 'E2E-COURSE-001');
+  const year = Math.max(2026, new Date().getUTCFullYear());
+  const nowDate = new Date();
+  const existingClass =
+    (await findFirst(strapi, 'api::class.class', { officialClassCode: classCode })) ||
+    (await findFirst(strapi, 'api::class.class', { slug: classSlug }));
+  const classData = {
+    capacity: 20,
+    classArea: connect(content.area),
+    course: connect(content.course),
+    currency: 'GBP',
+    discountedPricePence: Number.parseInt(optionalEnv('HIREFLIP_E2E_CLASS_PRICE_PENCE', '100'), 10),
+    displayTitle: optionalEnv('HIREFLIP_E2E_COURSE_CLASS_TITLE', 'HireFlip E2E Course Progress Class'),
+    enrollmentOpenedAt: isoDaysFrom(nowDate, -45),
+    enrollmentOpenedBy: 'e2e-fixture',
+    interviewCapacityContingencyPercentage: 30,
+    interviewsGuaranteed: 2,
+    level: 'Entry',
+    minimumViableCapacity: 1,
+    modulesPassCriteriaAttached: true,
+    name: optionalEnv('HIREFLIP_E2E_COURSE_CLASS_NAME', 'HireFlip E2E Course Progress Class'),
+    officialClassCode: classCode,
+    openedAt: isoDaysFrom(nowDate, -45),
+    openingMode: 'admin_immediate',
+    openingReadinessStatus: 'opened',
+    overview: 'A browser e2e fixture class used to verify candidate course progression.',
+    pricePence: Number.parseInt(optionalEnv('HIREFLIP_E2E_CLASS_PRICE_PENCE', '100'), 10),
+    region: content.area.name,
+    remoteInterviewsAllowed: true,
+    sector: content.sector.name,
+    slug: classSlug,
+    startDate: isoDaysFrom(nowDate, -30).slice(0, 10),
+    state: 'in_progress',
+    workSector: connect(content.sector),
+    year,
+    yearSequenceNumber: 998,
+  };
+
+  return existingClass?.documentId
+    ? documents(strapi, 'api::class.class').update({
+        documentId: existingClass.documentId,
+        data: classData,
+        populate: ['classArea', 'workSector', 'course'],
+      })
+    : documents(strapi, 'api::class.class').create({
+        data: classData,
+        populate: ['classArea', 'workSector', 'course'],
+      });
+};
+
 const ensureCourseAssessmentContent = async (strapi, content) => {
   const sectionTitle = 'E2E Appeal Section';
   const moduleTitle = 'E2E Appeal Module';
+  const materialTitle = 'E2E Course Reading';
   const testTitle = 'E2E Appeal Assessment';
   const questionPrompt = 'Which answer should pass the E2E appeal assessment?';
   const existingSection = await findFirst(strapi, 'api::course-section.course-section', {
@@ -512,6 +567,33 @@ const ensureCourseAssessmentContent = async (strapi, content) => {
     : await documents(strapi, 'api::course-module.course-module').create({
         data: moduleData,
         populate: ['courseSection'],
+      });
+  const existingMaterial = await findFirst(strapi, 'api::course-material.course-material', {
+    module: { documentId: module.documentId },
+    title: materialTitle,
+  });
+  const materialData = {
+    body:
+      'This synthetic lesson exists to verify the candidate course journey in browser tests.\n\nCandidates must read to the end before the completion button is enabled.',
+    completionMode: 'read_to_end',
+    estimatedDurationMinutes: 2,
+    materialState: 'active',
+    materialType: 'text',
+    module: connect(module),
+    required: true,
+    requiredCompletionPercentage: 100,
+    sortOrder: 1,
+    title: materialTitle,
+  };
+  const material = existingMaterial?.documentId
+    ? await documents(strapi, 'api::course-material.course-material').update({
+        documentId: existingMaterial.documentId,
+        data: materialData,
+        populate: ['module'],
+      })
+    : await documents(strapi, 'api::course-material.course-material').create({
+        data: materialData,
+        populate: ['module'],
       });
   const existingTest = await findFirst(strapi, 'api::course-test.course-test', {
     courseModule: { documentId: module.documentId },
@@ -574,6 +656,7 @@ const ensureCourseAssessmentContent = async (strapi, content) => {
       });
 
   return {
+    material,
     module,
     question,
     section,
@@ -1078,6 +1161,122 @@ const createReviewEnrollment = async (strapi, candidate, content, options = {}) 
       refundEligibilityState: options.refundEligibilityState || 'not_assessed',
     },
   });
+};
+
+const ensureCourseProgressCandidate = async (strapi, auth0User, content, courseClass) => {
+  const email = normalizeEmail(
+    optionalEnv('HIREFLIP_E2E_COURSE_CANDIDATE_EMAIL', 'e2e-course-candidate@hireflip.work')
+  );
+  const nowDate = new Date();
+  const now = nowDate.toISOString();
+  const existing =
+    (await findFirst(strapi, 'api::candidate.candidate', { email })) ||
+    (await findFirst(strapi, 'api::candidate.candidate', { authIdentityId: auth0User.userId }));
+
+  if (existing?.documentId) {
+    await resetCandidateReviewRecords(strapi, existing);
+    await resetCandidatePrivacyRecords(strapi, existing);
+    await resetCandidateNotificationEvents(strapi, existing);
+    await deleteDocument(strapi, 'api::candidate.candidate', existing.documentId);
+  }
+
+  const candidate = await documents(strapi, 'api::candidate.candidate').create({
+    data: {
+      accountCreatedAt: now,
+      accountOnboardingCompletedAt: now,
+      accountRestrictionAppealStatus: 'not_applicable',
+      accountRestrictionStatus: 'active',
+      authIdentityId: auth0User.userId,
+      authProvider: 'auth0',
+      candidateState: 'enrolled',
+      classAreaPreferences: preferenceSelection(content.area.slug),
+      dateOfBirth: optionalEnv('HIREFLIP_E2E_COURSE_CANDIDATE_DATE_OF_BIRTH', '1997-08-18'),
+      email,
+      firstName: optionalEnv('HIREFLIP_E2E_COURSE_CANDIDATE_FIRST_NAME', 'E2E'),
+      gender: 'prefer_not_to_say',
+      lastName: optionalEnv('HIREFLIP_E2E_COURSE_CANDIDATE_LAST_NAME', 'Course Candidate'),
+      marketingConsentCapturedAt: now,
+      marketingConsentState: 'opted_out',
+      marketingConsentWordingVersion: 'e2e-candidate-account-v1',
+      notificationPreferences: {
+        channels: {
+          email: true,
+          phone: false,
+          sms: false,
+        },
+        preferredCommunicationChannel: 'email',
+      },
+      phone: optionalEnv('HIREFLIP_E2E_COURSE_CANDIDATE_PHONE', '+447700900126'),
+      preferredCommunicationChannel: 'email',
+      profileSettings: {
+        accountOnboarding: {
+          completedAt: now,
+        },
+      },
+      recruitmentPlatformVisibility: 'visible',
+      region: content.area.name,
+      sector: content.sector.name,
+      workSectorPreferences: preferenceSelection(content.sector.slug),
+    },
+  });
+  const enrollment = await documents(strapi, 'api::enrollment.enrollment').create({
+    data: {
+      candidate: connect(candidate),
+      class: connect(courseClass),
+      completionStatus: 'not_started',
+      enrolledAt: isoDaysFrom(nowDate, -20),
+      enrollmentState: 'enrolled',
+      passStatus: 'not_assessed',
+      paymentStatus: 'paid',
+      qualifyingInterviewsDeliveredCount: 0,
+      refundEligibilityState: 'not_assessed',
+    },
+  });
+  const reservation = await documents(strapi, 'api::reservation.reservation').create({
+    data: {
+      amountPence: Number.parseInt(optionalEnv('HIREFLIP_E2E_CLASS_PRICE_PENCE', '100'), 10),
+      candidate: connect(candidate),
+      class: connect(courseClass),
+      currency: 'GBP',
+      enrollment: connect(enrollment),
+      expiresAt: isoDaysFrom(nowDate, -19),
+      paidAt: isoDaysFrom(nowDate, -20),
+      reservationStartedAt: isoDaysFrom(nowDate, -20),
+      reservationState: 'paid',
+      source: 'candidate_dashboard',
+      termsAcceptedAt: isoDaysFrom(nowDate, -20),
+      termsVersion: 'e2e-checkout-terms-v1',
+      metadata: {
+        scenario: 'course_progress',
+        source: 'e2e_fixture',
+      },
+    },
+  });
+  await documents(strapi, 'api::payment.payment').create({
+    data: {
+      amountPence: Number.parseInt(optionalEnv('HIREFLIP_E2E_CLASS_PRICE_PENCE', '100'), 10),
+      candidate: connect(candidate),
+      createdByService: 'e2e-fixture',
+      currency: 'GBP',
+      enrollment: connect(enrollment),
+      metadata: {
+        scenario: 'course_progress',
+        source: 'e2e_fixture',
+      },
+      paidAt: isoDaysFrom(nowDate, -20),
+      paymentProvider: 'stripe',
+      paymentState: 'paid',
+      paymentType: 'course_payment',
+      providerCheckoutSessionId: 'cs_test_e2e_course_progress',
+      providerPaymentIntentId: 'pi_test_e2e_course_progress',
+      reservation: connect(reservation),
+    },
+  });
+
+  return {
+    candidate,
+    enrollment,
+  };
 };
 
 const ensureAssessmentAppealReviewFixture = async (
@@ -2456,6 +2655,7 @@ const main = async () => {
 
   try {
     const content = await ensureContent(strapi);
+    const courseProgressClass = await ensureCourseProgressClass(strapi, content);
     const assessmentContent = await ensureCourseAssessmentContent(strapi, content);
     const staffUser = await ensureStaffUser(strapi);
     const candidateAuth0User = await ensureAuth0User({
@@ -2464,6 +2664,13 @@ const main = async () => {
       firstName: optionalEnv('HIREFLIP_E2E_CANDIDATE_FIRST_NAME', 'E2E'),
       lastName: optionalEnv('HIREFLIP_E2E_CANDIDATE_LAST_NAME', 'Candidate'),
       password: requireEnv('HIREFLIP_E2E_CANDIDATE_PASSWORD'),
+    });
+    const courseCandidateAuth0User = await ensureAuth0User({
+      connectionName: requireEnv('AUTH0_CANDIDATE_CONNECTION_NAME'),
+      email: optionalEnv('HIREFLIP_E2E_COURSE_CANDIDATE_EMAIL', 'e2e-course-candidate@hireflip.work'),
+      firstName: optionalEnv('HIREFLIP_E2E_COURSE_CANDIDATE_FIRST_NAME', 'E2E'),
+      lastName: optionalEnv('HIREFLIP_E2E_COURSE_CANDIDATE_LAST_NAME', 'Course Candidate'),
+      password: optionalEnv('HIREFLIP_E2E_COURSE_CANDIDATE_PASSWORD', requireEnv('HIREFLIP_E2E_CANDIDATE_PASSWORD')),
     });
     const interviewCandidateAuth0User = await ensureAuth0User({
       connectionName: requireEnv('AUTH0_CANDIDATE_CONNECTION_NAME'),
@@ -2491,6 +2698,12 @@ const main = async () => {
       password: requireEnv('HIREFLIP_E2E_EMPLOYER_PASSWORD'),
     });
     const candidate = await ensureCandidate(strapi, candidateAuth0User, content);
+    const courseProgressCandidate = await ensureCourseProgressCandidate(
+      strapi,
+      courseCandidateAuth0User,
+      content,
+      courseProgressClass
+    );
     const employer = await ensureEmployer(strapi, employerAuth0User, content);
     const adminActionEmployer = await ensureAdminActionEmployer(strapi, content);
     const resetAnnouncements = await resetClassAnnouncements(strapi, content.classRecord);
@@ -2581,6 +2794,12 @@ const main = async () => {
       `E2E fixtures ready: ${JSON.stringify({
         admin: { email: staffUser.email, roleKey: staffUser.roleKey },
         candidate: { documentId: candidate.documentId, email: candidate.email },
+        courseProgressCandidate: {
+          classDocumentId: courseProgressClass.documentId,
+          documentId: courseProgressCandidate.candidate.documentId,
+          email: courseProgressCandidate.candidate.email,
+          enrollmentDocumentId: courseProgressCandidate.enrollment.documentId,
+        },
         candidatePrivacyExportRequest: {
           documentId: candidatePrivacyExportRequest.documentId,
         },
