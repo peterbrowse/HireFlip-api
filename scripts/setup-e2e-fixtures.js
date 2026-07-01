@@ -1014,6 +1014,185 @@ const ensureCandidateNotificationIssue = async (strapi, candidate) => {
   });
 };
 
+const privacyAnonymisationFixtureKeys = {
+  blocked: 'e2e_candidate_privacy_anonymisation_blocked',
+  disposable: 'e2e_candidate_privacy_anonymisation_disposable',
+};
+
+const deletePrivacyAnonymisationFixtureRequests = async (strapi, fixtureKey, options = {}) => {
+  const requests = await documents(strapi, 'api::privacy-rights-request.privacy-rights-request').findMany({
+    filters: {
+      requestType: { $in: ['deletion', 'erasure'] },
+      subjectUserType: 'candidate',
+    },
+    limit: 200,
+    populate: ['candidate'],
+  });
+
+  for (const request of requests) {
+    if (request.metadata?.e2eFixtureKey !== fixtureKey) {
+      continue;
+    }
+
+    const linkedCandidate = request.candidate;
+    await deleteDocument(strapi, 'api::privacy-rights-request.privacy-rights-request', request.documentId);
+
+    if (options.deleteCandidate && linkedCandidate?.documentId) {
+      await resetCandidateReviewRecords(strapi, linkedCandidate);
+      await resetCandidatePrivacyRecords(strapi, linkedCandidate);
+      await deleteDocument(strapi, 'api::candidate.candidate', linkedCandidate.documentId);
+    }
+  }
+};
+
+const createCandidateDeletionRequest = async (strapi, candidate, fixtureKey, message) => {
+  const nowDate = new Date();
+
+  return documents(strapi, 'api::privacy-rights-request.privacy-rights-request').create({
+    data: {
+      candidate: connect(candidate),
+      deletionJobStatus: 'pending',
+      downstreamProviderSyncStatus: 'pending',
+      dueAt: isoDaysFrom(nowDate, 30),
+      identityVerificationStatus: 'verified',
+      receivedAt: isoDaysFrom(nowDate, -1),
+      requestingUserId: candidate.authIdentityId || candidate.documentId,
+      requestingUserType: 'candidate',
+      requestState: 'in_review',
+      requestType: 'deletion',
+      subjectUserId: candidate.documentId,
+      subjectUserType: 'candidate',
+      metadata: {
+        e2eFixtureKey: fixtureKey,
+        requesterMessage: message,
+      },
+    },
+  });
+};
+
+const ensureCandidatePrivacyAnonymisationFixtures = async (
+  strapi,
+  content,
+  disposableAuth0User,
+  blockedCandidate
+) => {
+  await deletePrivacyAnonymisationFixtureRequests(strapi, privacyAnonymisationFixtureKeys.blocked);
+  await deletePrivacyAnonymisationFixtureRequests(strapi, privacyAnonymisationFixtureKeys.disposable, {
+    deleteCandidate: true,
+  });
+
+  const disposableEmail = normalizeEmail(
+    optionalEnv(
+      'HIREFLIP_E2E_PRIVACY_ANONYMISE_CANDIDATE_EMAIL',
+      'e2e-privacy-anonymise-candidate@hireflip.work'
+    )
+  );
+  const existingDisposable =
+    (await findFirst(strapi, 'api::candidate.candidate', { email: disposableEmail })) ||
+    (await findFirst(strapi, 'api::candidate.candidate', { authIdentityId: disposableAuth0User.userId }));
+
+  if (existingDisposable?.documentId) {
+    await resetCandidateReviewRecords(strapi, existingDisposable);
+    await resetCandidatePrivacyRecords(strapi, existingDisposable);
+    await deleteDocument(strapi, 'api::candidate.candidate', existingDisposable.documentId);
+  }
+
+  const now = new Date().toISOString();
+  const disposableCandidate = await documents(strapi, 'api::candidate.candidate').create({
+    data: {
+      accountCreatedAt: now,
+      accountOnboardingCompletedAt: now,
+      accountRestrictionAppealStatus: 'not_applicable',
+      accountRestrictionStatus: 'active',
+      authIdentityId: disposableAuth0User.userId,
+      authProvider: 'auth0',
+      candidateState: 'unenrolled',
+      classAreaPreferences: preferenceSelection(content.area.slug),
+      dateOfBirth: '1996-02-20',
+      email: disposableEmail,
+      firstName: optionalEnv('HIREFLIP_E2E_PRIVACY_ANONYMISE_CANDIDATE_FIRST_NAME', 'E2E'),
+      gender: 'prefer_not_to_say',
+      lastName: optionalEnv(
+        'HIREFLIP_E2E_PRIVACY_ANONYMISE_CANDIDATE_LAST_NAME',
+        'Privacy Anonymise Candidate'
+      ),
+      marketingConsentCapturedAt: now,
+      marketingConsentState: 'opted_out',
+      marketingConsentWordingVersion: 'e2e-candidate-account-v1',
+      notificationPreferences: {
+        channels: {
+          email: true,
+          phone: false,
+          sms: false,
+        },
+        preferredCommunicationChannel: 'email',
+      },
+      phone: '+447700900137',
+      preferredCommunicationChannel: 'email',
+      profileSettings: {
+        accountOnboarding: {
+          completedAt: now,
+        },
+        e2eFixtureKey: privacyAnonymisationFixtureKeys.disposable,
+      },
+      recruitmentPlatformVisibility: 'visible',
+      region: content.area.name,
+      sector: content.sector.name,
+      workSectorPreferences: preferenceSelection(content.sector.slug),
+    },
+  });
+
+  await documents(strapi, 'api::candidate-profile.candidate-profile').create({
+    data: {
+      candidate: connect(disposableCandidate),
+      completedAt: now,
+      education: [
+        {
+          end: { month: 7, year: 2024 },
+          institution: 'E2E Privacy College',
+          level: 'Foundation',
+          qualification: 'Privacy Fixture',
+          start: { month: 9, year: 2023 },
+          subject: 'Operations',
+        },
+      ],
+      experience: [],
+      metadata: {
+        e2eFixtureKey: privacyAnonymisationFixtureKeys.disposable,
+      },
+      profileState: 'completed',
+      projects: [],
+      recruitmentPlatformVisibility: 'visible',
+      skills: ['E2E privacy fixture'],
+      summary: 'Disposable candidate profile used for privacy anonymisation browser coverage.',
+      targetRoleTitle: 'E2E Privacy Fixture Candidate',
+      targetSector: content.sector.slug,
+      targetSectorLabel: content.sector.name,
+      unavailableDates: [],
+      workPreferences: {},
+    },
+  });
+
+  const blockedRequest = await createCandidateDeletionRequest(
+    strapi,
+    blockedCandidate,
+    privacyAnonymisationFixtureKeys.blocked,
+    'E2E deletion request with active course blockers for browser coverage.'
+  );
+  const disposableRequest = await createCandidateDeletionRequest(
+    strapi,
+    disposableCandidate,
+    privacyAnonymisationFixtureKeys.disposable,
+    'E2E deletion request for disposable candidate anonymisation browser coverage.'
+  );
+
+  return {
+    blockedRequest,
+    disposableCandidate,
+    disposableRequest,
+  };
+};
+
 const resetCandidateInterviewRecords = async (strapi, candidate) => {
   if (!candidate?.documentId) {
     return;
@@ -3194,6 +3373,22 @@ const main = async () => {
       lastName: optionalEnv('HIREFLIP_E2E_DECLINE_CANDIDATE_LAST_NAME', 'Decline Candidate'),
       password: optionalEnv('HIREFLIP_E2E_DECLINE_CANDIDATE_PASSWORD', requireEnv('HIREFLIP_E2E_CANDIDATE_PASSWORD')),
     });
+    const privacyAnonymiseCandidateAuth0User = await ensureAuth0User({
+      connectionName: requireEnv('AUTH0_CANDIDATE_CONNECTION_NAME'),
+      email: optionalEnv(
+        'HIREFLIP_E2E_PRIVACY_ANONYMISE_CANDIDATE_EMAIL',
+        'e2e-privacy-anonymise-candidate@hireflip.work'
+      ),
+      firstName: optionalEnv('HIREFLIP_E2E_PRIVACY_ANONYMISE_CANDIDATE_FIRST_NAME', 'E2E'),
+      lastName: optionalEnv(
+        'HIREFLIP_E2E_PRIVACY_ANONYMISE_CANDIDATE_LAST_NAME',
+        'Privacy Anonymise Candidate'
+      ),
+      password: optionalEnv(
+        'HIREFLIP_E2E_PRIVACY_ANONYMISE_CANDIDATE_PASSWORD',
+        requireEnv('HIREFLIP_E2E_CANDIDATE_PASSWORD')
+      ),
+    });
     const employerAuth0User = await ensureAuth0User({
       connectionName: requireEnv('AUTH0_EMPLOYER_CONNECTION_NAME'),
       email: requireEnv('HIREFLIP_E2E_EMPLOYER_EMAIL'),
@@ -3244,6 +3439,12 @@ const main = async () => {
       content,
       courseProgressClass,
       assessmentContent
+    );
+    const privacyAnonymisationFixtures = await ensureCandidatePrivacyAnonymisationFixtures(
+      strapi,
+      content,
+      privacyAnonymiseCandidateAuth0User,
+      courseProgressCandidate.candidate
     );
     const employer = await ensureEmployer(strapi, employerAuth0User, content);
     const onboardingEmployer = await ensureOnboardingEmployer(
@@ -3380,6 +3581,11 @@ const main = async () => {
         candidateNotificationIssue: {
           documentId: candidateNotificationIssue.documentId,
           eventType: candidateNotificationIssue.eventType,
+        },
+        candidatePrivacyAnonymisation: {
+          blockedRequestDocumentId: privacyAnonymisationFixtures.blockedRequest.documentId,
+          disposableCandidateEmail: privacyAnonymisationFixtures.disposableCandidate.email,
+          disposableRequestDocumentId: privacyAnonymisationFixtures.disposableRequest.documentId,
         },
         adminActionCandidate: {
           documentId: adminActionCandidate.documentId,
