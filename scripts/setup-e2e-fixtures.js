@@ -894,6 +894,117 @@ const ensureInterviewCandidate = async (strapi, auth0User, content, employerCont
   };
 };
 
+const ensureEmployerAvailabilityClaim = async (strapi, content, employerContext) => {
+  const email = normalizeEmail(
+    optionalEnv('HIREFLIP_E2E_AVAILABILITY_CANDIDATE_EMAIL', 'e2e-availability-candidate@hireflip.work')
+  );
+  const nowDate = new Date();
+  const now = nowDate.toISOString();
+  const existing = await findFirst(strapi, 'api::candidate.candidate', { email });
+
+  if (existing?.documentId) {
+    await resetCandidateInterviewRecords(strapi, existing);
+    await deleteDocument(strapi, 'api::candidate.candidate', existing.documentId);
+  }
+
+  const candidate = await documents(strapi, 'api::candidate.candidate').create({
+    data: {
+      accountCreatedAt: existing?.accountCreatedAt || now,
+      accountOnboardingCompletedAt: now,
+      accountRestrictionAppealStatus: 'not_applicable',
+      accountRestrictionStatus: 'active',
+      authProvider: 'manual',
+      candidateState: 'interview_phase',
+      classAreaPreferences: preferenceSelection(content.area.slug),
+      dateOfBirth: '1997-03-10',
+      email,
+      firstName: 'E2E',
+      gender: 'prefer_not_to_say',
+      lastName: 'Availability Candidate',
+      marketingConsentCapturedAt: now,
+      marketingConsentState: 'opted_out',
+      marketingConsentWordingVersion: 'e2e-candidate-account-v1',
+      notificationPreferences: {
+        channels: {
+          email: true,
+          phone: false,
+          sms: false,
+        },
+        preferredCommunicationChannel: 'email',
+      },
+      phone: '+447700900126',
+      preferredCommunicationChannel: 'email',
+      profileSettings: {
+        accountOnboarding: {
+          completedAt: now,
+        },
+      },
+      recruitmentPlatformVisibility: 'visible',
+      region: content.area.name,
+      sector: content.sector.name,
+      workSectorPreferences: preferenceSelection(content.sector.slug),
+    },
+  });
+
+  const enrollment = await documents(strapi, 'api::enrollment.enrollment').create({
+    data: {
+      beganClassAt: isoDaysFrom(nowDate, -40),
+      candidate: connect(candidate),
+      class: connect(content.classRecord),
+      completedAt: isoDaysFrom(nowDate, -4),
+      completionStatus: 'completed',
+      enrolledAt: isoDaysFrom(nowDate, -45),
+      enrollmentState: 'interview_phase',
+      interviewGuaranteeDeadline: isoDaysFrom(nowDate, 50),
+      interviewGuaranteeWindowStartsAt: isoDaysFrom(nowDate, -4),
+      passStatus: 'passed',
+      passedAt: isoDaysFrom(nowDate, -4),
+      paymentStatus: 'paid',
+      qualifyingInterviewsDeliveredCount: 0,
+      refundEligibilityState: 'not_assessed',
+    },
+  });
+
+  const interviewRequest = await documents(strapi, 'api::interview-request.interview-request').create({
+    data: {
+      candidate: connect(candidate),
+      candidateVisibleState: 'arranging_interviews',
+      claimedInterviewCount: 1,
+      class: connect(content.classRecord),
+      employerResponseDeadline: isoDaysFrom(nowDate, 2),
+      enrollment: connect(enrollment),
+      fulfilledInterviewCount: 0,
+      lastRoutedAt: isoDaysFrom(nowDate, -1),
+      region: connect(content.area),
+      requestedInterviewCount: 2,
+      requestState: 'employer_notified',
+      responseSlaWorkingDays: 2,
+    },
+  });
+
+  const capacityClaim = await documents(strapi, 'api::employer-capacity-claim.employer-capacity-claim').create({
+    data: {
+      assignmentNote: 'E2E browser fixture open employer availability claim.',
+      claimCount: 1,
+      claimState: 'notified',
+      employer: connect(employerContext.employer),
+      employerContact: connect(employerContext.contact),
+      expiresAt: isoDaysFrom(nowDate, 2),
+      interviewRequest: connect(interviewRequest),
+      notifiedAt: isoDaysFrom(nowDate, -1),
+      region: connect(content.area),
+      requiredSlotCount: 3,
+    },
+  });
+
+  return {
+    candidate,
+    capacityClaim,
+    enrollment,
+    interviewRequest,
+  };
+};
+
 const ensureEmployer = async (strapi, auth0User, content) => {
   const email = normalizeEmail(requireEnv('HIREFLIP_E2E_EMPLOYER_EMAIL'));
   const e2eTeamContactEmail = normalizeEmail(
@@ -1073,6 +1184,7 @@ const main = async () => {
         phone: optionalEnv('HIREFLIP_E2E_DECLINE_CANDIDATE_PHONE', '+447700900125'),
       }
     );
+    const availabilityClaim = await ensureEmployerAvailabilityClaim(strapi, content, employer);
 
     strapi.log.info(
       `E2E fixtures ready: ${JSON.stringify({
@@ -1085,6 +1197,10 @@ const main = async () => {
         declineCandidate: {
           documentId: declineCandidate.candidate.documentId,
           email: declineCandidate.candidate.email,
+        },
+        availabilityClaim: {
+          candidateEmail: availabilityClaim.candidate.email,
+          documentId: availabilityClaim.capacityClaim.documentId,
         },
         class: {
           documentId: content.classRecord.documentId,
