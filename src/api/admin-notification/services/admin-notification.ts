@@ -773,11 +773,10 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
     const session = await assertSuperAdminSession(strapi, body.sessionToken, requestContext);
     const baseFilters: Record<string, unknown> = {};
 
-    if (body.state === 'active') {
+    if (body.state === 'active' || body.state === 'cleared') {
       baseFilters.deliveryState = { $in: activeIssueStates };
     } else if (
       body.state !== 'all' &&
-      body.state !== 'cleared' &&
       notificationDeliveryStates.includes(body.state as (typeof notificationDeliveryStates)[number])
     ) {
       baseFilters.deliveryState = body.state;
