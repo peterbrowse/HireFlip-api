@@ -1151,21 +1151,168 @@ const ensureInterviewCandidate = async (strapi, auth0User, content, employerCont
       scheduledStartTime: isoDaysFrom(nowDate, -2),
     },
   });
-  await documents(strapi, 'api::interview-slot-offer.interview-slot-offer').create({
+
+  const createCompletedCandidateOffer = async (interview, slot, options = {}) =>
+    documents(strapi, 'api::interview-slot-offer.interview-slot-offer').create({
+      data: {
+        candidate: connect(candidate),
+        candidateInterviewFormatPreference: options.formatPreference || 'in_person',
+        candidateRespondedAt: isoDaysFrom(nowDate, options.respondedDays ?? -4),
+        candidateResponseDeadline: isoDaysFrom(nowDate, options.responseDeadlineDays ?? -4),
+        capacityClaim: connect(capacityClaim),
+        employer: connect(employerContext.employer),
+        employerContact: connect(employerContext.contact),
+        enrollment: connect(enrollment),
+        interviewRequest: connect(interviewRequest),
+        offerState: 'completed',
+        requiredSlotCount: 3,
+        selectedInterview: connect(interview),
+        selectedSlot: connect(slot),
+      },
+    });
+
+  await createCompletedCandidateOffer(completedInterview, completedSlot);
+
+  const feedbackReportSlot = await documents(strapi, 'api::interview-slot.interview-slot').create({
     data: {
+      capacity: 1,
+      employer: connect(employerContext.employer),
+      employerContact: connect(employerContext.contact),
+      endTime: isoDaysHoursFrom(nowDate, -9, 1),
+      locationDetails: 'E2E Employer Office',
+      locationType: 'in_person',
+      region: connect(content.area),
+      slotState: 'completed',
+      startTime: isoDaysFrom(nowDate, -9),
+      workSector: connect(content.sector),
+    },
+  });
+  const feedbackReportInterview = await documents(strapi, 'api::interview.interview').create({
+    data: {
+      arrivalInstructions: 'Report to reception for the E2E feedback-report interview.',
       candidate: connect(candidate),
-      candidateInterviewFormatPreference: 'in_person',
-      candidateRespondedAt: isoDaysFrom(nowDate, -4),
-      candidateResponseDeadline: isoDaysFrom(nowDate, -4),
-      capacityClaim: connect(capacityClaim),
+      candidateInstructions: 'Bring examples of previous campaign work.',
+      completedAt: isoDaysFrom(nowDate, -9),
+      countsTowardGuarantee: true,
+      detailsProvidedAt: isoDaysFrom(nowDate, -10),
       employer: connect(employerContext.employer),
       employerContact: connect(employerContext.contact),
       enrollment: connect(enrollment),
-      interviewRequest: connect(interviewRequest),
-      offerState: 'completed',
-      requiredSlotCount: 3,
-      selectedInterview: connect(completedInterview),
-      selectedSlot: connect(completedSlot),
+      interviewSlot: connect(feedbackReportSlot),
+      interviewerName: 'E2E Feedback Report Interviewer',
+      interviewState: 'completed',
+      locationDetails: 'E2E Employer Office',
+      locationType: 'in_person',
+      scheduledEndTime: isoDaysHoursFrom(nowDate, -9, 1),
+      scheduledStartTime: isoDaysFrom(nowDate, -9),
+    },
+  });
+  await createCompletedCandidateOffer(feedbackReportInterview, feedbackReportSlot, {
+    respondedDays: -11,
+    responseDeadlineDays: -11,
+  });
+  await documents(strapi, 'api::interview-feedback.interview-feedback').create({
+    data: {
+      aiModel: 'e2e-fixture',
+      aiProvider: 'e2e_fixture',
+      aiPromptVersion: 'e2e-feedback-report-v1',
+      candidateReportConclusion:
+        'E2E generated report conclusion: with focused preparation, the next interview should be stronger.',
+      candidateReportGeneratedAt: isoDaysFrom(nowDate, -8),
+      candidateReportImprovements:
+        'E2E generated report improvements: add more measurable outcomes and tighten answers around the role.',
+      candidateReportIntro:
+        'E2E generated report overall: the interview went well and the candidate showed clear preparation.',
+      candidateReportState: 'generated',
+      candidateReportStrengths:
+        'E2E generated report strengths: clear communication, calm pacing, and thoughtful questions.',
+      candidateReportTakeaways: [
+        'Prepare two quantified examples before the next interview.',
+        'Ask one sector-specific question about the employer team.',
+        'Close answers with a clear link back to the role.',
+      ],
+      candidateReportVisibleAt: isoDaysFrom(nowDate, -8),
+      concerns: 'The candidate should include more measurable campaign examples.',
+      interview: connect(feedbackReportInterview),
+      metadata: {
+        rawFeedbackCandidateVisible: false,
+        source: 'e2e_fixture_generated_candidate_report',
+      },
+      nextStep: 'Use the three takeaways before the next interview.',
+      notes: 'E2E raw employer feedback used only to seed a candidate-safe report.',
+      outcome: 'positive',
+      rating: 5,
+      strengths: 'The candidate communicated clearly and asked thoughtful questions.',
+      submittedAt: isoDaysFrom(nowDate, -8),
+      submittedById: employerContext.contact.documentId,
+      submittedByType: 'employer_contact',
+    },
+  });
+
+  const followUpDueSlot = await documents(strapi, 'api::interview-slot.interview-slot').create({
+    data: {
+      capacity: 1,
+      employer: connect(employerContext.employer),
+      employerContact: connect(employerContext.contact),
+      endTime: isoDaysHoursFrom(nowDate, -36, 1),
+      locationDetails: 'E2E Employer Office',
+      locationType: 'in_person',
+      region: connect(content.area),
+      slotState: 'completed',
+      startTime: isoDaysFrom(nowDate, -36),
+      workSector: connect(content.sector),
+    },
+  });
+  const followUpDueInterview = await documents(strapi, 'api::interview.interview').create({
+    data: {
+      arrivalInstructions: 'Report to reception for the E2E follow-up interview.',
+      candidate: connect(candidate),
+      candidateInstructions: 'Bring your portfolio.',
+      completedAt: isoDaysFrom(nowDate, -36),
+      countsTowardGuarantee: true,
+      detailsProvidedAt: isoDaysFrom(nowDate, -37),
+      employer: connect(employerContext.employer),
+      employerContact: connect(employerContext.contact),
+      enrollment: connect(enrollment),
+      interviewSlot: connect(followUpDueSlot),
+      interviewerName: 'E2E Follow Up Due Interviewer',
+      interviewState: 'completed',
+      locationDetails: 'E2E Employer Office',
+      locationType: 'in_person',
+      scheduledEndTime: isoDaysHoursFrom(nowDate, -36, 1),
+      scheduledStartTime: isoDaysFrom(nowDate, -36),
+    },
+  });
+  await createCompletedCandidateOffer(followUpDueInterview, followUpDueSlot, {
+    respondedDays: -38,
+    responseDeadlineDays: -38,
+  });
+  await documents(strapi, 'api::offer.offer').create({
+    data: {
+      candidate: connect(candidate),
+      candidateFollowUpDueAt: isoDaysFrom(nowDate, -1),
+      candidateFollowUpSentAt: isoDaysFrom(nowDate, -2),
+      candidateFollowUpState: 'sent',
+      candidateMessage: 'E2E accepted progression request with follow-up due.',
+      candidateNotifiedAt: isoDaysFrom(nowDate, -35),
+      candidateResponse: 'accepted',
+      candidateRespondedAt: isoDaysFrom(nowDate, -34),
+      candidateResponseDeadline: isoDaysFrom(nowDate, -33),
+      detailsReleasedAt: isoDaysFrom(nowDate, -34),
+      employer: connect(employerContext.employer),
+      employerFollowUpDueAt: isoDaysFrom(nowDate, -1),
+      employerFollowUpSentAt: isoDaysFrom(nowDate, -2),
+      employerFollowUpState: 'sent',
+      followUpState: 'sent',
+      internalProcessNotes: 'E2E seeded accepted progression with one-month follow-up due.',
+      interview: connect(followUpDueInterview),
+      metadata: {
+        source: 'e2e_fixture_progression_follow_up_due',
+      },
+      progressionState: 'accepted',
+      progressionType: 'second_interview',
+      requestedByEmployerContact: connect(employerContext.contact),
+      requestedDetailsAt: isoDaysFrom(nowDate, -35),
     },
   });
 
@@ -1293,7 +1440,9 @@ const ensureInterviewCandidate = async (strapi, auth0User, content, employerCont
     candidate,
     completedInterview,
     expiredProgressionInterview,
+    feedbackReportInterview,
     followUpConcernInterview,
+    followUpDueInterview,
     pendingInterview,
   };
 };
