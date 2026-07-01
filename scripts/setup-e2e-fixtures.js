@@ -619,6 +619,66 @@ const ensureCandidatePrivacyExportRequest = async (strapi, candidate) => {
   });
 };
 
+const ensureEmployerPrivacyExportRequest = async (strapi, employerContact) => {
+  if (!employerContact?.documentId) {
+    return null;
+  }
+
+  await deleteMany(strapi, 'api::privacy-rights-request.privacy-rights-request', {
+    employerContact: { documentId: employerContact.documentId },
+  });
+
+  const nowDate = new Date();
+  const code = optionalEnv('HIREFLIP_E2E_PRIVACY_DOWNLOAD_CODE', '123456');
+  const salt = optionalEnv('HIREFLIP_E2E_PRIVACY_DOWNLOAD_SALT', 'e2e-privacy-download-salt');
+  const request = await documents(strapi, 'api::privacy-rights-request.privacy-rights-request').create({
+    data: {
+      completedAt: isoDaysFrom(nowDate, -1),
+      deletionJobStatus: 'not_required',
+      downstreamProviderSyncStatus: 'not_required',
+      dueAt: isoDaysFrom(nowDate, 30),
+      employerContact: connect(employerContact),
+      identityVerificationStatus: 'pending',
+      receivedAt: isoDaysFrom(nowDate, -2),
+      requestingUserId: employerContact.authIdentityId,
+      requestingUserType: 'employer_contact',
+      requestState: 'completed',
+      requestType: 'access',
+      subjectUserId: employerContact.documentId,
+      subjectUserType: 'employer_contact',
+      metadata: {
+        exportScope: 'both',
+        publicResponse:
+          'Your E2E employer privacy export is ready. Use the seeded browser test code to download the PDF.',
+        requesterMessage: 'E2E completed employer privacy export fixture for browser download coverage.',
+      },
+    },
+  });
+  const downloadChallenge = {
+    actorId: employerContact.authIdentityId || null,
+    actorType: 'employer_contact',
+    attempts: 0,
+    codeHash: hashPrivacyDownloadCode({
+      code,
+      requestDocumentId: request.documentId,
+      salt,
+    }),
+    expiresAt: isoDaysFrom(nowDate, 1),
+    requestedAt: new Date().toISOString(),
+    salt,
+  };
+
+  return documents(strapi, 'api::privacy-rights-request.privacy-rights-request').update({
+    documentId: request.documentId,
+    data: {
+      metadata: {
+        ...(request.metadata || {}),
+        downloadChallenge,
+      },
+    },
+  });
+};
+
 const ensureCandidateNotificationIssue = async (strapi, candidate) => {
   const nowDate = new Date();
   const eventType = optionalEnv(
@@ -1749,6 +1809,7 @@ const main = async () => {
     const adminActionEmployer = await ensureAdminActionEmployer(strapi, content);
     const resetAnnouncements = await resetClassAnnouncements(strapi, content.classRecord);
     const candidatePrivacyExportRequest = await ensureCandidatePrivacyExportRequest(strapi, candidate);
+    const employerPrivacyExportRequest = await ensureEmployerPrivacyExportRequest(strapi, employer.contact);
     const candidateNotificationIssue = await ensureCandidateNotificationIssue(strapi, candidate);
     const interviewCandidate = await ensureInterviewCandidate(
       strapi,
@@ -1779,6 +1840,9 @@ const main = async () => {
         candidate: { documentId: candidate.documentId, email: candidate.email },
         candidatePrivacyExportRequest: {
           documentId: candidatePrivacyExportRequest.documentId,
+        },
+        employerPrivacyExportRequest: {
+          documentId: employerPrivacyExportRequest?.documentId || null,
         },
         candidateNotificationIssue: {
           documentId: candidateNotificationIssue.documentId,
