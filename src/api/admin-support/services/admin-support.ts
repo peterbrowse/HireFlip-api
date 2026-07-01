@@ -194,6 +194,15 @@ const messageCaseSchema = z
     supportCaseDocumentId: z.string().trim().min(1).max(120),
   })
   .strict();
+const updateCaseStateSchema = z
+  .object({
+    body: z.string().trim().min(1).max(12000),
+    caseState: z.enum(['awaiting_staff', 'closed', 'in_progress', 'open', 'resolved']),
+    reviewClaimToken: z.string().trim().min(32).max(160).optional(),
+    sessionToken: z.string().trim().min(32).max(512),
+    supportCaseDocumentId: z.string().trim().min(1).max(120),
+  })
+  .strict();
 const generatedReportSchema = z
   .object({
     conclusion: z.string().trim().min(1).max(5000),
@@ -262,6 +271,7 @@ const validateCaseDetail = validateZodSchema(caseDetailSchema);
 const validateAssignableStaff = validateZodSchema(assignableStaffSchema);
 const validateAssignCase = validateZodSchema(assignCaseSchema);
 const validateMessageCase = validateZodSchema(messageCaseSchema);
+const validateUpdateCaseState = validateZodSchema(updateCaseStateSchema);
 const validateFeedbackReportConcernAction = validateZodSchema(feedbackReportConcernActionSchema);
 const validateFeedbackReportFailureDetail = validateZodSchema(feedbackReportFailureDetailSchema);
 const validateFeedbackReportFailureAction = validateZodSchema(feedbackReportFailureActionSchema);
@@ -1630,6 +1640,74 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
 
     return {
       noted: true,
+      supportCase,
+      user: session.user,
+    };
+  },
+
+  async updateCaseState(input: unknown, requestContext: RequestContext = {}) {
+    const body = validateUpdateCaseState(input);
+    const session = await assertSupportSession(strapi, body.sessionToken, requestContext);
+    const supportCaseRecord = await findSupportCaseRecord(strapi, body.supportCaseDocumentId);
+
+    if (!supportCaseRecord) {
+      throw new ForbiddenError('Support case could not be found.');
+    }
+
+    await reviewClaimService(strapi).assertActiveClaimForSession(
+      {
+        claimToken: body.reviewClaimToken,
+        resourceDocumentId: body.supportCaseDocumentId,
+        resourceKey: body.supportCaseDocumentId,
+        resourceLabel: supportCaseRecord.title,
+        resourceType: 'support_case',
+      },
+      session
+    );
+
+    const previousState =
+      typeof supportCaseRecord.caseState === 'string' ? supportCaseRecord.caseState : 'open';
+
+    await supportCaseService(strapi).addMessage({
+      body: body.body,
+      candidate: supportCaseRecord.candidate,
+      direction: 'internal',
+      employer: supportCaseRecord.employer,
+      employerContact: supportCaseRecord.employerContact,
+      messageType: 'state_change',
+      metadata: {
+        changedByAdminEmail: session.user.email,
+        changedByAdminId: session.user.id,
+        nextState: body.caseState,
+        previousState,
+      },
+      refund: supportCaseRecord.refund,
+      sender: {
+        displayName: session.user.displayName,
+        email: session.user.email,
+        id: session.user.id,
+        type: 'admin',
+      },
+      subject: 'Support case state changed',
+      supportCase: {
+        documentId: body.supportCaseDocumentId,
+      },
+      visibility: 'internal',
+    });
+    const supportCase = await supportCaseService(strapi).updateCaseState({
+      caseState: body.caseState,
+      metadata: {
+        lastStateChangedAt: new Date().toISOString(),
+        lastStateChangedByAdminEmail: session.user.email,
+        lastStateChangedByAdminId: session.user.id,
+        lastStateTransition: `${previousState}:${body.caseState}`,
+      },
+      supportCase: supportCaseRecord,
+    });
+    await publishSupportChange(strapi, body.supportCaseDocumentId);
+
+    return {
+      stateUpdated: true,
       supportCase,
       user: session.user,
     };

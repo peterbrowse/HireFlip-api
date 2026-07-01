@@ -63,6 +63,15 @@ export default {
     },
     {
       method: 'POST',
+      path: '/internal/admin/support/cases/state',
+      handler: 'admin-support.state',
+      config: {
+        auth: false,
+        policies: [adminDashboardServicePolicy],
+      },
+    },
+    {
+      method: 'POST',
       path: '/internal/admin/support/cases/feedback-report-concern',
       handler: 'admin-support.feedbackReportConcern',
       config: {
