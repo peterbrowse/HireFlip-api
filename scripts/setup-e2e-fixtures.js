@@ -2522,23 +2522,25 @@ const ensureInterviewCandidate = async (strapi, auth0User, content, employerCont
     },
   });
 
-  await documents(strapi, 'api::interview-feedback-invite.interview-feedback-invite').create({
-    data: {
-      createdByEmployerContact: connect(employerContext.contact),
-      deliveryState: 'not_required',
-      employer: connect(employerContext.employer),
-      expiresAt: isoDaysFrom(nowDate, 5),
-      interview: connect(completedInterview),
-      inviteEmail: feedbackInviteEmail,
-      inviteState: 'pending',
-      inviteeName: 'E2E Feedback Attendee',
-      inviteeRoleTitle: 'Panel interviewer',
-      metadata: {
-        source: 'e2e_fixture_public_feedback_invite',
+  if (options.seedPublicFeedbackInvite !== false) {
+    await documents(strapi, 'api::interview-feedback-invite.interview-feedback-invite').create({
+      data: {
+        createdByEmployerContact: connect(employerContext.contact),
+        deliveryState: 'not_required',
+        employer: connect(employerContext.employer),
+        expiresAt: isoDaysFrom(nowDate, 5),
+        interview: connect(completedInterview),
+        inviteEmail: feedbackInviteEmail,
+        inviteState: 'pending',
+        inviteeName: 'E2E Feedback Attendee',
+        inviteeRoleTitle: 'Panel interviewer',
+        metadata: {
+          source: 'e2e_fixture_public_feedback_invite',
+        },
+        tokenHash: hashInviteToken(feedbackInviteToken),
       },
-      tokenHash: hashInviteToken(feedbackInviteToken),
-    },
-  });
+    });
+  }
 
   const createCompletedProgressionInterview = async ({ dayOffset, label }) => {
     const slot = await documents(strapi, 'api::interview-slot.interview-slot').create({
@@ -3764,6 +3766,7 @@ const main = async () => {
         phone: optionalEnv('HIREFLIP_E2E_PROGRESSION_CANDIDATE_PHONE', '+447700900137'),
         seedActiveSlotOffer: false,
         seedCandidateProgressionStateCoverage: true,
+        seedPublicFeedbackInvite: false,
       }
     );
     const employerFollowUpCandidate = await ensureInterviewCandidate(
@@ -3783,6 +3786,7 @@ const main = async () => {
         ),
         phone: optionalEnv('HIREFLIP_E2E_EMPLOYER_FOLLOW_UP_CANDIDATE_PHONE', '+447700900138'),
         seedEmployerProgressionFollowUpCoverage: true,
+        seedPublicFeedbackInvite: false,
       }
     );
     const declineCandidate = await ensureInterviewCandidate(
