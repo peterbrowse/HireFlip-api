@@ -193,10 +193,55 @@ const taskStateActionSchema = taskActionSchema
     taskState: z.enum(['acknowledged', 'dismissed']),
   })
   .strict();
+const taskListSchema = overviewSchema
+  .extend({
+    candidate: z.string().trim().max(160).optional(),
+    className: z.string().trim().max(160).optional(),
+    dueDate: z.enum(['overdue', 'next_24h', 'next_7d', 'none']).optional(),
+    employer: z.string().trim().max(160).optional(),
+    owner: z.string().trim().max(80).optional(),
+    priority: z.enum(['low', 'normal', 'high', 'urgent']).optional(),
+    region: z.string().trim().max(160).optional(),
+    search: z.string().trim().max(220).optional(),
+    sourceType: z
+      .enum([
+        'assessment_appeal',
+        'audit_event',
+        'class',
+        'enrollment',
+        'interview',
+        'interview_feedback',
+        'notification_event',
+        'payment',
+        'privacy_rights_request',
+        'progression_request',
+        'refund',
+        'reservation',
+        'support_case',
+      ])
+      .optional(),
+    taskState: z.enum(['acknowledged', 'dismissed', 'open', 'resolved']).optional(),
+    taskType: z
+      .enum([
+        'assessment_appeal',
+        'ai_feedback_review',
+        'class_readiness',
+        'interview_operation',
+        'notification_failure',
+        'privacy_request',
+        'payment_review',
+        'refund_review',
+        'support_case',
+        'system_alert',
+      ])
+      .optional(),
+  })
+  .strict();
 
 const validateOverview = validateZodSchema(overviewSchema);
 const validateTaskAction = validateZodSchema(taskActionSchema);
 const validateTaskStateAction = validateZodSchema(taskStateActionSchema);
+const validateTaskList = validateZodSchema(taskListSchema);
 
 const documents = (strapi: StrapiDocumentService, uid: string) =>
   strapi.documents(uid) as unknown as DocumentCollection;
@@ -1800,6 +1845,231 @@ const publicTaskDetail = (task: DocumentRecord) => ({
   metadata: objectValue(task.metadata),
 });
 
+const stringValue = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
+
+const firstMetadataString = (metadata: Record<string, unknown>, keys: string[]) => {
+  for (const key of keys) {
+    const value = stringValue(metadata[key]);
+
+    if (value) {
+      return value;
+    }
+  }
+
+  return null;
+};
+
+const summaryField = (summary: unknown, label: string) => {
+  const value = stringValue(summary);
+
+  if (!value) {
+    return null;
+  }
+
+  const match = value.match(new RegExp(`${label}:\\s*([^\\.]+)`, 'i'));
+  return match?.[1]?.trim() || null;
+};
+
+const taskDueAt = (task: DocumentRecord) => {
+  const metadata = objectValue(task.metadata);
+
+  return firstMetadataString(metadata, [
+    'dueAt',
+    'responseDueAt',
+    'candidateResponseDeadline',
+    'escalatedToAdminAt',
+  ]);
+};
+
+const defaultOwnerKeysByTaskType: Record<AdminTaskType, string[]> = {
+  assessment_appeal: ['admin'],
+  ai_feedback_review: ['support', 'sales'],
+  class_readiness: ['admin'],
+  interview_operation: ['sales'],
+  notification_failure: ['super_admin'],
+  payment_review: ['admin'],
+  privacy_request: ['admin'],
+  refund_review: ['admin'],
+  support_case: ['support'],
+  system_alert: ['super_admin'],
+};
+
+const ownerLabels: Record<string, string> = {
+  admin: 'Admin',
+  sales: 'Sales',
+  super_admin: 'Super admin',
+  support: 'Support',
+};
+
+const taskOwnerKeys = (task: DocumentRecord) => {
+  const visibleRoleKeys = objectValue(task.metadata).visibleRoleKeys;
+
+  if (
+    Array.isArray(visibleRoleKeys) &&
+    visibleRoleKeys.every((roleKey) => typeof roleKey === 'string')
+  ) {
+    return uniqueStringValues(visibleRoleKeys);
+  }
+
+  return task.taskType
+    ? defaultOwnerKeysByTaskType[task.taskType as AdminTaskType] || ['admin']
+    : ['admin'];
+};
+
+const publicTaskListItem = (task: DocumentRecord) => {
+  const metadata = objectValue(task.metadata);
+  const ownerKeys = taskOwnerKeys(task);
+
+  return {
+    ...publicTask(task),
+    candidateLabel:
+      firstMetadataString(metadata, ['candidateName', 'subjectName']) ||
+      summaryField(task.summary, 'Candidate'),
+    classLabel:
+      firstMetadataString(metadata, ['className']) ||
+      summaryField(task.summary, 'Class'),
+    dueAt: taskDueAt(task),
+    employerLabel:
+      firstMetadataString(metadata, ['employerName']) ||
+      summaryField(task.summary, 'Employer'),
+    ownerKeys,
+    ownerLabels: ownerKeys.map((ownerKey) => ownerLabels[ownerKey] || ownerKey),
+    regionLabel:
+      firstMetadataString(metadata, ['regionName']) ||
+      summaryField(task.summary, 'Region'),
+  };
+};
+
+type PublicTaskListItem = ReturnType<typeof publicTaskListItem>;
+type TaskListQuery = z.infer<typeof taskListSchema>;
+
+const uniqueStringValues = (values: unknown[]) =>
+  [...new Set(values.map((value) => stringValue(value)).filter(Boolean))];
+
+const normalized = (value: unknown) => stringValue(value).toLowerCase();
+
+const containsNeedle = (value: unknown, needle: string) =>
+  !needle || normalized(value).includes(needle);
+
+const itemSearchHaystack = (item: PublicTaskListItem, task: DocumentRecord) => {
+  const metadata = objectValue(task.metadata);
+
+  return [
+    item.actionLabel,
+    item.actionPath,
+    item.candidateLabel,
+    item.classLabel,
+    item.documentId,
+    item.employerLabel,
+    item.ownerLabels.join(' '),
+    item.priority,
+    item.regionLabel,
+    item.relatedDocumentId,
+    item.relatedType,
+    item.sourceDocumentId,
+    item.sourceType,
+    item.summary,
+    item.taskKey,
+    item.taskState,
+    item.taskType,
+    item.taskTypeLabel,
+    item.title,
+    metadata.eventType,
+    metadata.interviewDocumentId,
+    metadata.paymentDocumentId,
+    metadata.progressionRequestDocumentId,
+    metadata.requestType,
+    metadata.templateKey,
+    JSON.stringify(metadata),
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+};
+
+const matchesDueDateFilter = (item: PublicTaskListItem, dueDate?: string) => {
+  if (!dueDate) {
+    return true;
+  }
+
+  const dueTime = Date.parse(item.dueAt || '');
+
+  if (dueDate === 'none') {
+    return !Number.isFinite(dueTime);
+  }
+
+  if (!Number.isFinite(dueTime)) {
+    return false;
+  }
+
+  const now = Date.now();
+
+  if (dueDate === 'overdue') {
+    return dueTime < now;
+  }
+
+  if (dueDate === 'next_24h') {
+    return dueTime >= now && dueTime <= now + 24 * 60 * 60 * 1000;
+  }
+
+  if (dueDate === 'next_7d') {
+    return dueTime >= now && dueTime <= now + 7 * 24 * 60 * 60 * 1000;
+  }
+
+  return true;
+};
+
+const filterTaskItems = (
+  entries: { item: PublicTaskListItem; task: DocumentRecord }[],
+  query: TaskListQuery
+) => {
+  const search = normalized(query.search);
+  const candidate = normalized(query.candidate);
+  const employer = normalized(query.employer);
+  const className = normalized(query.className);
+  const region = normalized(query.region);
+
+  return entries
+    .filter(({ item, task }) => !query.taskType || item.taskType === query.taskType)
+    .filter(({ item }) => !query.taskState || item.taskState === query.taskState)
+    .filter(({ item }) => !query.priority || item.priority === query.priority)
+    .filter(({ item }) => !query.sourceType || item.sourceType === query.sourceType)
+    .filter(({ item }) => !query.owner || item.ownerKeys.includes(query.owner))
+    .filter(({ item }) => containsNeedle(item.candidateLabel, candidate))
+    .filter(({ item }) => containsNeedle(item.employerLabel, employer))
+    .filter(({ item }) => containsNeedle(item.classLabel, className))
+    .filter(({ item }) => containsNeedle(item.regionLabel, region))
+    .filter(({ item }) => matchesDueDateFilter(item, query.dueDate))
+    .filter(({ item, task }) => !search || itemSearchHaystack(item, task).includes(search))
+    .map(({ item }) => item);
+};
+
+const option = (value: string, label: string) => ({ label, value });
+
+const taskListFilterOptions = (items: PublicTaskListItem[]) => ({
+  owners: [...new Set(items.flatMap((item) => item.ownerKeys))]
+    .sort()
+    .map((ownerKey) => option(ownerKey, ownerLabels[ownerKey] || ownerKey)),
+  priorities: [...new Set(items.map((item) => item.priority))]
+    .sort((left, right) => priorityRank[left] - priorityRank[right])
+    .map((priority) => option(priority, priority)),
+  sourceTypes: [...new Set(items.map((item) => item.sourceType))]
+    .sort()
+    .map((sourceType) => option(sourceType, String(sourceType).replace(/[_-]+/g, ' '))),
+  states: [...new Set(items.map((item) => item.taskState))]
+    .sort()
+    .map((state) => option(state, state)),
+  taskTypes: [...new Set(items.map((item) => item.taskType))]
+    .sort()
+    .map((taskType) => option(taskType, taskTypeLabels[taskType] || taskType)),
+});
+
+const taskListCounts = (items: PublicTaskListItem[], filteredItems: PublicTaskListItem[]) => ({
+  filteredTasks: filteredItems.length,
+  openTasks: items.filter((item) => item.taskState === 'open').length,
+  totalTasks: items.length,
+});
+
 const publishTaskChange = (strapi: StrapiDocumentService, task?: DocumentRecord) =>
   publishAdminRealtimeEvent(
     {
@@ -1844,7 +2114,7 @@ const taskCounts = (tasks: ReturnType<typeof publicTask>[]) => {
   };
 };
 
-const syncTasks = async (strapi: StrapiDocumentService, session?: AdminSession) => {
+const syncTaskRecords = async (strapi: StrapiDocumentService, session?: AdminSession) => {
   const detectedAt = new Date().toISOString();
   const drafts = await collectTaskDrafts(strapi);
   const activeTaskKeys = new Set(drafts.map((draft) => draft.taskKey));
@@ -1852,25 +2122,26 @@ const syncTasks = async (strapi: StrapiDocumentService, session?: AdminSession) 
   await Promise.all(drafts.map((draft) => upsertTask(strapi, draft, detectedAt)));
   await resolveStaleTasks(strapi, activeTaskKeys, detectedAt);
 
-  const openTasks = await documents(strapi, 'api::admin-task.admin-task').findMany({
+  const tasks = await documents(strapi, 'api::admin-task.admin-task').findMany({
     filters: {
-      taskState: {
-        $in: activeTaskStates,
-      },
       taskType: {
         $in: monitoredTaskTypes,
       },
     },
-    limit: 200,
+    limit: 500,
     sort: ['createdAt:desc'],
   });
 
-  return openTasks
+  return tasks
     .filter((task) => (session ? canViewTaskRecordForSession(task, session) : true))
-    .sort(compareTasks)
+    .sort(compareTasks);
+};
+
+const syncTasks = async (strapi: StrapiDocumentService, session?: AdminSession) =>
+  (await syncTaskRecords(strapi, session))
+    .filter((task) => activeTaskStates.includes((task.taskState || 'open') as AdminTaskState))
     .slice(0, 20)
     .map(publicTask);
-};
 
 export default factories.createCoreService('api::admin-task.admin-task', ({ strapi }) => ({
   async getOverview(input: unknown, requestContext: RequestContext = {}) {
@@ -1882,6 +2153,26 @@ export default factories.createCoreService('api::admin-task.admin-task', ({ stra
       counts: taskCounts(tasks),
       generatedAt: new Date().toISOString(),
       tasks,
+      user: session.user,
+    };
+  },
+
+  async listTasks(input: unknown, requestContext: RequestContext = {}) {
+    const body = validateTaskList(input);
+    const session = await assertOperationsSession(strapi, body.sessionToken, requestContext);
+    const taskRecords = await syncTaskRecords(strapi, session);
+    const entries = taskRecords.map((task) => ({
+      item: publicTaskListItem(task),
+      task,
+    }));
+    const items = entries.map((entry) => entry.item);
+    const filteredTasks = filterTaskItems(entries, body);
+
+    return {
+      counts: taskListCounts(items, filteredTasks),
+      filters: taskListFilterOptions(items),
+      generatedAt: new Date().toISOString(),
+      tasks: filteredTasks.slice(0, 200),
       user: session.user,
     };
   },

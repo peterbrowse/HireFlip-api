@@ -7,6 +7,7 @@ type RequestContext = {
 
 type AdminCandidateService = {
   accountAction(input: unknown, context: RequestContext): Promise<unknown>;
+  activityReport(input: unknown, context: RequestContext): Promise<unknown>;
   createSupportCase(input: unknown, context: RequestContext): Promise<unknown>;
   gdprExport(input: unknown, context: RequestContext): Promise<unknown>;
   getCandidate(input: unknown, context: RequestContext): Promise<unknown>;
@@ -89,6 +90,15 @@ export default ({ strapi }) => ({
   async gdprExport(ctx) {
     ctx.body = {
       data: await adminCandidateService(strapi).gdprExport(
+        ctx.request.body,
+        getRequestContext(ctx)
+      ),
+    };
+  },
+
+  async activityReport(ctx) {
+    ctx.body = {
+      data: await adminCandidateService(strapi).activityReport(
         ctx.request.body,
         getRequestContext(ctx)
       ),

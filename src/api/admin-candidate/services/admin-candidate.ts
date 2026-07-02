@@ -34,6 +34,10 @@ type DocumentRecord = Record<string, unknown> & {
   accountOnboardingCompletedAt?: string;
   accountRestrictionStatus?: string;
   appliedAt?: string;
+  actorDisplayName?: string;
+  actorEmail?: string;
+  actorId?: string;
+  actorType?: string;
   authIdentityId?: string;
   candidate?: DocumentRecord;
   candidateState?: string;
@@ -86,8 +90,12 @@ type DocumentRecord = Record<string, unknown> & {
   sector?: string;
   strikeNumber?: number;
   strikeState?: string;
+  subjectDisplayName?: string;
+  subjectId?: string;
+  subjectType?: string;
   title?: string;
   updatedAt?: string;
+  userAgent?: string;
 };
 
 type DocumentCollection = {
@@ -135,6 +143,11 @@ const listCandidatesSchema = sessionTokenSchema
 const candidateDetailSchema = sessionTokenSchema
   .extend({
     candidateDocumentId: z.string().trim().min(1).max(120),
+  })
+  .strict();
+const candidateActivityReportSchema = candidateDetailSchema
+  .extend({
+    redaction: z.enum(['full', 'redacted']).default('redacted'),
   })
   .strict();
 
@@ -214,6 +227,7 @@ const strikeActionSchema = candidateDetailSchema
 
 const validateListCandidates = validateZodSchema(listCandidatesSchema);
 const validateCandidateDetail = validateZodSchema(candidateDetailSchema);
+const validateCandidateActivityReport = validateZodSchema(candidateActivityReportSchema);
 const validateCandidateAccountAction = validateZodSchema(candidateAccountActionSchema);
 const validateCandidateProfileUpdate = validateZodSchema(candidateProfileUpdateSchema);
 const validateSupportCreate = validateZodSchema(supportCreateSchema);
@@ -310,6 +324,110 @@ const renderCandidateExportPdf = ({
     doc.end();
   });
 
+const redactedValue = '[redacted]';
+const redactedFieldNames = new Set([
+  'address',
+  'actorDisplayName',
+  'actorEmail',
+  'actorId',
+  'authIdentityId',
+  'candidateDisplayName',
+  'candidateEmail',
+  'dateOfBirth',
+  'email',
+  'firstName',
+  'ipAddress',
+  'lastName',
+  'location',
+  'phone',
+  'postcode',
+  'profileImage',
+  'subjectDisplayName',
+  'userAgent',
+]);
+
+const redactActivityValue = (value: unknown): unknown => {
+  if (Array.isArray(value)) {
+    return value.map(redactActivityValue);
+  }
+
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, child]) => [
+        key,
+        redactedFieldNames.has(key) ? redactedValue : redactActivityValue(child),
+      ])
+    );
+  }
+
+  return value;
+};
+
+const activityReportEventPayload = (event: DocumentRecord, redaction: 'full' | 'redacted') => {
+  const shouldRedact = redaction === 'redacted';
+
+  return {
+    actorDisplayName: shouldRedact ? redactedValue : event.actorDisplayName || null,
+    actorEmail: shouldRedact ? redactedValue : event.actorEmail || null,
+    actorId: shouldRedact ? redactedValue : event.actorId || null,
+    actorType: event.actorType || null,
+    eventCategory: event.eventCategory || null,
+    eventType: event.eventType || null,
+    ipAddress: shouldRedact ? redactedValue : event.ipAddress || null,
+    metadata: shouldRedact ? redactActivityValue(event.metadata) : event.metadata || null,
+    newState: shouldRedact ? redactActivityValue(event.newState) : event.newState || null,
+    occurredAt: event.occurredAt || event.createdAt || null,
+    previousState: shouldRedact ? redactActivityValue(event.previousState) : event.previousState || null,
+    requestId: event.requestId || null,
+    serviceName: event.serviceName || null,
+    severity: event.severity || null,
+    source: event.source || null,
+    subjectDisplayName: shouldRedact ? redactedValue : event.subjectDisplayName || null,
+    subjectId: event.subjectId || null,
+    subjectType: event.subjectType || null,
+    userAgent: shouldRedact ? redactedValue : event.userAgent || null,
+  };
+};
+
+const renderCandidateActivityReportPdf = ({
+  candidate,
+  report,
+}: {
+  candidate: DocumentRecord;
+  report: Record<string, unknown>;
+}) =>
+  new Promise<Buffer>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    const doc = new PDFDocument({
+      margins: {
+        bottom: 48,
+        left: 48,
+        right: 48,
+        top: 48,
+      },
+      size: 'A4',
+    });
+
+    doc.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+    doc.on('error', reject);
+    doc.on('end', () => resolve(Buffer.concat(chunks)));
+
+    doc.fontSize(20).text('HireFlip Candidate Activity Report');
+    doc.moveDown(0.5);
+    doc.fontSize(10).text(`Generated: ${String(report.generatedAt || new Date().toISOString())}`);
+    doc.text(`Candidate: ${String(report.candidateDisplayName || displayName(candidate))}`);
+    doc.text(`Candidate ID: ${getDocumentId(candidate) || 'Not recorded'}`);
+    doc.text(`Redaction: ${String(report.redaction || 'redacted')}`);
+    doc.text(`Events: ${Array.isArray(report.auditEvents) ? report.auditEvents.length : 0}`);
+    doc.moveDown();
+    doc.fontSize(14).text('Activity Events');
+    doc.moveDown(0.5);
+    doc.fontSize(8).text(JSON.stringify(jsonClone(report), null, 2), {
+      lineGap: 2,
+    });
+    doc.end();
+  });
+
 const humanize = (value?: string | null) =>
   value
     ? value
@@ -347,6 +465,7 @@ const candidatePermissions = (session: AdminSession) => ({
   canCreateSupportCase: hasAnyRole(session, ['admin', 'sales', 'super_admin', 'support']),
   canEditDateOfBirth: hasAnyRole(session, ['super_admin']),
   canEditProfile: hasAnyRole(session, ['admin', 'super_admin', 'support']),
+  canExportActivityReport: hasAnyRole(session, ['admin', 'super_admin']),
   canExportGdpr: hasAnyRole(session, ['super_admin']),
   canManageAccount: hasAnyRole(session, ['admin', 'super_admin']),
   canReactivateBlacklisted: hasAnyRole(session, ['super_admin']),
@@ -2262,6 +2381,63 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
     return {
       strikes: updatedStrikes.map(strikePayload),
       updated: true,
+      user: session.user,
+    };
+  },
+
+  async activityReport(input: unknown, requestContext: RequestContext = {}) {
+    const body = validateCandidateActivityReport(input);
+    const session = await assertCandidateSession(strapi, body.sessionToken, requestContext);
+    const permissions = candidatePermissions(session);
+    const candidate = await findCandidateByDocumentId(strapi, body.candidateDocumentId);
+
+    if (!candidate) {
+      throw new ValidationError('Candidate could not be found.');
+    }
+
+    if (!permissions.canExportActivityReport) {
+      throw new ForbiddenError('Admin or Super Admin access is required for candidate activity reports.');
+    }
+
+    const auditRecords = await candidateAuditEvents(strapi, candidate);
+    const generatedAt = new Date().toISOString();
+    const report = {
+      auditEvents: auditRecords.map((event) => activityReportEventPayload(event, body.redaction)),
+      candidateDisplayName: body.redaction === 'redacted' ? redactedValue : displayName(candidate),
+      candidateDocumentId: getDocumentId(candidate),
+      candidateEmail: body.redaction === 'redacted' ? redactedValue : candidate.email || null,
+      generatedAt,
+      redaction: body.redaction,
+      schemaVersion: 'candidate-activity-report-v1',
+    };
+    const pdf = await renderCandidateActivityReportPdf({
+      candidate,
+      report,
+    });
+
+    await recordAdminCandidateAudit(
+      strapi,
+      session,
+      candidate,
+      'admin.candidate_activity_report_exported',
+      requestContext,
+      {
+        metadata: {
+          eventCount: auditRecords.length,
+          exportFormat: 'pdf',
+          generatedAt,
+          redaction: body.redaction,
+        },
+      }
+    );
+
+    return {
+      file: {
+        base64: pdf.toString('base64'),
+        fileName: `hireflip-candidate-activity-report-${getDocumentId(candidate) || 'candidate'}-${body.redaction}.pdf`,
+        mimeType: 'application/pdf',
+      },
+      report,
       user: session.user,
     };
   },

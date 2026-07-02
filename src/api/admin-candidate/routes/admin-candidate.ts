@@ -70,5 +70,14 @@ export default {
         policies: [adminDashboardServicePolicy],
       },
     },
+    {
+      method: 'POST',
+      path: '/internal/admin/candidates/activity-report',
+      handler: 'admin-candidate.activityReport',
+      config: {
+        auth: false,
+        policies: [adminDashboardServicePolicy],
+      },
+    },
   ],
 };

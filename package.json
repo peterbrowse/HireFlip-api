@@ -32,6 +32,7 @@
     "smoke:support-cases": "npm run build && ENV_PATH=${ENV_PATH:-.env.local} node scripts/smoke-support-cases.js",
     "smoke:waiting-list-offers": "ENV_PATH=${ENV_PATH:-.env.local} node scripts/smoke-waiting-list-offers.js",
     "smoke:mvp-dry-run": "ENV_PATH=${ENV_PATH:-.env.local} node scripts/smoke-mvp-dry-run.js",
+    "load:payment-enrollment": "ENV_PATH=${ENV_PATH:-.env.local} node scripts/load-payment-enrollment.js",
     "upgrade": "npx @strapi/upgrade latest",
     "upgrade:dry": "npx @strapi/upgrade latest --dry"
   },

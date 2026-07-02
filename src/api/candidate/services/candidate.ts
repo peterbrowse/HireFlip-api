@@ -6464,6 +6464,19 @@ const recordProviderPaymentOutcome = async ({
   const existingPayment =
     (await findPaymentForCheckoutSession(strapi, confirmation.checkoutSessionId)) ||
     (await findCheckoutPaymentForReservation(strapi, reservation));
+
+  if (paymentState(existingPayment) === 'paid' || reservationState(reservation) === 'paid') {
+    return {
+      classInterest: await buildCandidateClassInterestForCandidate(strapi, candidate),
+      payment: sanitizePayment(existingPayment),
+      providerOutcomeIgnored: {
+        outcome,
+        reason: 'payment_already_confirmed',
+      },
+      reservation: sanitizeReservation(reservation),
+    };
+  }
+
   const now = new Date().toISOString();
   const previousReservation = sanitizeReservation(reservation);
   const previousEnrollment = sanitizeEnrollment(reservation.enrollment);
@@ -11322,7 +11335,14 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
               strapi,
             }))
           ) {
-            throw new ValidationError('A waiting-list offer is required before this waiting-list place can be claimed.');
+            return {
+              created: false,
+              reservation: null,
+              reserved: false,
+              waitingListPosition:
+                existingEnrollment?.waitingListPosition ||
+                (await getNextWaitingListPosition(strapi, lockedTargetClass, existingCandidate)),
+            };
           }
         } else {
           waitingListOffer = await findCandidateWaitingListOffer(

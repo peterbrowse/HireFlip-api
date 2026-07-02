@@ -165,6 +165,28 @@ const findWebhookEvent = async (
   return events[0];
 };
 
+const isUniqueConstraintError = (error: unknown) => {
+  if (!error || typeof error !== 'object') {
+    return false;
+  }
+
+  const value = error as {
+    code?: unknown;
+    details?: { errors?: unknown[] };
+    message?: unknown;
+    name?: unknown;
+  };
+  const message = String(value.message || '').toLowerCase();
+
+  return (
+    value.code === '23505' ||
+    String(value.name || '').toLowerCase().includes('unique') ||
+    message.includes('must be unique') ||
+    (message.includes('unique') && message.includes('provider')) ||
+    (message.includes('duplicate') && message.includes('provider'))
+  );
+};
+
 const stringifyError = (error: unknown) =>
   error instanceof Error ? error.message : 'Payment webhook processing failed.';
 
@@ -224,17 +246,21 @@ export default factories.createCoreService('api::payment-webhook-event.payment-w
     }
 
     const receivedAt = new Date().toISOString();
-    const webhookEvent = existingEvent?.documentId
-      ? await documents(strapi, 'api::payment-webhook-event.payment-webhook-event').update({
-          documentId: existingEvent.documentId,
-          data: {
-            payload,
-            processingError: null,
-            receivedAt: existingEvent.receivedAt || receivedAt,
-            processingState: 'received',
-          },
-        })
-      : await documents(strapi, 'api::payment-webhook-event.payment-webhook-event').create({
+    let webhookEvent: DocumentRecord;
+
+    if (existingEvent?.documentId) {
+      webhookEvent = await documents(strapi, 'api::payment-webhook-event.payment-webhook-event').update({
+        documentId: existingEvent.documentId,
+        data: {
+          payload,
+          processingError: null,
+          receivedAt: existingEvent.receivedAt || receivedAt,
+          processingState: 'received',
+        },
+      });
+    } else {
+      try {
+        webhookEvent = await documents(strapi, 'api::payment-webhook-event.payment-webhook-event').create({
           data: {
             eventType: payload.eventType,
             metadata: {
@@ -251,6 +277,39 @@ export default factories.createCoreService('api::payment-webhook-event.payment-w
             processingState: 'received',
           },
         });
+      } catch (error) {
+        if (!isUniqueConstraintError(error)) {
+          throw error;
+        }
+
+        const racedEvent = await findWebhookEvent(strapi, payload.providerEventId);
+
+        if (
+          webhookEventProcessingState(racedEvent) === 'processed' ||
+          webhookEventProcessingState(racedEvent) === 'ignored'
+        ) {
+          return {
+            duplicate: true,
+            providerEventId: payload.providerEventId,
+            status: webhookEventProcessingState(racedEvent),
+          };
+        }
+
+        if (!racedEvent?.documentId) {
+          throw error;
+        }
+
+        webhookEvent = await documents(strapi, 'api::payment-webhook-event.payment-webhook-event').update({
+          documentId: racedEvent.documentId,
+          data: {
+            payload,
+            processingError: null,
+            receivedAt: racedEvent.receivedAt || receivedAt,
+            processingState: 'received',
+          },
+        });
+      }
+    }
 
     if (!webhookEvent.documentId) {
       throw new ValidationError('Payment webhook event could not be recorded.');
