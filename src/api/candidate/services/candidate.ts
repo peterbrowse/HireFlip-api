@@ -11200,6 +11200,9 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       throw new UnauthorizedError('Auth0 authentication is required.');
     }
 
+    const payload = validateReserveClassPlace(input ?? {});
+
+    return withClassAllocationWriteLock(payload.classDocumentId, async () => {
     const existingCandidate = await findCandidateByAuthIdentity(strapi, auth.subject);
 
     if (!existingCandidate) {
@@ -11210,7 +11213,6 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       throw new ValidationError('This account is currently restricted and cannot reserve class places.');
     }
 
-    const payload = validateReserveClassPlace(input ?? {});
     const existingEnrollments = await findCandidateEnrollments(strapi, existingCandidate);
     const [matchingClasses, relationshipClasses] = await Promise.all([
       findMatchingClasses(strapi, existingCandidate),
@@ -11237,8 +11239,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       | undefined;
 
     try {
-      const allocationResult = await withClassAllocationWriteLock(targetClass.documentId!, () =>
-        withDatabaseTransaction(strapi, async (transactionContext) => {
+      const allocationResult = await withDatabaseTransaction(strapi, async (transactionContext) => {
       await lockClassForCapacityCheck(strapi, targetClass, transactionContext?.trx);
 
       const lockedTargetClass = await findClassByDocumentId(strapi, payload.classDocumentId);
@@ -11718,8 +11719,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
           reservation: sanitizeReservation(reservation),
           reserved: true,
         };
-        })
-      );
+      });
 
       return {
         classInterest: await buildCandidateClassInterestForCandidate(strapi, existingCandidate),
@@ -11739,6 +11739,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
 
       throw error;
     }
+    });
   },
 
   async declineCurrentCandidateWaitingListOffer(
