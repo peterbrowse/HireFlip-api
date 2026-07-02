@@ -16,6 +16,7 @@ import {
   replaceClassAllocationSnapshot,
   tryAcquireClassAllocationSyncLock,
   waitForClassAllocationReady,
+  withClassAllocationWriteLock,
 } from '../../../utils/class-allocation-redis';
 import { addWaitingListOfferExpiryJob } from '../../../utils/class-workflow-queue';
 import {
@@ -11236,7 +11237,8 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       | undefined;
 
     try {
-      const allocationResult = await withDatabaseTransaction(strapi, async (transactionContext) => {
+      const allocationResult = await withClassAllocationWriteLock(targetClass.documentId!, () =>
+        withDatabaseTransaction(strapi, async (transactionContext) => {
       await lockClassForCapacityCheck(strapi, targetClass, transactionContext?.trx);
 
       const lockedTargetClass = await findClassByDocumentId(strapi, payload.classDocumentId);
@@ -11716,7 +11718,8 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
           reservation: sanitizeReservation(reservation),
           reserved: true,
         };
-      });
+        })
+      );
 
       return {
         classInterest: await buildCandidateClassInterestForCandidate(strapi, existingCandidate),

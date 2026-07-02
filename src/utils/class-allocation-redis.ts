@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import Redis from 'ioredis';
 
 type AllocationStatus =
@@ -75,6 +76,9 @@ const redisPrefix = () =>
 
 const syncTtlSeconds = () => envInt('CLASS_ALLOCATION_REDIS_SYNC_TTL_SECONDS', 300);
 const syncLockTtlMs = () => envInt('CLASS_ALLOCATION_REDIS_SYNC_LOCK_MS', 10000);
+const writeLockTtlMs = () => envInt('CLASS_ALLOCATION_REDIS_WRITE_LOCK_MS', 30000);
+const writeLockWaitMs = () => envInt('CLASS_ALLOCATION_REDIS_WRITE_LOCK_WAIT_MS', 180000);
+const writeLockPollMs = () => envInt('CLASS_ALLOCATION_REDIS_WRITE_LOCK_POLL_MS', 50);
 
 const keyBase = (classDocumentId: string) => `${redisPrefix()}:${classDocumentId}`;
 
@@ -89,6 +93,7 @@ const classAllocationKeys = (classDocumentId: string) => {
     syncLock: `${base}:sync-lock`,
     waitlist: `${base}:waitlist`,
     waitlistSequence: `${base}:waitlist-sequence`,
+    writeLock: `${base}:write-lock`,
   };
 };
 
@@ -243,6 +248,22 @@ redis.call('SADD', paid, candidateDocumentId)
 return 'ok'
 `;
 
+const releaseWriteLockScript = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+end
+
+return 0
+`;
+
+const refreshWriteLockScript = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('PEXPIRE', KEYS[1], ARGV[2])
+end
+
+return 0
+`;
+
 const coerceScriptResult = (value: unknown): AllocationResult => {
   if (!Array.isArray(value)) {
     throw new Error('Class allocation Redis returned an invalid response.');
@@ -305,6 +326,48 @@ export const waitForClassAllocationReady = async (
   }
 
   return false;
+};
+
+const sleep = (durationMs: number) => new Promise((resolve) => setTimeout(resolve, durationMs));
+
+export const withClassAllocationWriteLock = async <TResult>(
+  classDocumentId: string,
+  callback: () => Promise<TResult>
+) => {
+  const redis = await ensureRedis();
+  const keys = classAllocationKeys(classDocumentId);
+  const owner = randomUUID();
+  const ttlMs = writeLockTtlMs();
+  const waitMs = writeLockWaitMs();
+  const pollMs = writeLockPollMs();
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < waitMs) {
+    if ((await redis.set(keys.writeLock, owner, 'PX', ttlMs, 'NX')) === 'OK') {
+      let refreshTimer: ReturnType<typeof setInterval> | undefined;
+
+      try {
+        refreshTimer = setInterval(() => {
+          void redis
+            .eval(refreshWriteLockScript, 1, keys.writeLock, owner, String(ttlMs))
+            .catch(() => undefined);
+        }, Math.max(1000, Math.floor(ttlMs / 3)));
+        refreshTimer.unref?.();
+
+        return await callback();
+      } finally {
+        if (refreshTimer) {
+          clearInterval(refreshTimer);
+        }
+
+        await redis.eval(releaseWriteLockScript, 1, keys.writeLock, owner).catch(() => undefined);
+      }
+    }
+
+    await sleep(pollMs + Math.floor(Math.random() * pollMs));
+  }
+
+  throw new Error('Timed out waiting for class allocation write lock.');
 };
 
 export const replaceClassAllocationSnapshot = async (
