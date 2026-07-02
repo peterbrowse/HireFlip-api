@@ -332,10 +332,13 @@ const sleep = (durationMs: number) => new Promise((resolve) => setTimeout(resolv
 
 export const withClassAllocationWriteLock = async <TResult>(
   classDocumentId: string,
-  callback: () => Promise<TResult>
+  callback: () => Promise<TResult>,
+  options: { scope?: string } = {}
 ) => {
   const redis = await ensureRedis();
   const keys = classAllocationKeys(classDocumentId);
+  const scope = options.scope?.trim().replace(/[^a-zA-Z0-9_-]/g, '_');
+  const writeLockKey = scope ? `${keys.writeLock}:${scope}` : keys.writeLock;
   const owner = randomUUID();
   const ttlMs = writeLockTtlMs();
   const waitMs = writeLockWaitMs();
@@ -343,13 +346,13 @@ export const withClassAllocationWriteLock = async <TResult>(
   const startedAt = Date.now();
 
   while (Date.now() - startedAt < waitMs) {
-    if ((await redis.set(keys.writeLock, owner, 'PX', ttlMs, 'NX')) === 'OK') {
+    if ((await redis.set(writeLockKey, owner, 'PX', ttlMs, 'NX')) === 'OK') {
       let refreshTimer: ReturnType<typeof setInterval> | undefined;
 
       try {
         refreshTimer = setInterval(() => {
           void redis
-            .eval(refreshWriteLockScript, 1, keys.writeLock, owner, String(ttlMs))
+            .eval(refreshWriteLockScript, 1, writeLockKey, owner, String(ttlMs))
             .catch(() => undefined);
         }, Math.max(1000, Math.floor(ttlMs / 3)));
         refreshTimer.unref?.();
@@ -360,7 +363,7 @@ export const withClassAllocationWriteLock = async <TResult>(
           clearInterval(refreshTimer);
         }
 
-        await redis.eval(releaseWriteLockScript, 1, keys.writeLock, owner).catch(() => undefined);
+        await redis.eval(releaseWriteLockScript, 1, writeLockKey, owner).catch(() => undefined);
       }
     }
 

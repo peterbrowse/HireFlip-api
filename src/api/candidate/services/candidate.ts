@@ -11202,7 +11202,6 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
 
     const payload = validateReserveClassPlace(input ?? {});
 
-    return withClassAllocationWriteLock(payload.classDocumentId, async () => {
     const existingCandidate = await findCandidateByAuthIdentity(strapi, auth.subject);
 
     if (!existingCandidate) {
@@ -11213,6 +11212,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       throw new ValidationError('This account is currently restricted and cannot reserve class places.');
     }
 
+    return withClassAllocationWriteLock(payload.classDocumentId, async () => {
     const existingEnrollments = await findCandidateEnrollments(strapi, existingCandidate);
     const [matchingClasses, relationshipClasses] = await Promise.all([
       findMatchingClasses(strapi, existingCandidate),
@@ -11239,9 +11239,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       | undefined;
 
     try {
-      const allocationResult = await withDatabaseTransaction(strapi, async (transactionContext) => {
-      await lockClassForCapacityCheck(strapi, targetClass, transactionContext?.trx);
-
+      const allocationResult = await withDatabaseTransaction(strapi, async () => {
       const lockedTargetClass = await findClassByDocumentId(strapi, payload.classDocumentId);
 
       if (!lockedTargetClass) {
@@ -11739,7 +11737,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
 
       throw error;
     }
-    });
+    }, { scope: `candidate:${existingCandidate.documentId}` });
   },
 
   async declineCurrentCandidateWaitingListOffer(
