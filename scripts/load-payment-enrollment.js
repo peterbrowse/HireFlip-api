@@ -71,6 +71,35 @@ const numberEnv = (name, fallback) => {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const allSettledWithConcurrency = async (items, concurrency, worker) => {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.max(1, Math.min(items.length, concurrency));
+
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (nextIndex < items.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+
+        try {
+          results[index] = {
+            status: 'fulfilled',
+            value: await worker(items[index], index),
+          };
+        } catch (reason) {
+          results[index] = {
+            reason,
+            status: 'rejected',
+          };
+        }
+      }
+    })
+  );
+
+  return results;
+};
+
 const assert = (condition, message) => {
   if (!condition) {
     throw new Error(message);
@@ -343,7 +372,11 @@ const assertUniqueCandidateRows = (records, label) => {
   );
 };
 
-const reserveCandidatesUnderLoad = async (strapi, created, { duplicateAttempts, mode, runId }) => {
+const reserveCandidatesUnderLoad = async (
+  strapi,
+  created,
+  { concurrency, duplicateAttempts, mode, runId }
+) => {
   const candidateService = strapi.service('api::candidate.candidate');
   const attempts = created.candidates.flatMap((candidate) =>
     Array.from({ length: duplicateAttempts }, (_, attemptIndex) => ({
@@ -351,8 +384,11 @@ const reserveCandidatesUnderLoad = async (strapi, created, { duplicateAttempts, 
       candidate,
     }))
   );
-  const results = await Promise.allSettled(
-    attempts.map(({ attemptIndex, candidate }) =>
+  const reservationConcurrency = Math.max(1, Math.min(attempts.length, concurrency || attempts.length));
+  const results = await allSettledWithConcurrency(
+    attempts,
+    reservationConcurrency,
+    ({ attemptIndex, candidate }) =>
       candidateService.reserveCurrentCandidateClassPlace(
         authForCandidate(candidate),
         {
@@ -360,7 +396,6 @@ const reserveCandidatesUnderLoad = async (strapi, created, { duplicateAttempts, 
         },
         requestContext(runId, mode, `reserve-${attemptIndex}`)
       )
-    )
   );
   const rejected = results.filter((result) => result.status === 'rejected');
 
@@ -373,6 +408,7 @@ const reserveCandidatesUnderLoad = async (strapi, created, { duplicateAttempts, 
 
   return {
     attempts: attempts.length,
+    concurrency: reservationConcurrency,
     reservedResponses: results.filter(
       (result) => result.status === 'fulfilled' && result.value?.reserved === true
     ).length,
@@ -861,6 +897,10 @@ const main = async () => {
     Math.max(capacity + 15, capacity * 3)
   );
   const duplicateAttempts = numberEnv('PAYMENT_ENROLLMENT_LOAD_DUPLICATE_ATTEMPTS', 2);
+  const reservationConcurrency = numberEnv(
+    'PAYMENT_ENROLLMENT_LOAD_CONCURRENCY',
+    Math.max(4, Math.min(candidateCount, numberEnv('DATABASE_POOL_MAX', 10)))
+  );
   const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const providerEventIds = [];
   const requestIdPrefix = `payment-enrollment-load-${runId}-${mode}`;
@@ -893,6 +933,7 @@ const main = async () => {
     });
 
     const reservationLoad = await reserveCandidatesUnderLoad(strapi, created, {
+      concurrency: reservationConcurrency,
       duplicateAttempts,
       mode,
       runId,
@@ -947,6 +988,7 @@ const main = async () => {
       duplicateAttempts,
       mode,
       reservationAttempts: reservationLoad.attempts,
+      reservationConcurrency: reservationLoad.concurrency,
       runId,
     };
 
