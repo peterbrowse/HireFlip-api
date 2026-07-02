@@ -897,9 +897,10 @@ const main = async () => {
     Math.max(capacity + 15, capacity * 3)
   );
   const duplicateAttempts = numberEnv('PAYMENT_ENROLLMENT_LOAD_DUPLICATE_ATTEMPTS', 2);
+  const databasePoolMax = numberEnv('DATABASE_POOL_MAX', 10);
   const reservationConcurrency = numberEnv(
     'PAYMENT_ENROLLMENT_LOAD_CONCURRENCY',
-    Math.max(4, Math.min(candidateCount, numberEnv('DATABASE_POOL_MAX', 10)))
+    Math.max(2, Math.min(candidateCount, 4, Math.floor(databasePoolMax / 2)))
   );
   const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const providerEventIds = [];
