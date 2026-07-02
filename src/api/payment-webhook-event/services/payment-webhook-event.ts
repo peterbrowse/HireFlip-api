@@ -1,7 +1,12 @@
+import { randomUUID } from 'node:crypto';
 import { factories } from '@strapi/strapi';
 import { errors, validateZodSchema, z } from '@strapi/utils';
+import Redis from 'ioredis';
 
 const { ValidationError } = errors;
+
+let webhookRedisClient: Redis | undefined;
+let webhookRedisConnectionPromise: Promise<void> | undefined;
 
 type RequestContext = {
   ipAddress?: string;
@@ -81,6 +86,150 @@ const objectValue = (value: unknown) => {
   }
 
   return {};
+};
+
+const envBool = (name: string, fallback: boolean) => {
+  const value = (process.env[name] || '').toLowerCase();
+
+  if (['1', 'true', 'yes', 'on'].includes(value)) {
+    return true;
+  }
+
+  if (['0', 'false', 'no', 'off'].includes(value)) {
+    return false;
+  }
+
+  return fallback;
+};
+
+const envInt = (name: string, fallback: number) => {
+  const value = Number.parseInt(process.env[name] || '', 10);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+};
+
+const webhookRedisUrl = () =>
+  process.env.PAYMENT_WEBHOOK_EVENT_REDIS_URL ||
+  process.env.CLASS_ALLOCATION_REDIS_URL ||
+  process.env.REDIS_URL ||
+  'redis://localhost:6379';
+
+const webhookLockPrefix = () =>
+  (process.env.PAYMENT_WEBHOOK_EVENT_LOCK_PREFIX || 'hireflip:payment-webhook-event-lock')
+    .replace(/:+$/g, '');
+
+const webhookLockTtlMs = () => envInt('PAYMENT_WEBHOOK_EVENT_LOCK_TTL_MS', 30000);
+const webhookLockWaitMs = () => envInt('PAYMENT_WEBHOOK_EVENT_LOCK_WAIT_MS', 120000);
+const webhookLockPollMs = () => envInt('PAYMENT_WEBHOOK_EVENT_LOCK_POLL_MS', 50);
+
+const getWebhookRedis = () => {
+  if (!webhookRedisClient || webhookRedisClient.status === 'end') {
+    const url = webhookRedisUrl();
+
+    webhookRedisClient = new Redis(url, {
+      commandTimeout: envInt('PAYMENT_WEBHOOK_EVENT_REDIS_COMMAND_TIMEOUT_MS', 2000),
+      enableOfflineQueue: false,
+      lazyConnect: true,
+      maxRetriesPerRequest: 1,
+      retryStrategy: () => null,
+      tls: url.startsWith('rediss://')
+        ? {
+            rejectUnauthorized: envBool('PAYMENT_WEBHOOK_EVENT_REDIS_TLS_REJECT_UNAUTHORIZED', false),
+          }
+        : undefined,
+    });
+    webhookRedisClient.on('error', () => undefined);
+  }
+
+  return webhookRedisClient;
+};
+
+const ensureWebhookRedis = async () => {
+  const redis = getWebhookRedis();
+
+  if (redis.status === 'ready') {
+    return redis;
+  }
+
+  if (!webhookRedisConnectionPromise) {
+    webhookRedisConnectionPromise = redis.connect().then(() => undefined);
+  }
+
+  try {
+    await webhookRedisConnectionPromise;
+  } finally {
+    webhookRedisConnectionPromise = undefined;
+  }
+
+  if ((redis.status as string) !== 'ready') {
+    throw new Error('Payment webhook Redis lock client is not ready.');
+  }
+
+  return redis;
+};
+
+const releaseWebhookLockScript = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+end
+
+return 0
+`;
+
+const refreshWebhookLockScript = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('PEXPIRE', KEYS[1], ARGV[2])
+end
+
+return 0
+`;
+
+const sleep = (durationMs: number) => new Promise((resolve) => setTimeout(resolve, durationMs));
+
+const webhookLockKey = (providerEventId: string) =>
+  `${webhookLockPrefix()}:${providerEventId.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+
+const withProviderEventLock = async <TResult>(
+  providerEventId: string,
+  callback: () => Promise<TResult>
+) => {
+  if (!envBool('PAYMENT_WEBHOOK_EVENT_LOCK_ENABLED', true)) {
+    return callback();
+  }
+
+  const redis = await ensureWebhookRedis();
+  const key = webhookLockKey(providerEventId);
+  const owner = randomUUID();
+  const ttlMs = webhookLockTtlMs();
+  const waitMs = webhookLockWaitMs();
+  const pollMs = webhookLockPollMs();
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < waitMs) {
+    if ((await redis.set(key, owner, 'PX', ttlMs, 'NX')) === 'OK') {
+      let refreshTimer: ReturnType<typeof setInterval> | undefined;
+
+      try {
+        refreshTimer = setInterval(() => {
+          void redis
+            .eval(refreshWebhookLockScript, 1, key, owner, String(ttlMs))
+            .catch(() => undefined);
+        }, Math.max(1000, Math.floor(ttlMs / 3)));
+        refreshTimer.unref?.();
+
+        return await callback();
+      } finally {
+        if (refreshTimer) {
+          clearInterval(refreshTimer);
+        }
+
+        await redis.eval(releaseWebhookLockScript, 1, key, owner).catch(() => undefined);
+      }
+    }
+
+    await sleep(pollMs + Math.floor(Math.random() * pollMs));
+  }
+
+  throw new Error('Timed out waiting for payment webhook event lock.');
 };
 
 const webhookEventProcessingState = (event?: DocumentRecord) => event?.processingState || event?.status;
@@ -235,6 +384,8 @@ export default factories.createCoreService('api::payment-webhook-event.payment-w
 
   async receiveStripeEvent(input: unknown, requestContext: RequestContext = {}) {
     const payload = validateStripeWebhookEvent(input);
+
+    return withProviderEventLock(payload.providerEventId, async () => {
     const existingEvent = await findWebhookEvent(strapi, payload.providerEventId);
 
     if (webhookEventProcessingState(existingEvent) === 'processed' || webhookEventProcessingState(existingEvent) === 'ignored') {
@@ -394,5 +545,6 @@ export default factories.createCoreService('api::payment-webhook-event.payment-w
 
       throw error;
     }
+    });
   },
 }));
