@@ -11239,7 +11239,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       | undefined;
 
     try {
-      const allocationResult = await withDatabaseTransaction(strapi, async () => {
+      const allocationResult = await (async () => {
       const lockedTargetClass = await findClassByDocumentId(strapi, payload.classDocumentId);
 
       if (!lockedTargetClass) {
@@ -11717,7 +11717,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
           reservation: sanitizeReservation(reservation),
           reserved: true,
         };
-      });
+      })();
 
       return {
         classInterest: await buildCandidateClassInterestForCandidate(strapi, existingCandidate),
