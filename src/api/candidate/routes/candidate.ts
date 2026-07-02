@@ -27,6 +27,19 @@ export default {
       },
     },
     {
+      method: 'GET',
+      path: '/candidates/me/billing-history',
+      handler: 'candidate.billingHistory',
+      config: {
+        auth: false,
+        middlewares: [
+          {
+            name: 'global::auth0-jwt',
+          },
+        ],
+      },
+    },
+    {
       method: 'POST',
       path: '/candidates/me/profile-image',
       handler: 'candidate.updateProfileImage',

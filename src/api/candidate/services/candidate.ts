@@ -639,6 +639,7 @@ const updateCandidateAccountSchema = z
     preferredCommunicationChannel: z.enum(communicationChannels).optional(),
     marketingConsent: z.boolean(),
     marketingConsentWordingVersion: optionalString(80),
+    recruitmentPlatformVisibility: z.enum(candidateRecruitmentVisibilityValues).optional(),
     workSectorPreferences: preferenceSelectionSchema,
   })
   .strict()
@@ -1625,6 +1626,7 @@ const providerCheckoutConfirmationSchema = z
     paymentIntentId: z.string().trim().max(255).optional(),
     paymentProvider: z.string().trim().min(1).max(80).default('stripe'),
     paymentStatus: z.string().trim().min(1).max(80),
+    receiptUrl: z.string().trim().url().nullable().optional(),
     status: z.string().trim().min(1).max(80),
   })
   .strict()
@@ -2935,6 +2937,7 @@ type PaymentServiceCheckoutConfirmation = {
   paymentIntentId?: string;
   paymentProvider: string;
   paymentStatus: string;
+  receiptUrl?: string | null;
   status: string;
 };
 
@@ -2944,6 +2947,21 @@ type PaymentConfirmationActor = {
   actorType: 'candidate' | 'service';
   eventType: string;
   source: 'core_api' | 'payment_service';
+};
+
+const stripeReceiptUrl = (
+  confirmation?: PaymentServiceCheckoutConfirmation,
+  payment?: DocumentRecord
+) => {
+  if (typeof confirmation?.receiptUrl === 'string') {
+    return confirmation.receiptUrl;
+  }
+
+  const metadata = objectValue(payment?.metadata);
+
+  return typeof metadata.providerReceiptUrl === 'string'
+    ? metadata.providerReceiptUrl
+    : undefined;
 };
 
 type PaymentExceptionReason =
@@ -5483,6 +5501,8 @@ const sanitizePayment = (payment) => {
     return null;
   }
 
+  const metadata = objectValue(payment.metadata);
+
   return {
     amountPence: payment.amountPence,
     currency: payment.currency,
@@ -5494,7 +5514,95 @@ const sanitizePayment = (payment) => {
     paymentType: payment.paymentType,
     providerCheckoutSessionId: payment.providerCheckoutSessionId,
     providerPaymentIntentId: payment.providerPaymentIntentId,
+    providerReceiptUrl:
+      typeof metadata.providerReceiptUrl === 'string' ? metadata.providerReceiptUrl : null,
     status: paymentState(payment),
+  };
+};
+
+const billingPaymentStates = ['paid', 'partially_refunded', 'refunded', 'requires_review'] as const;
+const billingRefundStates = ['completed'] as const;
+
+const billingPaymentStatusLabels: Record<string, string> = {
+  paid: 'Paid',
+  partially_refunded: 'Partially refunded',
+  refunded: 'Refunded',
+  requires_review: 'Requires review',
+};
+
+const billingEventDate = (...values: unknown[]) =>
+  values.find((value): value is string => typeof value === 'string' && value.trim().length > 0) || null;
+
+const billingEventTimestamp = (value?: string | null) => {
+  const timestamp = Date.parse(value || '');
+
+  return Number.isFinite(timestamp) ? timestamp : 0;
+};
+
+const billingCurrency = (value: unknown) =>
+  typeof value === 'string' && value.trim().length === 3
+    ? value.trim().toUpperCase()
+    : 'GBP';
+
+const billingReceiptUrl = (payment?: DocumentRecord | null) => {
+  const metadata = objectValue(payment?.metadata);
+
+  return typeof metadata.providerReceiptUrl === 'string'
+    ? metadata.providerReceiptUrl
+    : null;
+};
+
+const billingPaymentClass = (payment?: DocumentRecord | null) =>
+  sanitizeClass(payment?.reservation?.class || payment?.enrollment?.class);
+
+const sanitizeBillingPaymentEvent = (payment: DocumentRecord) => {
+  const status = String(paymentState(payment) || 'paid');
+  const occurredAt = billingEventDate(payment.paidAt, payment.updatedAt, payment.createdAt);
+
+  return {
+    amountPence: typeof payment.amountPence === 'number' ? payment.amountPence : 0,
+    class: billingPaymentClass(payment),
+    currency: billingCurrency(payment.currency),
+    documentId: payment.documentId,
+    id: `payment:${payment.documentId || payment.id || payment.providerPaymentIntentId || randomUUID()}`,
+    occurredAt,
+    provider: 'stripe',
+    receiptUrl: billingReceiptUrl(payment),
+    reference:
+      payment.providerPaymentIntentId ||
+      payment.providerCheckoutSessionId ||
+      payment.documentId ||
+      null,
+    requiresReview: status === 'requires_review',
+    status,
+    statusLabel: billingPaymentStatusLabels[status] || humanize(status),
+    type: 'course_payment',
+    typeLabel: 'Course payment',
+  };
+};
+
+const sanitizeBillingRefundEvent = (refund: DocumentRecord) => {
+  const payment = documentRecordValue(refund.payment);
+  const enrollment = documentRecordValue(refund.enrollment);
+  const providerRefundId =
+    typeof refund.providerRefundId === 'string' ? refund.providerRefundId : undefined;
+  const occurredAt = billingEventDate(refund.processedAt, refund.updatedAt, refund.createdAt);
+
+  return {
+    amountPence: typeof refund.amountPence === 'number' ? refund.amountPence : 0,
+    class: sanitizeClass(payment?.reservation?.class || payment?.enrollment?.class || enrollment?.class),
+    currency: billingCurrency(refund.currency || payment?.currency),
+    documentId: refund.documentId,
+    id: `refund:${refund.documentId || refund.id || providerRefundId || randomUUID()}`,
+    occurredAt,
+    provider: 'stripe',
+    receiptUrl: billingReceiptUrl(payment),
+    reference: providerRefundId || payment?.providerPaymentIntentId || refund.documentId || null,
+    requiresReview: false,
+    status: 'completed',
+    statusLabel: 'Refunded',
+    type: 'refund',
+    typeLabel: 'Refund',
   };
 };
 
@@ -5791,6 +5899,7 @@ const recordPaymentException = async ({
     checkoutUrl: confirmation.checkoutUrl,
     exceptionReason: reason,
     providerPaymentStatus: confirmation.paymentStatus,
+    providerReceiptUrl: stripeReceiptUrl(confirmation, existingPayment),
     providerSessionStatus: confirmation.status,
     recordedAt: now,
     reservationDocumentId: reservation.documentId,
@@ -6051,6 +6160,7 @@ const confirmReservationPaymentWithProvider = async ({
       checkoutUrl: confirmation.checkoutUrl,
       confirmedAt: now,
       providerPaymentStatus: confirmation.paymentStatus,
+      providerReceiptUrl: stripeReceiptUrl(confirmation, existingPayment),
       providerSessionStatus: confirmation.status,
       reservationDocumentId: currentReservation.documentId,
     };
@@ -6273,6 +6383,7 @@ const recordProviderPaymentOutcome = async ({
     eventType,
     outcome,
     providerPaymentStatus: confirmation.paymentStatus,
+    providerReceiptUrl: stripeReceiptUrl(confirmation, existingPayment),
     providerSessionStatus: confirmation.status,
     recordedAt: now,
     reservationDocumentId: reservation.documentId,
@@ -9531,6 +9642,80 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
     return sanitizeCandidate(strapi, updatedCandidate);
   },
 
+  async getCurrentCandidateBillingHistory(auth: Auth0State | undefined) {
+    if (!auth || auth.type !== 'auth0' || !auth.subject) {
+      throw new UnauthorizedError('Auth0 authentication is required.');
+    }
+
+    const existingCandidate = await findCandidateByAuthIdentity(strapi, auth.subject);
+
+    if (!existingCandidate?.documentId) {
+      throw new ValidationError('Candidate account must be synced before billing history can be checked.');
+    }
+
+    const [payments, refunds] = await Promise.all([
+      documents(strapi, 'api::payment.payment').findMany({
+        filters: {
+          candidate: {
+            documentId: existingCandidate.documentId,
+          },
+          paymentProvider: 'stripe',
+          paymentState: {
+            $in: Array.from(billingPaymentStates),
+          },
+        },
+        limit: 100,
+        populate: {
+          enrollment: {
+            populate: ['class'],
+          },
+          reservation: {
+            populate: ['class', 'enrollment'],
+          },
+        },
+        sort: ['paidAt:desc', 'updatedAt:desc', 'createdAt:desc'],
+      }),
+      documents(strapi, 'api::refund.refund').findMany({
+        filters: {
+          candidate: {
+            documentId: existingCandidate.documentId,
+          },
+          paymentProvider: 'stripe',
+          refundState: {
+            $in: Array.from(billingRefundStates),
+          },
+        },
+        limit: 100,
+        populate: {
+          enrollment: {
+            populate: ['class'],
+          },
+          payment: {
+            populate: {
+              enrollment: {
+                populate: ['class'],
+              },
+              reservation: {
+                populate: ['class', 'enrollment'],
+              },
+            },
+          },
+        },
+        sort: ['processedAt:desc', 'updatedAt:desc', 'createdAt:desc'],
+      }),
+    ]);
+
+    const events = [
+      ...payments.map(sanitizeBillingPaymentEvent),
+      ...refunds.map(sanitizeBillingRefundEvent),
+    ].sort((left, right) => billingEventTimestamp(right.occurredAt) - billingEventTimestamp(left.occurredAt));
+
+    return {
+      events,
+      generatedAt: new Date().toISOString(),
+    };
+  },
+
   async getCandidatePreferenceOptions(auth: Auth0State | undefined) {
     if (!auth || auth.type !== 'auth0' || !auth.subject) {
       throw new UnauthorizedError('Auth0 authentication is required.');
@@ -10463,6 +10648,14 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
     });
     const nextGenderSelfDescription =
       payload.gender === 'self_describe' ? (payload.genderSelfDescription ?? null) : null;
+    const nextRecruitmentPlatformVisibility =
+      payload.recruitmentPlatformVisibility &&
+      payload.recruitmentPlatformVisibility !== 'not_set'
+        ? payload.recruitmentPlatformVisibility
+        : undefined;
+    const recruitmentPlatformVisibilityChanged =
+      typeof nextRecruitmentPlatformVisibility === 'string' &&
+      nextRecruitmentPlatformVisibility !== existingCandidate.recruitmentPlatformVisibility;
 
     const profileSettings = {
       ...previousProfileSettings,
@@ -10488,6 +10681,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       phone: payload.phone,
       preferredCommunicationChannel,
       profileSettings,
+      recruitmentPlatformVisibility: nextRecruitmentPlatformVisibility,
       region: preferenceSnapshot.region,
       sector: preferenceSnapshot.sector,
       workSectorPreferences: payload.workSectorPreferences,
@@ -10516,6 +10710,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       marketingConsentWordingVersion: existingCandidate.marketingConsentWordingVersion,
       phone: existingCandidate.phone,
       preferredCommunicationChannel: existingCandidate.preferredCommunicationChannel,
+      recruitmentPlatformVisibility: existingCandidate.recruitmentPlatformVisibility,
       workSectorPreferences: existingCandidate.workSectorPreferences,
     };
 
@@ -10561,6 +10756,35 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
           marketingConsentCapturedAt: existingCandidate.marketingConsentCapturedAt,
           marketingConsentState: previousMarketingConsentState,
           marketingConsentWordingVersion: existingCandidate.marketingConsentWordingVersion,
+        },
+        requestId: requestContext.requestId,
+        source: 'candidate_dashboard',
+        subjectDisplayName: updatedCandidate.email,
+        subjectId: updatedCandidate.documentId,
+        subjectType: 'candidate',
+        userAgent: requestContext.userAgent,
+      });
+    }
+
+    if (recruitmentPlatformVisibilityChanged) {
+      await auditEvents(strapi).record({
+        actorEmail: updatedCandidate.email,
+        actorId: auth.subject,
+        actorType: 'candidate',
+        eventCategory: 'candidate',
+        eventType: 'candidate.recruitment_platform_visibility_updated',
+        ipAddress: requestContext.ipAddress,
+        metadata: {
+          sourceForm: existingCandidate.accountOnboardingCompletedAt
+            ? 'settings_communication'
+            : 'first_login_onboarding',
+        },
+        newState: {
+          recruitmentPlatformVisibility: updatedCandidate.recruitmentPlatformVisibility,
+        },
+        occurredAt: now,
+        previousState: {
+          recruitmentPlatformVisibility: existingCandidate.recruitmentPlatformVisibility,
         },
         requestId: requestContext.requestId,
         source: 'candidate_dashboard',

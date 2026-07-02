@@ -97,6 +97,7 @@ const checkoutSessionSchema = z
     paymentIntentId: z.string().trim().max(255).optional(),
     paymentProvider: z.literal('stripe').default('stripe'),
     paymentStatus: z.string().trim().min(1).max(80),
+    receiptUrl: z.string().trim().url().nullable().optional(),
     status: z.string().trim().min(1).max(80),
   })
   .strict();

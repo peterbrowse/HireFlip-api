@@ -93,6 +93,7 @@ type CandidateService = {
     context: RequestContext
   ): Promise<unknown>;
   getCandidatePreferenceOptions(auth: unknown): Promise<unknown>;
+  getCurrentCandidateBillingHistory(auth: unknown): Promise<unknown>;
   getCurrentCandidateClassInterest(auth: unknown): Promise<unknown>;
   getCurrentCandidateCourse(auth: unknown): Promise<unknown>;
   getCurrentCandidateInterviewReadiness(auth: unknown): Promise<unknown>;
@@ -186,6 +187,16 @@ export default factories.createCoreController('api::candidate.candidate', ({ str
         requestId: ctx.state?.requestId,
         userAgent: ctx.request.get('x-hireflip-client-user-agent') || ctx.request.get('user-agent'),
       }
+    );
+
+    ctx.body = {
+      data: result,
+    };
+  },
+
+  async billingHistory(ctx) {
+    const result = await candidateService(strapi).getCurrentCandidateBillingHistory(
+      ctx.state?.hireflipAuth
     );
 
     ctx.body = {
