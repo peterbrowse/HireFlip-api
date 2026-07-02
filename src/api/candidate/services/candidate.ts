@@ -1137,6 +1137,55 @@ const findAccountRestrictionAppealCaseForCandidate = async (
   return cases[0] || null;
 };
 
+const isSetRecruitmentPlatformVisibility = (
+  value?: string
+): value is 'visible' | 'hidden' => value === 'visible' || value === 'hidden';
+
+const findLatestProfileRecruitmentPlatformVisibility = async (
+  strapi: StrapiDocumentService,
+  candidate: DocumentRecord
+) => {
+  const candidateDocumentId = getDocumentId(candidate);
+
+  if (!candidateDocumentId) {
+    return null;
+  }
+
+  const profiles = await documents(strapi, 'api::candidate-profile.candidate-profile').findMany({
+    filters: {
+      candidate: {
+        documentId: candidateDocumentId,
+      },
+      profileState: {
+        $ne: 'archived',
+      },
+      recruitmentPlatformVisibility: {
+        $in: ['visible', 'hidden'],
+      },
+    },
+    limit: 1,
+    sort: ['updatedAt:desc', 'completedAt:desc', 'createdAt:desc'],
+  });
+  const visibility = profiles[0]?.recruitmentPlatformVisibility;
+
+  return isSetRecruitmentPlatformVisibility(visibility) ? visibility : null;
+};
+
+const effectiveCandidateRecruitmentPlatformVisibility = async (
+  strapi: StrapiDocumentService,
+  candidate: DocumentRecord
+) => {
+  if (isSetRecruitmentPlatformVisibility(candidate.recruitmentPlatformVisibility)) {
+    return candidate.recruitmentPlatformVisibility;
+  }
+
+  return (
+    (await findLatestProfileRecruitmentPlatformVisibility(strapi, candidate)) ||
+    candidate.recruitmentPlatformVisibility ||
+    'not_set'
+  );
+};
+
 const sanitizeCandidate = async (strapi, candidate) => ({
   documentId: candidate.documentId,
   classAreaPreferences: candidate.classAreaPreferences,
@@ -1166,7 +1215,10 @@ const sanitizeCandidate = async (strapi, candidate) => ({
   sector: candidate.sector,
   workSectorPreferences: candidate.workSectorPreferences,
   registeredInterestAt: candidate.registeredInterestAt,
-  recruitmentPlatformVisibility: candidate.recruitmentPlatformVisibility,
+  recruitmentPlatformVisibility: await effectiveCandidateRecruitmentPlatformVisibility(
+    strapi,
+    candidate
+  ),
   accountCreatedAt: candidate.accountCreatedAt,
 });
 
@@ -3785,6 +3837,47 @@ const findCandidateLatestProfile = async (
   });
 
   return profiles[0] || null;
+};
+
+const syncLatestProfileRecruitmentPlatformVisibility = async ({
+  candidate,
+  now,
+  recruitmentPlatformVisibility,
+  strapi,
+}: {
+  candidate: DocumentRecord;
+  now: string;
+  recruitmentPlatformVisibility?: string;
+  strapi: StrapiDocumentService;
+}) => {
+  if (!isSetRecruitmentPlatformVisibility(recruitmentPlatformVisibility)) {
+    return null;
+  }
+
+  const profile = await findCandidateLatestProfile(strapi, candidate);
+
+  if (!profile?.documentId) {
+    return null;
+  }
+
+  if (profile.recruitmentPlatformVisibility === recruitmentPlatformVisibility) {
+    return profile;
+  }
+
+  return documents(strapi, 'api::candidate-profile.candidate-profile').update({
+    documentId: profile.documentId,
+    data: {
+      metadata: {
+        ...objectValue(profile.metadata),
+        lastRecruitmentVisibilitySource: 'candidate_settings_communication',
+        lastRecruitmentVisibilityUpdatedAt: now,
+        recruitmentVisibilityWordingVersion: candidateReadinessWordingVersion,
+      },
+      recruitmentPlatformVisibility,
+      recruitmentVisibilityWordingVersion: candidateReadinessWordingVersion,
+      visibilityUpdatedAt: now,
+    },
+  });
 };
 
 const cleanReadinessItems = (items: unknown) =>
@@ -9591,6 +9684,8 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       return sanitizeCandidate(strapi, candidate);
     }
 
+    const profileRecruitmentPlatformVisibility =
+      await findLatestProfileRecruitmentPlatformVisibility(strapi, existingCandidate);
     const changes = diffDefinedFields(existingCandidate, {
       accountCreatedAt: existingCandidate.accountCreatedAt || now,
       authProvider: 'auth0',
@@ -9600,6 +9695,11 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       phone: existingCandidate.phone ? undefined : profile.phone,
       preferredCommunicationChannel: existingCandidate.preferredCommunicationChannel || 'not_set',
       marketingConsentState: existingCandidate.marketingConsentState || 'not_asked',
+      recruitmentPlatformVisibility: isSetRecruitmentPlatformVisibility(
+        existingCandidate.recruitmentPlatformVisibility
+      )
+        ? undefined
+        : profileRecruitmentPlatformVisibility || undefined,
       region: existingCandidate.region ? undefined : profile.region,
       sector: existingCandidate.sector ? undefined : profile.sector,
     });
@@ -10688,6 +10788,13 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
     });
 
     if (Object.keys(changes).length === 0) {
+      await syncLatestProfileRecruitmentPlatformVisibility({
+        candidate: existingCandidate,
+        now,
+        recruitmentPlatformVisibility: nextRecruitmentPlatformVisibility,
+        strapi,
+      });
+
       return sanitizeCandidate(strapi, existingCandidate);
     }
 
@@ -10695,6 +10802,13 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       documentId: existingCandidate.documentId,
       data: changes,
       populate: candidatePopulate,
+    });
+
+    await syncLatestProfileRecruitmentPlatformVisibility({
+      candidate: updatedCandidate,
+      now,
+      recruitmentPlatformVisibility: nextRecruitmentPlatformVisibility,
+      strapi,
     });
 
     const previousState = {
