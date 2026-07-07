@@ -325,26 +325,75 @@ const renderCandidateExportPdf = ({
   });
 
 const redactedValue = '[redacted]';
-const redactedFieldNames = new Set([
+const normalizedSensitiveActivityFieldNames = new Set([
   'address',
-  'actorDisplayName',
-  'actorEmail',
-  'actorId',
-  'authIdentityId',
-  'candidateDisplayName',
-  'candidateEmail',
-  'dateOfBirth',
+  'actordisplayname',
+  'actoremail',
+  'actorid',
+  'authidentityid',
+  'authorization',
+  'candidateaddress',
+  'candidatedisplayname',
+  'candidateemail',
+  'candidatefirstname',
+  'candidateid',
+  'candidatelastname',
+  'candidatephone',
+  'checkoutsessionid',
+  'checkouturl',
+  'cookie',
+  'cvurl',
+  'dateofbirth',
+  'displayname',
   'email',
-  'firstName',
-  'ipAddress',
-  'lastName',
+  'firstname',
+  'gender',
+  'genderselfdescription',
+  'ipaddress',
+  'lastname',
+  'linkedinurl',
   'location',
+  'meetingurl',
+  'name',
   'phone',
+  'portfoliourl',
   'postcode',
-  'profileImage',
-  'subjectDisplayName',
-  'userAgent',
+  'profileimage',
+  'providercheckoutsessionid',
+  'providerpaymentintentid',
+  'providerreceipturl',
+  'providerrefundid',
+  'receipturl',
+  'sessiontoken',
+  'stripeaccountid',
+  'stripereceipturl',
+  'subjectdisplayname',
+  'token',
+  'url',
+  'useragent',
 ]);
+
+const normalizedActivityFieldName = (key: string) => key.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+
+const shouldRedactActivityField = (key: string) => {
+  const normalizedKey = normalizedActivityFieldName(key);
+
+  return (
+    normalizedSensitiveActivityFieldNames.has(normalizedKey) ||
+    normalizedKey.endsWith('email') ||
+    normalizedKey.endsWith('phone') ||
+    normalizedKey.endsWith('token') ||
+    normalizedKey.endsWith('secret') ||
+    normalizedKey.endsWith('password') ||
+    normalizedKey.endsWith('receipturl')
+  );
+};
+
+const redactActivityString = (value: string) =>
+  value
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, redactedValue)
+    .replace(/https:\/\/pay\.stripe\.com\/[^\s"')]+/gi, redactedValue)
+    .replace(/\+?\d[\d\s().-]{7,}\d/g, redactedValue);
 
 const redactActivityValue = (value: unknown): unknown => {
   if (Array.isArray(value)) {
@@ -355,13 +404,21 @@ const redactActivityValue = (value: unknown): unknown => {
     return Object.fromEntries(
       Object.entries(value as Record<string, unknown>).map(([key, child]) => [
         key,
-        redactedFieldNames.has(key) ? redactedValue : redactActivityValue(child),
+        shouldRedactActivityField(key) ? redactedValue : redactActivityValue(child),
       ])
     );
   }
 
+  if (typeof value === 'string') {
+    return redactActivityString(value);
+  }
+
   return value;
 };
+
+const safeFileNamePart = (value?: string | null) =>
+  (value || 'candidate').replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80) ||
+  'candidate';
 
 const activityReportEventPayload = (event: DocumentRecord, redaction: 'full' | 'redacted') => {
   const shouldRedact = redaction === 'redacted';
@@ -2399,21 +2456,8 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
       throw new ForbiddenError('Admin or Super Admin access is required for candidate activity reports.');
     }
 
-    const auditRecords = await candidateAuditEvents(strapi, candidate);
+    const existingAuditRecords = await candidateAuditEvents(strapi, candidate);
     const generatedAt = new Date().toISOString();
-    const report = {
-      auditEvents: auditRecords.map((event) => activityReportEventPayload(event, body.redaction)),
-      candidateDisplayName: body.redaction === 'redacted' ? redactedValue : displayName(candidate),
-      candidateDocumentId: getDocumentId(candidate),
-      candidateEmail: body.redaction === 'redacted' ? redactedValue : candidate.email || null,
-      generatedAt,
-      redaction: body.redaction,
-      schemaVersion: 'candidate-activity-report-v1',
-    };
-    const pdf = await renderCandidateActivityReportPdf({
-      candidate,
-      report,
-    });
 
     await recordAdminCandidateAudit(
       strapi,
@@ -2423,7 +2467,7 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
       requestContext,
       {
         metadata: {
-          eventCount: auditRecords.length,
+          eventCount: existingAuditRecords.length + 1,
           exportFormat: 'pdf',
           generatedAt,
           redaction: body.redaction,
@@ -2431,10 +2475,25 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
       }
     );
 
+    const auditRecords = await candidateAuditEvents(strapi, candidate);
+    const report = {
+      auditEvents: auditRecords.map((event) => activityReportEventPayload(event, body.redaction)),
+      candidateDisplayName: body.redaction === 'redacted' ? redactedValue : displayName(candidate),
+      candidateDocumentId: getDocumentId(candidate),
+      candidateEmail: body.redaction === 'redacted' ? redactedValue : candidate.email || null,
+      generatedAt,
+      redaction: body.redaction,
+      schemaVersion: 'candidate-activity-report-v2',
+    };
+    const pdf = await renderCandidateActivityReportPdf({
+      candidate,
+      report,
+    });
+
     return {
       file: {
         base64: pdf.toString('base64'),
-        fileName: `hireflip-candidate-activity-report-${getDocumentId(candidate) || 'candidate'}-${body.redaction}.pdf`,
+        fileName: `hireflip-candidate-activity-report-${safeFileNamePart(getDocumentId(candidate))}-${body.redaction}.pdf`,
         mimeType: 'application/pdf',
       },
       report,

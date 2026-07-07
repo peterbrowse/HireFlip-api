@@ -196,7 +196,14 @@ const withProviderEventLock = async <TResult>(
     return callback();
   }
 
-  const redis = await ensureWebhookRedis();
+  let redis: Redis;
+
+  try {
+    redis = await ensureWebhookRedis();
+  } catch {
+    return callback();
+  }
+
   const key = webhookLockKey(providerEventId);
   const owner = randomUUID();
   const ttlMs = webhookLockTtlMs();
@@ -205,7 +212,15 @@ const withProviderEventLock = async <TResult>(
   const startedAt = Date.now();
 
   while (Date.now() - startedAt < waitMs) {
-    if ((await redis.set(key, owner, 'PX', ttlMs, 'NX')) === 'OK') {
+    let lockAcquired = false;
+
+    try {
+      lockAcquired = (await redis.set(key, owner, 'PX', ttlMs, 'NX')) === 'OK';
+    } catch {
+      return callback();
+    }
+
+    if (lockAcquired) {
       let refreshTimer: ReturnType<typeof setInterval> | undefined;
 
       try {
@@ -324,13 +339,21 @@ const isUniqueConstraintError = (error: unknown) => {
     details?: { errors?: unknown[] };
     message?: unknown;
     name?: unknown;
+    errno?: unknown;
   };
+  const code = String(value.code || '').toLowerCase();
   const message = String(value.message || '').toLowerCase();
+  const name = String(value.name || '').toLowerCase();
 
   return (
-    value.code === '23505' ||
-    String(value.name || '').toLowerCase().includes('unique') ||
+    code === '23505' ||
+    code === 'er_dup_entry' ||
+    code === 'sqlite_constraint' ||
+    code === 'sqlite_constraint_unique' ||
+    value.errno === 1062 ||
+    name.includes('unique') ||
     message.includes('must be unique') ||
+    message.includes('unique constraint failed') ||
     (message.includes('unique') && message.includes('provider')) ||
     (message.includes('duplicate') && message.includes('provider'))
   );

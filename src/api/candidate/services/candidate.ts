@@ -5621,7 +5621,7 @@ const billingPaymentStatusLabels: Record<string, string> = {
   paid: 'Paid',
   partially_refunded: 'Partially refunded',
   refunded: 'Refunded',
-  requires_review: 'Requires review',
+  requires_review: 'Payment under review',
 };
 
 const billingEventDate = (...values: unknown[]) =>

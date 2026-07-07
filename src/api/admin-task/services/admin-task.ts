@@ -220,7 +220,7 @@ const taskListSchema = overviewSchema
         'support_case',
       ])
       .optional(),
-    taskState: z.enum(['acknowledged', 'dismissed', 'open', 'resolved']).optional(),
+    taskState: z.enum(['acknowledged', 'all', 'dismissed', 'open', 'resolved']).optional(),
     taskType: z
       .enum([
         'assessment_appeal',
@@ -2031,7 +2031,13 @@ const filterTaskItems = (
 
   return entries
     .filter(({ item, task }) => !query.taskType || item.taskType === query.taskType)
-    .filter(({ item }) => !query.taskState || item.taskState === query.taskState)
+    .filter(({ item }) =>
+      query.taskState === 'all'
+        ? true
+        : query.taskState
+          ? item.taskState === query.taskState
+          : item.taskState === 'open'
+    )
     .filter(({ item }) => !query.priority || item.priority === query.priority)
     .filter(({ item }) => !query.sourceType || item.sourceType === query.sourceType)
     .filter(({ item }) => !query.owner || item.ownerKeys.includes(query.owner))
