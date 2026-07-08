@@ -119,10 +119,9 @@ SERVICE_TOKEN_SHA256_BY_SERVICE=homepage:<sha256>
 ```
 
 `TURNSTILE_SECRET_KEY` is the private Cloudflare Turnstile key used for
-server-side token validation. Prefer `SERVICE_TOKEN_SHA256_BY_SERVICE` for
+server-side token validation. Use `SERVICE_TOKEN_SHA256_BY_SERVICE` for
 internal auth, using comma-separated `service-name:<sha256>` entries so a token
-hash is bound to the only service identity allowed to use it. The legacy
-`SERVICE_TOKEN_SHA256_HASHES` list is retained for local/dev compatibility only.
+hash is bound to the only service identity allowed to use it.
 The homepage sends the raw token server-side using `x-hireflip-service-token`
 and `x-hireflip-service-name: homepage`.
 

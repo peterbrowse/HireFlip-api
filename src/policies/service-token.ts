@@ -25,12 +25,6 @@ const safeEqualHex = (left: string, right: string) => {
   return timingSafeEqual(leftBuffer, rightBuffer);
 };
 
-const getAllowedHashes = () =>
-  (process.env.SERVICE_TOKEN_SHA256_HASHES || '')
-    .split(',')
-    .map((hash) => hash.trim().toLowerCase())
-    .filter(Boolean);
-
 const getServiceBoundHashes = (): ServiceTokenHashEntry[] =>
   (process.env.SERVICE_TOKEN_SHA256_BY_SERVICE || '')
     .split(',')
@@ -87,9 +81,8 @@ export default (ctx, config: ServiceTokenConfig = {}) => {
   const serviceHashes = serviceBoundHashes
     .filter((entry) => entry.serviceName === serviceName)
     .map((entry) => entry.hash);
-  const hashesToCheck = serviceBoundHashes.length > 0 ? serviceHashes : getAllowedHashes();
   const matches =
-    hashesToCheck.length > 0 && hashesToCheck.some((allowedHash) => safeEqualHex(tokenHash, allowedHash));
+    serviceHashes.length > 0 && serviceHashes.some((allowedHash) => safeEqualHex(tokenHash, allowedHash));
 
   if (!matches) {
     return false;
