@@ -1598,6 +1598,16 @@ const requestAiCandidateProfileAutofill = async ({
     const parsed = aiCandidateProfileAutofillResponseSchema.safeParse(responseBody);
 
     if (!response.ok || !parsed.success) {
+      if (response.status === 413) {
+        throw new ValidationError(
+          'The uploaded CV is too large for AI autofill. Shorten it or complete the profile manually.'
+        );
+      }
+
+      if (response.status === 429) {
+        throw new ValidationError('CV autofill is temporarily busy. Try again shortly.');
+      }
+
       throw new ValidationError('AI service could not parse the uploaded CV.');
     }
 
@@ -10542,6 +10552,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
         model: aiResult.model,
         provider: aiResult.provider,
         providerRequestId: aiResult.metadata?.providerRequestId,
+        providerUsage: aiResult.metadata?.providerUsage ?? null,
       },
       newState: {
         suggestedProfile: normalizeAiAutofillProfile(aiResult.profile),

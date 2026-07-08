@@ -115,19 +115,36 @@ Required deployed config:
 ```bash
 TURNSTILE_SECRET_KEY=...
 TURNSTILE_ALLOWED_HOSTNAMES=hireflip.work
-SERVICE_TOKEN_SHA256_HASHES=...
+SERVICE_TOKEN_SHA256_BY_SERVICE=homepage:<sha256>
 ```
 
 `TURNSTILE_SECRET_KEY` is the private Cloudflare Turnstile key used for
-server-side token validation. `SERVICE_TOKEN_SHA256_HASHES` should contain
-SHA-256 hashes of service tokens, not raw token values. The homepage sends the
-raw token server-side using `x-hireflip-service-token`.
+server-side token validation. Prefer `SERVICE_TOKEN_SHA256_BY_SERVICE` for
+internal auth, using comma-separated `service-name:<sha256>` entries so a token
+hash is bound to the only service identity allowed to use it. The legacy
+`SERVICE_TOKEN_SHA256_HASHES` list is retained for local/dev compatibility only.
+The homepage sends the raw token server-side using `x-hireflip-service-token`
+and `x-hireflip-service-name: homepage`.
 
 The Turnstile widget should be configured for Cloudflare-owned hostnames only.
 The launch hostname is `hireflip.work`. If a preview environment needs
 Turnstile later, create a Cloudflare-owned preview hostname such as
 `preview.hireflip.work` and add it to both the Turnstile widget and
 `TURNSTILE_ALLOWED_HOSTNAMES`.
+
+Marketing opt-in leads are queued with `syncStatus: pending`. Configure
+`PUBLIC_INTEREST_LEAD_SYNC_URL` and `PUBLIC_INTEREST_LEAD_SYNC_TOKEN` to post
+pending leads to the mailing platform adapter, then run:
+
+```bash
+npm run sync:public-interest-leads
+```
+
+Optional sync env vars include `PUBLIC_INTEREST_LEAD_SYNC_PROVIDER`,
+`PUBLIC_INTEREST_LEAD_SYNC_LIST_ID`, `PUBLIC_INTEREST_LEAD_SYNC_TIMEOUT_MS`,
+`PUBLIC_INTEREST_LEAD_SYNC_BATCH_SIZE`, and
+`PUBLIC_INTEREST_LEAD_SYNC_INCLUDE_FAILED`. `PUBLIC_INTEREST_LEAD_SYNC_DOCUMENT_ID`
+can be used for a one-off single-lead retry.
 
 For local automated testing, Cloudflare's official always-pass dummy secret can
 be used:

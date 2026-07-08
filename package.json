@@ -18,6 +18,7 @@
     "seed:project-logos": "ENV_PATH=${ENV_PATH:-.env.local} node scripts/seed-project-logos.js",
     "seed:reset-content": "npm run reset:class-data && npm run seed:content",
     "seed:local-content": "npm run seed:content",
+    "sync:public-interest-leads": "ENV_PATH=${ENV_PATH:-.env.local} node scripts/sync-public-interest-leads.js",
     "setup:e2e-fixtures": "ENV_PATH=${ENV_PATH:-.env.local} node scripts/setup-e2e-fixtures.js",
     "smoke:class-allocation": "ENV_PATH=${ENV_PATH:-.env.local} node scripts/smoke-class-allocation.js",
     "smoke:class-realtime": "npm run build && ENV_PATH=${ENV_PATH:-.env.local} node scripts/smoke-class-realtime.js",
@@ -32,6 +33,7 @@
     "smoke:support-cases": "npm run build && ENV_PATH=${ENV_PATH:-.env.local} node scripts/smoke-support-cases.js",
     "smoke:waiting-list-offers": "ENV_PATH=${ENV_PATH:-.env.local} node scripts/smoke-waiting-list-offers.js",
     "smoke:mvp-dry-run": "ENV_PATH=${ENV_PATH:-.env.local} node scripts/smoke-mvp-dry-run.js",
+    "smoke:public-interest-lead-sync": "npm run build && ENV_PATH=${ENV_PATH:-.env.local} node scripts/smoke-public-interest-lead-sync.js",
     "load:payment-enrollment": "ENV_PATH=${ENV_PATH:-.env.local} node scripts/load-payment-enrollment.js",
     "upgrade": "npx @strapi/upgrade latest",
     "upgrade:dry": "npx @strapi/upgrade latest --dry"

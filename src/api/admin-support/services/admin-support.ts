@@ -685,7 +685,22 @@ const requestAiFeedbackReport = async ({
     const parsed = aiFeedbackReportResponseSchema.safeParse(responseBody);
 
     if (!response.ok || !parsed.success) {
-      throw new ValidationError('AI service could not generate a valid feedback report.');
+      if (response.status === 413) {
+        throw new ValidationError(
+          'The feedback payload is too large for AI regeneration. Save a manual draft or reduce the source feedback.'
+        );
+      }
+
+      if (response.status === 429) {
+        throw new ValidationError('AI report generation is temporarily busy. Try again shortly.');
+      }
+
+      const responseError =
+        responseBody && typeof responseBody === 'object' && 'error' in responseBody
+          ? String((responseBody as { error?: unknown }).error || '')
+          : '';
+
+      throw new ValidationError(responseError || 'AI service could not generate a valid feedback report.');
     }
 
     return parsed.data.data;

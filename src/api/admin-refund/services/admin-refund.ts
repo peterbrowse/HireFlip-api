@@ -815,6 +815,8 @@ const buildReviewItem = async ({
   const currency = originalPayment?.currency || refund?.currency || reservation?.currency || 'GBP';
   const title = type === 'refund_request' ? 'Refund request review' : 'Payment exception review';
   const refundState = String(refund?.refundState || '');
+  const refundHasProviderId =
+    typeof refund?.providerRefundId === 'string' && refund.providerRefundId.trim().length > 0;
 
   return {
     actionPath: refundTaskPath(taskKey),
@@ -824,7 +826,10 @@ const buildReviewItem = async ({
         typeof originalAmountPence === 'number' &&
         originalAmountPence > 0 &&
         Boolean(originalPayment?.providerPaymentIntentId),
-      canExecuteRefund: type === 'refund_request' && ['approved', 'failed'].includes(refundState),
+      canExecuteRefund:
+        type === 'refund_request' &&
+        ['approved', 'failed'].includes(refundState) &&
+        !refundHasProviderId,
       canEscalate: type === 'refund_request' && ['requested', 'failed'].includes(refundState),
       canRefuse: type === 'refund_request' && ['requested', 'failed'].includes(refundState),
     },
@@ -2891,6 +2896,12 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
       throw new ValidationError('Only approved or failed refunds can be submitted to the payment provider.');
     }
 
+    if (typeof refund.providerRefundId === 'string' && refund.providerRefundId.trim().length > 0) {
+      throw new ValidationError(
+        'This refund has already reached the payment provider. Reconcile the provider state or open a new reviewed refund record instead of submitting it again.'
+      );
+    }
+
     if (!payment?.documentId || !payment.providerPaymentIntentId) {
       throw new ValidationError('The original provider PaymentIntent is required before a refund can be executed.');
     }
@@ -2911,11 +2922,20 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
     );
 
     const now = new Date().toISOString();
+    const refundMetadata = objectValue(refund.metadata);
+    const previousProviderSubmissionAttemptCount = Number(
+      refundMetadata.providerSubmissionAttemptCount
+    );
+    const providerSubmissionAttemptCount = Number.isFinite(previousProviderSubmissionAttemptCount)
+      ? previousProviderSubmissionAttemptCount + 1
+      : 1;
     const submittedRefund = await documents(strapi, 'api::refund.refund').update({
       documentId: refund.documentId,
       data: {
         metadata: {
-          ...(objectValue(refund.metadata)),
+          ...refundMetadata,
+          providerSubmissionAttemptCount,
+          providerSubmissionLastAttemptAt: now,
           submittedByAdminEmail: session.user.email,
           submittedByAdminId: session.user.id,
           submittedToProviderAt: now,

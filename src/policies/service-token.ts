@@ -5,6 +5,14 @@ type ServiceTokenConfig = {
 };
 
 const hashToken = (token: string) => createHash('sha256').update(token).digest('hex');
+const serviceHashPairSeparator = ':';
+
+type ServiceTokenHashEntry = {
+  hash: string;
+  serviceName: string;
+};
+
+const normalizeServiceName = (serviceName: string) => serviceName.trim().toLowerCase();
 
 const safeEqualHex = (left: string, right: string) => {
   const leftBuffer = Buffer.from(left, 'hex');
@@ -23,6 +31,25 @@ const getAllowedHashes = () =>
     .map((hash) => hash.trim().toLowerCase())
     .filter(Boolean);
 
+const getServiceBoundHashes = (): ServiceTokenHashEntry[] =>
+  (process.env.SERVICE_TOKEN_SHA256_BY_SERVICE || '')
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => {
+      const separatorIndex = entry.indexOf(serviceHashPairSeparator);
+
+      if (separatorIndex <= 0) {
+        return undefined;
+      }
+
+      const serviceName = normalizeServiceName(entry.slice(0, separatorIndex));
+      const hash = entry.slice(separatorIndex + 1).trim().toLowerCase();
+
+      return serviceName && hash ? { serviceName, hash } : undefined;
+    })
+    .filter((entry): entry is ServiceTokenHashEntry => Boolean(entry));
+
 const getBearerToken = (authorizationHeader?: string) => {
   if (!authorizationHeader) {
     return undefined;
@@ -38,14 +65,16 @@ const getBearerToken = (authorizationHeader?: string) => {
 };
 
 const normalizeServices = (services: unknown) =>
-  Array.isArray(services) ? services.filter((service) => typeof service === 'string') : [];
+  Array.isArray(services)
+    ? services.filter((service) => typeof service === 'string').map(normalizeServiceName)
+    : [];
 
 export default (ctx, config: ServiceTokenConfig = {}) => {
   const token = ctx.request.get('x-hireflip-service-token') || getBearerToken(ctx.request.get('authorization'));
-  const serviceName = ctx.request.get('x-hireflip-service-name') || 'unknown';
+  const serviceName = normalizeServiceName(ctx.request.get('x-hireflip-service-name') || '');
   const allowedServices = normalizeServices(config.allowedServices);
 
-  if (!token) {
+  if (!token || !serviceName) {
     return false;
   }
 
@@ -54,7 +83,13 @@ export default (ctx, config: ServiceTokenConfig = {}) => {
   }
 
   const tokenHash = hashToken(token);
-  const matches = getAllowedHashes().some((allowedHash) => safeEqualHex(tokenHash, allowedHash));
+  const serviceBoundHashes = getServiceBoundHashes();
+  const serviceHashes = serviceBoundHashes
+    .filter((entry) => entry.serviceName === serviceName)
+    .map((entry) => entry.hash);
+  const hashesToCheck = serviceBoundHashes.length > 0 ? serviceHashes : getAllowedHashes();
+  const matches =
+    hashesToCheck.length > 0 && hashesToCheck.some((allowedHash) => safeEqualHex(tokenHash, allowedHash));
 
   if (!matches) {
     return false;

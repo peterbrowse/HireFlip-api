@@ -1688,7 +1688,15 @@ const aiFeedbackReportResponseSchema = z
 type AiFeedbackReportResponse = z.infer<typeof aiFeedbackReportResponseSchema>['data'];
 
 class AiFeedbackReportGenerationError extends Error {
-  category: 'configuration' | 'input' | 'provider' | 'service_unavailable' | 'timeout' | 'validation' | 'unknown';
+  category:
+    | 'configuration'
+    | 'guardrail'
+    | 'input'
+    | 'provider'
+    | 'service_unavailable'
+    | 'timeout'
+    | 'validation'
+    | 'unknown';
   status?: number;
   transient: boolean;
 
@@ -1800,6 +1808,8 @@ const requestAiFeedbackReport = async ({
       const category =
         status === 401 || status === 403
           ? 'configuration'
+          : status === 413 || status === 429
+            ? 'guardrail'
           : status === 400
             ? 'input'
             : !parsed.success

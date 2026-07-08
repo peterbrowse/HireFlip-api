@@ -820,7 +820,7 @@ const ensureCandidate = async (strapi, auth0User, content) => {
       },
       preferredCommunicationChannel: 'email',
     },
-    phone: optionalEnv('HIREFLIP_E2E_CANDIDATE_PHONE', '+447700900123'),
+    phone: optionalEnv('HIREFLIP_E2E_CANDIDATE_PHONE', '+447911123456'),
     preferredCommunicationChannel: 'email',
     profileSettings: {
       accountOnboarding: {
@@ -834,6 +834,75 @@ const ensureCandidate = async (strapi, auth0User, content) => {
   };
 
   return documents(strapi, 'api::candidate.candidate').create({ data });
+};
+
+const ensureCandidateBillingHistoryFixture = async (strapi, candidate, content) => {
+  const nowDate = new Date();
+  const amountPence = Number.parseInt(optionalEnv('HIREFLIP_E2E_CLASS_PRICE_PENCE', '100'), 10);
+  const enrollment = await documents(strapi, 'api::enrollment.enrollment').create({
+    data: {
+      candidate: connect(candidate),
+      class: connect(content.classRecord),
+      completionStatus: 'not_started',
+      enrolledAt: isoDaysFrom(nowDate, -14),
+      enrollmentState: 'enrolled',
+      passStatus: 'not_assessed',
+      paymentStatus: 'paid',
+      qualifyingInterviewsDeliveredCount: 0,
+      refundEligibilityState: 'not_assessed',
+      metadata: {
+        scenario: 'candidate_billing_history',
+        source: 'e2e_fixture',
+      },
+    },
+  });
+  const reservation = await documents(strapi, 'api::reservation.reservation').create({
+    data: {
+      amountPence,
+      candidate: connect(candidate),
+      class: connect(content.classRecord),
+      currency: 'GBP',
+      enrollment: connect(enrollment),
+      expiresAt: isoDaysFrom(nowDate, -13),
+      paidAt: isoDaysFrom(nowDate, -14),
+      reservationStartedAt: isoDaysFrom(nowDate, -14),
+      reservationState: 'paid',
+      source: 'candidate_dashboard',
+      termsAcceptedAt: isoDaysFrom(nowDate, -14),
+      termsVersion: 'e2e-checkout-terms-v1',
+      metadata: {
+        scenario: 'candidate_billing_history',
+        source: 'e2e_fixture',
+      },
+    },
+  });
+  const payment = await documents(strapi, 'api::payment.payment').create({
+    data: {
+      amountPence,
+      candidate: connect(candidate),
+      createdByService: 'e2e-fixture',
+      currency: 'GBP',
+      enrollment: connect(enrollment),
+      metadata: {
+        providerReceiptUrl: 'https://pay.stripe.com/receipts/e2e-candidate-billing',
+        scenario: 'candidate_billing_history',
+        source: 'e2e_fixture',
+      },
+      paidAt: isoDaysFrom(nowDate, -14),
+      paymentProvider: 'stripe',
+      paymentState: 'paid',
+      paymentType: 'course_payment',
+      providerCheckoutSessionId: 'cs_test_e2e_candidate_billing',
+      providerPaymentIntentId: 'pi_test_e2e_candidate_billing',
+      reservation: connect(reservation),
+    },
+  });
+
+  return {
+    enrollment,
+    payment,
+    reservation,
+  };
 };
 
 const ensureCandidatePrivacyExportRequest = async (strapi, candidate) => {
@@ -1161,7 +1230,7 @@ const ensureCandidatePrivacyAnonymisationFixtures = async (
         },
         preferredCommunicationChannel: 'email',
       },
-      phone: '+447700900137',
+      phone: '+447911123457',
       preferredCommunicationChannel: 'email',
       profileSettings: {
         accountOnboarding: {
@@ -1454,7 +1523,7 @@ const ensureCourseProgressCandidate = async (strapi, auth0User, content, courseC
         },
         preferredCommunicationChannel: 'email',
       },
-      phone: optionalEnv('HIREFLIP_E2E_COURSE_CANDIDATE_PHONE', '+447700900126'),
+      phone: optionalEnv('HIREFLIP_E2E_COURSE_CANDIDATE_PHONE', '+447911123458'),
       preferredCommunicationChannel: 'email',
       profileSettings: {
         accountOnboarding: {
@@ -1576,7 +1645,7 @@ const ensureCourseAppealSubmissionCandidate = async (
         },
         preferredCommunicationChannel: 'email',
       },
-      phone: optionalEnv('HIREFLIP_E2E_COURSE_APPEAL_CANDIDATE_PHONE', '+447700900127'),
+      phone: optionalEnv('HIREFLIP_E2E_COURSE_APPEAL_CANDIDATE_PHONE', '+447911123459'),
       preferredCommunicationChannel: 'email',
       profileSettings: {
         accountOnboarding: {
@@ -2054,7 +2123,7 @@ const ensureInterviewCandidate = async (strapi, auth0User, content, employerCont
   const firstName = options.firstName || optionalEnv('HIREFLIP_E2E_INTERVIEW_CANDIDATE_FIRST_NAME', 'E2E');
   const lastName =
     options.lastName || optionalEnv('HIREFLIP_E2E_INTERVIEW_CANDIDATE_LAST_NAME', 'Interview Candidate');
-  const phone = options.phone || optionalEnv('HIREFLIP_E2E_INTERVIEW_CANDIDATE_PHONE', '+447700900124');
+  const phone = options.phone || optionalEnv('HIREFLIP_E2E_INTERVIEW_CANDIDATE_PHONE', '+447911123460');
   const dateOfBirth =
     options.dateOfBirth || optionalEnv('HIREFLIP_E2E_INTERVIEW_CANDIDATE_DATE_OF_BIRTH', '1996-02-20');
   const assignmentNote = options.assignmentNote || 'E2E browser fixture active slot offer.';
@@ -3042,7 +3111,7 @@ const ensureEmployerAvailabilityClaims = async (strapi, content, employerContext
     assignmentNote: 'E2E browser fixture open employer availability claim.',
     email: optionalEnv('HIREFLIP_E2E_AVAILABILITY_CANDIDATE_EMAIL', 'e2e-availability-candidate@hireflip.work'),
     lastName: 'Availability Candidate',
-    phone: '+447700900126',
+    phone: '+447911123461',
   });
   const topUp = await createScenario({
     assignmentNote: 'E2E browser fixture reusable top-up availability claim.',
@@ -3052,21 +3121,21 @@ const ensureEmployerAvailabilityClaims = async (strapi, content, employerContext
       purpose: 'reusable_slot_top_up',
       source: 'e2e_fixture',
     },
-    phone: '+447700900127',
+    phone: '+447911123462',
     requiredSlotCount: 1,
   });
   const decline = await createScenario({
     assignmentNote: 'E2E browser fixture employer decline availability claim.',
     email: optionalEnv('HIREFLIP_E2E_AVAILABILITY_DECLINE_CANDIDATE_EMAIL', 'e2e-availability-decline-candidate@hireflip.work'),
     lastName: 'Availability Decline Candidate',
-    phone: '+447700900128',
+    phone: '+447911123463',
   });
   const locked = await createScenario({
     assignmentNote: 'E2E browser fixture locked employer availability claim.',
     currentlyOpenByContact: lockContact,
     email: optionalEnv('HIREFLIP_E2E_AVAILABILITY_LOCKED_CANDIDATE_EMAIL', 'e2e-availability-locked-candidate@hireflip.work'),
     lastName: 'Availability Locked Candidate',
-    phone: '+447700900129',
+    phone: '+447911123464',
   });
   const capacityShortfall = await createScenario({
     assignmentNote: 'E2E browser fixture capacity shortfall request.',
@@ -3077,7 +3146,7 @@ const ensureEmployerAvailabilityClaims = async (strapi, content, employerContext
     insufficientCapacityDetectedAt: isoDaysFrom(nowDate, -1),
     insufficientCapacityReason: 'E2E capacity shortfall for browser testing.',
     lastName: 'Capacity Shortfall Candidate',
-    phone: '+447700900130',
+    phone: '+447911123465',
     requestState: 'pending_capacity',
     seedCapacityClaim: false,
   });
@@ -3704,6 +3773,7 @@ const main = async () => {
       password: optionalEnv('HIREFLIP_E2E_BLOCKED_EMPLOYER_PASSWORD', requireEnv('HIREFLIP_E2E_EMPLOYER_PASSWORD')),
     });
     const candidate = await ensureCandidate(strapi, candidateAuth0User, content);
+    const candidateBillingHistory = await ensureCandidateBillingHistoryFixture(strapi, candidate, content);
     const courseProgressCandidate = await ensureCourseProgressCandidate(
       strapi,
       courseCandidateAuth0User,
@@ -3747,7 +3817,7 @@ const main = async () => {
       ),
       firstName: optionalEnv('HIREFLIP_E2E_ADMIN_ACTION_CANDIDATE_FIRST_NAME', 'E2E'),
       lastName: optionalEnv('HIREFLIP_E2E_ADMIN_ACTION_CANDIDATE_LAST_NAME', 'Admin Action Candidate'),
-      phone: optionalEnv('HIREFLIP_E2E_ADMIN_ACTION_CANDIDATE_PHONE', '+447700900136'),
+      phone: optionalEnv('HIREFLIP_E2E_ADMIN_ACTION_CANDIDATE_PHONE', '+447911123466'),
     });
     const resetAnnouncements = await resetClassAnnouncements(strapi, content.classRecord);
     const candidatePrivacyExportRequest = await ensureCandidatePrivacyExportRequest(strapi, candidate);
@@ -3768,7 +3838,7 @@ const main = async () => {
         email: optionalEnv('HIREFLIP_E2E_PROGRESSION_CANDIDATE_EMAIL', 'e2e-progression-candidate@hireflip.work'),
         firstName: optionalEnv('HIREFLIP_E2E_PROGRESSION_CANDIDATE_FIRST_NAME', 'E2E'),
         lastName: optionalEnv('HIREFLIP_E2E_PROGRESSION_CANDIDATE_LAST_NAME', 'Progression Candidate'),
-        phone: optionalEnv('HIREFLIP_E2E_PROGRESSION_CANDIDATE_PHONE', '+447700900137'),
+        phone: optionalEnv('HIREFLIP_E2E_PROGRESSION_CANDIDATE_PHONE', '+447911123467'),
         seedActiveSlotOffer: false,
         seedCandidateProgressionStateCoverage: true,
         seedDefaultProgressionFollowUp: false,
@@ -3790,7 +3860,7 @@ const main = async () => {
           'HIREFLIP_E2E_EMPLOYER_FOLLOW_UP_CANDIDATE_LAST_NAME',
           'Employer Follow Up Candidate'
         ),
-        phone: optionalEnv('HIREFLIP_E2E_EMPLOYER_FOLLOW_UP_CANDIDATE_PHONE', '+447700900138'),
+        phone: optionalEnv('HIREFLIP_E2E_EMPLOYER_FOLLOW_UP_CANDIDATE_PHONE', '+447911123468'),
         seedDefaultProgressionFollowUp: false,
         seedEmployerProgressionFollowUpCoverage: true,
         seedPublicFeedbackInvite: false,
@@ -3807,7 +3877,7 @@ const main = async () => {
         firstName: optionalEnv('HIREFLIP_E2E_DECLINE_CANDIDATE_FIRST_NAME', 'E2E'),
         includeHistory: false,
         lastName: optionalEnv('HIREFLIP_E2E_DECLINE_CANDIDATE_LAST_NAME', 'Decline Candidate'),
-        phone: optionalEnv('HIREFLIP_E2E_DECLINE_CANDIDATE_PHONE', '+447700900125'),
+        phone: optionalEnv('HIREFLIP_E2E_DECLINE_CANDIDATE_PHONE', '+447911123469'),
         seedActiveStrike: true,
       }
     );
@@ -3822,7 +3892,7 @@ const main = async () => {
           'e2e-appeal-approve-candidate@hireflip.work'
         ),
         lastName: 'Appeal Approve Candidate',
-        phone: '+447700900131',
+        phone: '+447911123470',
         reason:
           'E2E browser appeal approval fixture: I ran out of attempts while waiting for support review.',
         scenario: 'appeal_approve',
@@ -3839,7 +3909,7 @@ const main = async () => {
           'e2e-appeal-reject-candidate@hireflip.work'
         ),
         lastName: 'Appeal Reject Candidate',
-        phone: '+447700900132',
+        phone: '+447911123471',
         reason:
           'E2E browser appeal rejection fixture: I disagree with the score but have no new evidence.',
         scenario: 'appeal_reject',
@@ -3852,7 +3922,7 @@ const main = async () => {
       ),
       lastName: 'Refund Refuse Candidate',
       originalAmountPence: 10000,
-      phone: '+447700900133',
+      phone: '+447911123472',
       reason:
         'E2E browser refund refusal fixture: candidate asks for refund despite receiving qualifying interview support.',
       scenario: 'refund_refuse',
@@ -3864,7 +3934,7 @@ const main = async () => {
       ),
       lastName: 'Refund Escalate Candidate',
       originalAmountPence: 12000,
-      phone: '+447700900134',
+      phone: '+447911123473',
       reason:
         'E2E browser refund escalation fixture: candidate missed the guaranteed interview threshold.',
       scenario: 'refund_escalate',
@@ -3874,6 +3944,10 @@ const main = async () => {
       `E2E fixtures ready: ${JSON.stringify({
         admin: { email: staffUser.email, roleKey: staffUser.roleKey },
         candidate: { documentId: candidate.documentId, email: candidate.email },
+        candidateBillingHistory: {
+          paymentDocumentId: candidateBillingHistory.payment.documentId,
+          providerReceiptUrl: candidateBillingHistory.payment.metadata.providerReceiptUrl,
+        },
         courseProgressCandidate: {
           classDocumentId: courseProgressClass.documentId,
           documentId: courseProgressCandidate.candidate.documentId,

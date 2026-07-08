@@ -599,6 +599,7 @@ export interface ApiAdminTaskAdminTask extends Struct.CollectionTypeSchema {
         'support_case',
         'interview_feedback',
         'interview',
+        'progression_request',
         'privacy_rights_request',
         'notification_event',
         'audit_event',
