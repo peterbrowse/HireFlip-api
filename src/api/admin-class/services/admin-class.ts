@@ -204,6 +204,8 @@ const editableAnnouncementStates = ['draft', 'published'] as const;
 
 const listSchema = z
   .object({
+    page: z.coerce.number().int().min(1).default(1),
+    pageSize: z.coerce.number().int().min(10).max(100).default(25),
     readiness: z.enum(readinessFilters).default('all'),
     search: z.string().trim().max(120).optional().transform((value) => value || undefined),
     sessionToken: z.string().trim().min(32).max(512),
@@ -395,6 +397,16 @@ const objectValue = (value: unknown) =>
   value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+
+const paymentReceiptUrl = (payment: DocumentRecord) => {
+  const metadata = objectValue(payment.metadata);
+
+  if (typeof payment.providerReceiptUrl === 'string') {
+    return payment.providerReceiptUrl;
+  }
+
+  return typeof metadata.providerReceiptUrl === 'string' ? metadata.providerReceiptUrl : null;
+};
 
 const trimTrailingSlash = (value: string) => value.replace(/\/+$/, '');
 
@@ -1198,6 +1210,7 @@ const publicEnrollment = ({
           paymentState: payment.paymentState || null,
           providerCheckoutSessionId: payment.providerCheckoutSessionId || null,
           providerPaymentIntentId: payment.providerPaymentIntentId || null,
+          providerReceiptUrl: paymentReceiptUrl(payment),
         }
       : null,
     paymentStatus: enrollment.paymentStatus || null,
@@ -2140,12 +2153,23 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
       .filter((classRecord) => classMatchesReadiness(classRecord, body.readiness))
       .filter((classRecord) => matchesSearch(classRecord, body.search))
       .sort(compareClasses(body.sortBy, body.sortDirection));
+    const filteredTotal = filteredClasses.length;
+    const pageCount = Math.max(1, Math.ceil(filteredTotal / body.pageSize));
+    const page = Math.min(body.page, pageCount);
+    const pageStart = (page - 1) * body.pageSize;
+    const visibleClasses = filteredClasses.slice(pageStart, pageStart + body.pageSize);
     const classDocumentIds = filteredClasses.map(getDocumentId).filter((documentId): documentId is string => Boolean(documentId));
     const enrollments = await findEnrollmentsForClasses(strapi, classDocumentIds);
     const enrollmentsByClass = groupEnrollmentsByClass(enrollments);
+    const aggregateCapacity = filteredClasses.reduce((total, classRecord) => total + integerValue(classRecord.capacity, 0), 0);
+    const aggregateCapacityHeld = filteredClasses.reduce(
+      (total, classRecord) =>
+        total + classCounts(classRecord, enrollmentsByClass.get(getDocumentId(classRecord) || '') || []).capacityHeld,
+      0
+    );
 
     return {
-      classes: filteredClasses.map((classRecord) =>
+      classes: visibleClasses.map((classRecord) =>
         publicClassSummary(
           classRecord,
           enrollmentsByClass.get(getDocumentId(classRecord) || '') || [],
@@ -2153,11 +2177,19 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
         )
       ),
       counts: {
-        filtered: filteredClasses.length,
+        capacity: aggregateCapacity,
+        capacityHeld: aggregateCapacityHeld,
+        filtered: filteredTotal,
         open: classes.filter((classRecord) => classRecord.state === 'open').length,
         total: classes.length,
       },
       generatedAt: new Date().toISOString(),
+      pagination: {
+        page,
+        pageCount,
+        pageSize: body.pageSize,
+        total: filteredTotal,
+      },
       user: session.user,
     };
   },

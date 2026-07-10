@@ -128,8 +128,8 @@ const channelFilterValues = ['all', 'email', 'sms', 'in_app'] as const;
 const listIssuesSchema = sessionTokenSchema
   .extend({
     channel: z.enum(channelFilterValues).default('all'),
-    page: z.number().int().min(1).max(500).default(1),
-    pageSize: z.number().int().min(1).max(100).default(25),
+    page: z.coerce.number().int().min(1).max(500).default(1),
+    pageSize: z.coerce.number().int().min(1).max(100).default(25),
     search: z.string().trim().max(180).optional().transform((value) => value || undefined),
     state: z.enum(issueStateFilterValues).default('active'),
   })
@@ -793,7 +793,9 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
       sort: ['failedAt:desc', 'updatedAt:desc', 'createdAt:desc'],
     });
     const filteredEvents = events.filter((event) => issueMatchesFilters(event, body));
-    const start = (body.page - 1) * body.pageSize;
+    const pageCount = Math.max(1, Math.ceil(filteredEvents.length / body.pageSize));
+    const page = Math.min(body.page, pageCount);
+    const start = (page - 1) * body.pageSize;
     const pagedEvents = filteredEvents.slice(start, start + body.pageSize);
 
     return {
@@ -809,7 +811,7 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
       },
       filters: {
         channel: body.channel,
-        page: body.page,
+        page,
         pageSize: body.pageSize,
         search: body.search || null,
         state: body.state,
@@ -817,8 +819,8 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
       generatedAt: new Date().toISOString(),
       issues: pagedEvents.map(publicIssue),
       pagination: {
-        page: body.page,
-        pageCount: Math.max(1, Math.ceil(filteredEvents.length / body.pageSize)),
+        page,
+        pageCount,
         pageSize: body.pageSize,
         total: filteredEvents.length,
       },

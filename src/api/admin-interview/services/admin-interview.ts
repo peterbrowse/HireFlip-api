@@ -139,6 +139,8 @@ const operationsSchema = z
         'progression_follow_up_concern',
       ])
       .default('all'),
+    page: z.coerce.number().int().min(1).default(1),
+    pageSize: z.coerce.number().int().min(10).max(100).default(25),
     search: z.string().trim().max(120).optional().transform((value) => value || undefined),
     sessionToken: z.string().trim().min(32).max(512),
     sortBy: z.enum(['candidate', 'dueAt', 'employer', 'issue', 'priority', 'updatedAt']).default('dueAt'),
@@ -710,6 +712,10 @@ export default ({ strapi }) => ({
       .filter((row) => body.issue === 'all' || row.issue === body.issue)
       .filter((row) => includesSearch(row, body.search))
       .sort(compareRows(body.sortBy, body.sortDirection));
+    const filteredTotal = filteredRows.length;
+    const pageCount = Math.max(1, Math.ceil(filteredTotal / body.pageSize));
+    const page = Math.min(body.page, pageCount);
+    const pageStart = (page - 1) * body.pageSize;
 
     return {
       counts: {
@@ -724,9 +730,15 @@ export default ({ strapi }) => ({
         ).length,
         total: rowsWithReliability.length,
       },
-      filteredOperations: filteredRows.length,
+      filteredOperations: filteredTotal,
       generatedAt: new Date().toISOString(),
-      operations: filteredRows.slice(0, 200),
+      operations: filteredRows.slice(pageStart, pageStart + body.pageSize),
+      pagination: {
+        page,
+        pageCount,
+        pageSize: body.pageSize,
+        total: filteredTotal,
+      },
       totalOperations: rowsWithReliability.length,
       user: session.user,
     };

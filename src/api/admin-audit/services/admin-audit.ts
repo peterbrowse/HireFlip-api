@@ -50,6 +50,7 @@ type DocumentRecord = Record<string, unknown> & {
 };
 
 type DocumentCollection = {
+  count(input: Record<string, unknown>): Promise<number>;
   findMany(input: Record<string, unknown>): Promise<DocumentRecord[]>;
 };
 
@@ -98,7 +99,10 @@ const auditSearchSchema = z
     dateTo: z.string().datetime().optional(),
     eventType: z.string().trim().max(180).optional().transform((value) => value || undefined),
     ipAddress: z.string().trim().max(120).optional().transform((value) => value || undefined),
+    page: z.coerce.number().int().min(1).default(1),
+    pageSize: z.coerce.number().int().min(10).max(100).default(25),
     requestId: z.string().trim().max(160).optional().transform((value) => value || undefined),
+    search: z.string().trim().max(180).optional().transform((value) => value || undefined),
     sessionToken: z.string().trim().min(32).max(512),
     source: z.enum(sources).optional(),
     subject: z.string().trim().max(180).optional().transform((value) => value || undefined),
@@ -190,6 +194,26 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
       });
     }
 
+    if (body.search) {
+      andFilters.push({
+        $or: [
+          { actorDisplayName: containsFilter(body.search) },
+          { actorEmail: containsFilter(body.search) },
+          { actorId: containsFilter(body.search) },
+          { actorType: containsFilter(body.search) },
+          { eventCategory: containsFilter(body.search) },
+          { eventType: containsFilter(body.search) },
+          { ipAddress: containsFilter(body.search) },
+          { requestId: containsFilter(body.search) },
+          { serviceName: containsFilter(body.search) },
+          { source: containsFilter(body.search) },
+          { subjectDisplayName: containsFilter(body.search) },
+          { subjectId: containsFilter(body.search) },
+          { subjectType: containsFilter(body.search) },
+        ],
+      });
+    }
+
     if (body.subject) {
       andFilters.push({
         $or: [
@@ -227,9 +251,17 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
       };
     }
 
-    const auditEvents = await documents(strapi, 'api::audit-event.audit-event').findMany({
-      filters: andFilters.length > 0 ? { ...filters, $and: andFilters } : filters,
-      limit: 200,
+    const auditFilters = andFilters.length > 0 ? { ...filters, $and: andFilters } : filters;
+    const auditEventDocuments = documents(strapi, 'api::audit-event.audit-event');
+    const total = await auditEventDocuments.count({
+      filters: auditFilters,
+    });
+    const pageCount = Math.max(1, Math.ceil(total / body.pageSize));
+    const page = Math.min(body.page, pageCount);
+    const auditEvents = await auditEventDocuments.findMany({
+      filters: auditFilters,
+      start: (page - 1) * body.pageSize,
+      limit: body.pageSize,
       sort: ['occurredAt:desc', 'createdAt:desc'],
     });
 
@@ -240,7 +272,13 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
         sources: sources.map(option),
       },
       generatedAt: new Date().toISOString(),
-      totalReturned: auditEvents.length,
+      pagination: {
+        page,
+        pageCount,
+        pageSize: body.pageSize,
+        total,
+      },
+      totalReturned: total,
       user: session.user,
     };
   },

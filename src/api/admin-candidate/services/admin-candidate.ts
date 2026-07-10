@@ -129,6 +129,8 @@ const listCandidatesSchema = sessionTokenSchema
     readiness: z
       .enum(['all', 'availability_expired', 'complete', 'incomplete', 'ready'])
       .default('all'),
+    page: z.coerce.number().int().min(1).default(1),
+    pageSize: z.coerce.number().int().min(10).max(100).default(25),
     region: z.string().trim().max(120).optional().transform((value) => value || undefined),
     search: z.string().trim().max(160).optional().transform((value) => value || undefined),
     sector: z.string().trim().max(120).optional().transform((value) => value || undefined),
@@ -1952,13 +1954,24 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
       return compareValues(left[body.sortBy], right[body.sortBy], body.sortDirection);
     });
 
+    const total = rows.length;
+    const pageCount = Math.max(1, Math.ceil(total / body.pageSize));
+    const page = Math.min(body.page, pageCount);
+    const pageStart = (page - 1) * body.pageSize;
+
     return {
-      candidates: rows,
+      candidates: rows.slice(pageStart, pageStart + body.pageSize),
       counts: {
-        filtered: rows.length,
+        filtered: total,
         total: visibleScopedCount,
       },
       generatedAt: new Date().toISOString(),
+      pagination: {
+        page,
+        pageCount,
+        pageSize: body.pageSize,
+        total,
+      },
       permissions,
       user: session.user,
     };

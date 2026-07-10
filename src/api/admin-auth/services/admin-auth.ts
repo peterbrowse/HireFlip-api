@@ -223,6 +223,8 @@ const staffListSortDirectionSchema = z.enum(['asc', 'desc']);
 
 const staffListSchema = sessionTokenSchema
   .extend({
+    page: z.coerce.number().int().min(1).default(1),
+    pageSize: z.coerce.number().int().min(10).max(100).default(25),
     roleKey: staffRoleKeySchema.optional(),
     search: z.string().trim().max(120).optional().transform((value) => value || undefined),
     sortBy: staffListSortKeySchema.default('createdAt'),
@@ -1678,10 +1680,19 @@ export default () => ({
       .sort((leftStaffUser, rightStaffUser) =>
         compareStaffUsers(leftStaffUser, rightStaffUser, body.sortBy, body.sortDirection)
       );
+    const pageCount = Math.max(1, Math.ceil(filteredStaffUsers.length / body.pageSize));
+    const page = Math.min(body.page, pageCount);
+    const pageStart = (page - 1) * body.pageSize;
 
     return {
       filteredStaffUsers: filteredStaffUsers.length,
-      staffUsers: filteredStaffUsers,
+      pagination: {
+        page,
+        pageCount,
+        pageSize: body.pageSize,
+        total: filteredStaffUsers.length,
+      },
+      staffUsers: filteredStaffUsers.slice(pageStart, pageStart + body.pageSize),
       totalStaffUsers: allStaffUsers.length,
     };
   },

@@ -98,6 +98,7 @@ type DocumentRecord = Record<string, unknown> & {
 };
 
 type DocumentCollection = {
+  count(input: Record<string, unknown>): Promise<number>;
   create(input: Record<string, unknown>): Promise<DocumentRecord>;
   findMany(input: Record<string, unknown>): Promise<DocumentRecord[]>;
   update(input: Record<string, unknown>): Promise<DocumentRecord>;
@@ -139,11 +140,20 @@ const employerStateSchema = z.enum(['active', 'archived', 'invited', 'paused', '
 const listEmployersSchema = sessionTokenSchema
   .extend({
     commitment: employerCommitmentFilterSchema.default('all'),
+    page: z.coerce.number().int().min(1).default(1),
+    pageSize: z.coerce.number().int().min(10).max(100).default(25),
     region: z.string().trim().max(120).optional().transform((value) => value || undefined),
     search: z.string().trim().max(120).optional().transform((value) => value || undefined),
     sortBy: employerSortKeySchema.default('companyName'),
     sortDirection: employerSortDirectionSchema.default('asc'),
     state: employerStateSchema.or(z.literal('all')).default('all'),
+  })
+  .strict();
+
+const listInvitesSchema = sessionTokenSchema
+  .extend({
+    page: z.coerce.number().int().min(1).default(1),
+    pageSize: z.coerce.number().int().min(10).max(100).default(25),
   })
   .strict();
 
@@ -192,6 +202,7 @@ const employerCoverageOverrideSchema = employerActionSchema
 
 const validateSessionToken = validateZodSchema(sessionTokenSchema);
 const validateListEmployers = validateZodSchema(listEmployersSchema);
+const validateListInvites = validateZodSchema(listInvitesSchema);
 const validateCreateInvite = validateZodSchema(createInviteSchema);
 const validateEmployerDetail = validateZodSchema(employerDetailSchema);
 const validateEmployerAction = validateZodSchema(employerActionSchema);
@@ -1081,11 +1092,21 @@ export default ({ strapi }) => ({
       .filter((employer) => employerMatchesCommitment(employer, body.commitment))
       .filter((employer) => employerMatchesSearch(employer, body.search))
       .sort(compareEmployers(body.sortBy, body.sortDirection));
+    const filteredTotal = filteredEmployers.length;
+    const pageCount = Math.max(1, Math.ceil(filteredTotal / body.pageSize));
+    const page = Math.min(body.page, pageCount);
+    const pageStart = (page - 1) * body.pageSize;
 
     return {
-      employers: filteredEmployers,
-      filteredEmployers: filteredEmployers.length,
+      employers: filteredEmployers.slice(pageStart, pageStart + body.pageSize),
+      filteredEmployers: filteredTotal,
       generatedAt: new Date().toISOString(),
+      pagination: {
+        page,
+        pageCount,
+        pageSize: body.pageSize,
+        total: filteredTotal,
+      },
       totalEmployers: employerSummaries.length,
       user: session.user,
     };
@@ -1238,12 +1259,25 @@ export default ({ strapi }) => ({
   },
 
   async listInvites(input: unknown, requestContext: RequestContext = {}) {
-    const body = validateSessionToken(input);
+    const body = validateListInvites(input);
     const session = await assertEmployerManageSession(strapi, body.sessionToken, requestContext);
-    const invites = await documents(strapi, 'api::employer-invite.employer-invite').findMany({
-      limit: 100,
+    const inviteFilters = {
+      inviteState: {
+        $ne: 'revoked',
+      },
+    };
+    const inviteDocuments = documents(strapi, 'api::employer-invite.employer-invite');
+    const total = await inviteDocuments.count({
+      filters: inviteFilters,
+    });
+    const pageCount = Math.max(1, Math.ceil(total / body.pageSize));
+    const page = Math.min(body.page, pageCount);
+    const invites = await inviteDocuments.findMany({
+      filters: inviteFilters,
+      limit: body.pageSize,
       populate: invitePopulate,
       sort: ['createdAt:desc'],
+      start: (page - 1) * body.pageSize,
     });
     const normalizedInvites = await Promise.all(
       invites.map((invite) => expireIfNeeded(strapi, invite))
@@ -1254,7 +1288,13 @@ export default ({ strapi }) => ({
 
     return {
       invites: publicInvites,
-      totalInvites: publicInvites.length,
+      pagination: {
+        page,
+        pageCount,
+        pageSize: body.pageSize,
+        total,
+      },
+      totalInvites: total,
       user: session.user,
     };
   },

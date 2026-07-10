@@ -28,6 +28,7 @@ type AdminAuthService = {
 
 type AdminReviewClaimService = {
   assertActiveClaimForSession(input: unknown, session: AdminSession): Promise<unknown>;
+  activeClaimsForSession(input: unknown, session: AdminSession): Promise<Map<string, unknown>>;
   claimForSession(
     input: unknown,
     session: AdminSession,
@@ -270,6 +271,7 @@ const trimToLength = (value: string, maxLength: number) =>
 const taskRouteSegment = (taskKey: string) => encodeURIComponent(taskKey);
 const assessmentAppealTaskPath = (taskKey: string) => `/classes/appeals/${taskRouteSegment(taskKey)}`;
 const taskDetailPath = (taskKey: string) => `/tasks/${taskRouteSegment(taskKey)}`;
+const adminTaskClaimKey = (taskKey: string) => `admin_task:${taskKey}`;
 const refundTaskPath = (taskKey: string) => `/refunds/${taskRouteSegment(taskKey)}`;
 const supportCasePath = (supportCaseDocumentId: string) =>
   `/support/${encodeURIComponent(supportCaseDocumentId)}`;
@@ -443,21 +445,25 @@ const assertOperationsSession = async (
 };
 
 const canViewTaskRecordForSession = (task: DocumentRecord, session: AdminSession) => {
+  const roleKeys = session.user.roleKeys;
   const visibleRoleKeys = objectValue(task.metadata).visibleRoleKeys;
 
   if (
     Array.isArray(visibleRoleKeys) &&
     visibleRoleKeys.every((roleKey) => typeof roleKey === 'string')
   ) {
-    return session.user.roleKeys.some((roleKey) => visibleRoleKeys.includes(roleKey));
+    return roleKeys.some((roleKey) => visibleRoleKeys.includes(roleKey));
   }
 
   if (task.taskType !== 'ai_feedback_review') {
-    return true;
+    if (roleKeys.some((roleKey) => ['admin', 'super_admin'].includes(roleKey))) {
+      return true;
+    }
+
+    return taskOwnerKeys(task).some((ownerKey) => roleKeys.includes(ownerKey));
   }
 
   const metadata = objectValue(task.metadata);
-  const roleKeys = session.user.roleKeys;
   const escalatedAt = typeof metadata.escalatedToAdminAt === 'string' ? metadata.escalatedToAdminAt : null;
   const isEscalated = Boolean(escalatedAt && Date.parse(escalatedAt) <= Date.now());
 
@@ -2173,12 +2179,32 @@ export default factories.createCoreService('api::admin-task.admin-task', ({ stra
     }));
     const items = entries.map((entry) => entry.item);
     const filteredTasks = filterTaskItems(entries, body);
+    const visibleTasks = filteredTasks.slice(0, 200);
+    const reviewClaims = await reviewClaimService(strapi).activeClaimsForSession(
+      visibleTasks.map((task) => ({
+        resourceDocumentId: task.documentId,
+        resourceKey: task.taskKey,
+        resourceLabel: task.title,
+        resourceType: 'admin_task',
+      })),
+      session
+    );
 
     return {
       counts: taskListCounts(items, filteredTasks),
       filters: taskListFilterOptions(items),
       generatedAt: new Date().toISOString(),
-      tasks: filteredTasks.slice(0, 200),
+      tasks: visibleTasks.map((task) => {
+        const reviewClaim = reviewClaims.get(adminTaskClaimKey(task.taskKey)) as
+          | { isActive?: boolean }
+          | null
+          | undefined;
+
+        return {
+          ...task,
+          reviewClaim: reviewClaim?.isActive ? reviewClaim : null,
+        };
+      }),
       user: session.user,
     };
   },

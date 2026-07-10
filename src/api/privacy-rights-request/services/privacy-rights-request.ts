@@ -166,8 +166,8 @@ const downloadSchema = z
   .strict();
 const adminListSchema = z
   .object({
-    page: z.number().int().min(1).max(500).default(1),
-    pageSize: z.number().int().min(1).max(100).default(25),
+    page: z.coerce.number().int().min(1).max(500).default(1),
+    pageSize: z.coerce.number().int().min(1).max(100).default(25),
     requestState: z.enum(['all', ...requestStateValues]).default('all'),
     requestType: z.enum(['all', ...requestTypeValues]).default('all'),
     search: z.string().trim().max(180).optional().transform((value) => value || undefined),
@@ -2011,7 +2011,9 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
             .includes(search)
         )
       : requests;
-    const start = (body.page - 1) * body.pageSize;
+    const pageCount = Math.max(1, Math.ceil(searched.length / body.pageSize));
+    const page = Math.min(body.page, pageCount);
+    const start = (page - 1) * body.pageSize;
     const pageRequests = searched.slice(start, start + body.pageSize);
 
     return {
@@ -2025,7 +2027,8 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
         total: requests.length,
       },
       pagination: {
-        page: body.page,
+        page,
+        pageCount,
         pageSize: body.pageSize,
         total: searched.length,
       },
