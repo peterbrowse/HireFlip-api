@@ -125,6 +125,8 @@ const sessionTokenSchema = z
 
 const cadenceSchema = z.enum(['not_set', 'quarterly', 'biannually', 'annually']);
 const employerCommitmentFilterSchema = z.enum(['all', 'committed', 'not_set']);
+const employerInviteDeliveryFilterSchema = z.enum(['all', 'failed', 'not_required', 'queued']);
+const employerInviteStateFilterSchema = z.enum(['accepted', 'all', 'expired', 'pending', 'revoked', 'visible']);
 const employerSortDirectionSchema = z.enum(['asc', 'desc']);
 const employerSortKeySchema = z.enum([
   'commitment',
@@ -152,8 +154,11 @@ const listEmployersSchema = sessionTokenSchema
 
 const listInvitesSchema = sessionTokenSchema
   .extend({
+    delivery: employerInviteDeliveryFilterSchema.default('all'),
     page: z.coerce.number().int().min(1).default(1),
     pageSize: z.coerce.number().int().min(10).max(100).default(25),
+    search: z.string().trim().max(120).optional().transform((value) => value || undefined),
+    state: employerInviteStateFilterSchema.default('visible'),
   })
   .strict();
 
@@ -1261,16 +1266,42 @@ export default ({ strapi }) => ({
   async listInvites(input: unknown, requestContext: RequestContext = {}) {
     const body = validateListInvites(input);
     const session = await assertEmployerManageSession(strapi, body.sessionToken, requestContext);
-    const inviteFilters = {
-      inviteState: {
+    const inviteFilters: Record<string, unknown> = {};
+
+    if (body.state === 'visible') {
+      inviteFilters.inviteState = {
         $ne: 'revoked',
-      },
-    };
+      };
+    } else if (body.state !== 'all') {
+      inviteFilters.inviteState = body.state;
+    }
+
+    if (body.delivery !== 'all') {
+      inviteFilters.deliveryState = body.delivery;
+    }
+
+    if (body.search) {
+      inviteFilters.$or = [
+        { companyName: { $containsi: body.search } },
+        { createdByStaffDisplayName: { $containsi: body.search } },
+        { createdByStaffEmail: { $containsi: body.search } },
+        { documentId: { $containsi: body.search } },
+        { firstName: { $containsi: body.search } },
+        { inviteEmail: { $containsi: body.search } },
+        { lastName: { $containsi: body.search } },
+        { region: { $containsi: body.search } },
+        { roleTitle: { $containsi: body.search } },
+      ];
+    }
+
     const inviteDocuments = documents(strapi, 'api::employer-invite.employer-invite');
-    const total = await inviteDocuments.count({
-      filters: inviteFilters,
-    });
-    const pageCount = Math.max(1, Math.ceil(total / body.pageSize));
+    const [filteredTotal, total] = await Promise.all([
+      inviteDocuments.count({
+        filters: inviteFilters,
+      }),
+      inviteDocuments.count({}),
+    ]);
+    const pageCount = Math.max(1, Math.ceil(filteredTotal / body.pageSize));
     const page = Math.min(body.page, pageCount);
     const invites = await inviteDocuments.findMany({
       filters: inviteFilters,
@@ -1287,12 +1318,13 @@ export default ({ strapi }) => ({
       .map((invite) => publicInvite(invite));
 
     return {
+      filteredInvites: filteredTotal,
       invites: publicInvites,
       pagination: {
         page,
         pageCount,
         pageSize: body.pageSize,
-        total,
+        total: filteredTotal,
       },
       totalInvites: total,
       user: session.user,
