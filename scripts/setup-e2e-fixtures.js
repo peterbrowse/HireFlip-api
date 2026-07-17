@@ -80,7 +80,7 @@ const connectMany = (records) => ({
   connect: records.map((record) => ({ documentId: record.documentId })),
 });
 
-const documents = (strapi, uid) => strapi.documents(uid);
+const { documents } = require('./lib/strapi-documents');
 
 const findFirst = async (strapi, uid, filters, populate = []) => {
   const records = await documents(strapi, uid).findMany({
@@ -104,7 +104,6 @@ const deleteDocument = async (strapi, uid, documentId) => {
 const deleteMany = async (strapi, uid, filters) => {
   const records = await documents(strapi, uid).findMany({
     filters,
-    limit: 100,
   });
 
   for (const record of records) {
@@ -1128,7 +1127,6 @@ const deletePrivacyAnonymisationFixtureRequests = async (strapi, fixtureKey, opt
       requestType: { $in: ['deletion', 'erasure'] },
       subjectUserType: 'candidate',
     },
-    limit: 200,
     populate: ['candidate'],
   });
 
@@ -1304,7 +1302,6 @@ const resetCandidateInterviewRecords = async (strapi, candidate) => {
   const candidateFilter = { candidate: { documentId: candidate.documentId } };
   const interviews = await documents(strapi, 'api::interview.interview').findMany({
     filters: candidateFilter,
-    limit: 100,
   });
   const interviewIds = interviews.map((interview) => interview.documentId).filter(Boolean);
 
@@ -1322,7 +1319,6 @@ const resetCandidateInterviewRecords = async (strapi, candidate) => {
 
   const slotOffers = await documents(strapi, 'api::interview-slot-offer.interview-slot-offer').findMany({
     filters: candidateFilter,
-    limit: 100,
   });
 
   for (const offer of slotOffers) {
@@ -1333,7 +1329,6 @@ const resetCandidateInterviewRecords = async (strapi, candidate) => {
 
   const supportCases = await documents(strapi, 'api::support-case.support-case').findMany({
     filters: candidateFilter,
-    limit: 100,
   });
 
   for (const supportCase of supportCases) {
@@ -1362,7 +1357,6 @@ const resetCandidateReviewRecords = async (strapi, candidate) => {
   const candidateFilter = { candidate: { documentId: candidate.documentId } };
   const supportCases = await documents(strapi, 'api::support-case.support-case').findMany({
     filters: candidateFilter,
-    limit: 100,
   });
 
   for (const supportCase of supportCases) {
@@ -1374,7 +1368,6 @@ const resetCandidateReviewRecords = async (strapi, candidate) => {
 
   const interviews = await documents(strapi, 'api::interview.interview').findMany({
     filters: candidateFilter,
-    limit: 100,
   });
 
   for (const interview of interviews) {
@@ -3186,7 +3179,6 @@ const ensureEmployer = async (strapi, auth0User, content) => {
     filters: {
       companyName: e2eAdminEmployerInviteCompany,
     },
-    limit: 100,
   });
 
   for (const staleEmployer of staleAdminInviteEmployers) {
@@ -3340,7 +3332,6 @@ const ensureOnboardingEmployer = async (strapi, auth0User, content) => {
     filters: {
       companyName,
     },
-    limit: 100,
   });
 
   for (const staleEmployer of staleEmployers) {
@@ -3441,7 +3432,6 @@ const ensureInviteCompleteEmployer = async (strapi, auth0User, content) => {
     filters: {
       companyName,
     },
-    limit: 100,
   });
 
   for (const staleEmployer of staleEmployers) {
@@ -3562,7 +3552,6 @@ const ensureAdminActionEmployer = async (strapi, content) => {
     filters: {
       companyName,
     },
-    limit: 100,
   });
 
   for (const staleEmployer of staleEmployers) {

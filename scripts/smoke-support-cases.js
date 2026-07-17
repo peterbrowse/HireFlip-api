@@ -49,7 +49,7 @@ const loadEnvFile = () => {
   }
 };
 
-const documents = (strapi, uid) => strapi.documents(uid);
+const { documents } = require('./lib/strapi-documents');
 
 const assert = (condition, message) => {
   if (!condition) {
@@ -72,7 +72,6 @@ const findMessagesForCase = (strapi, supportCaseDocumentId) =>
         documentId: supportCaseDocumentId,
       },
     },
-    limit: 20,
     sort: ['createdAt:asc'],
   });
 
@@ -204,10 +203,11 @@ const main = async () => {
       'Expected support case assignment to update.'
     );
 
-    const listedCases = await supportCaseService.listCases({
+    const listedResult = await supportCaseService.listCases({
       caseType: 'refund',
-      limit: 20,
+      search: ensured.supportCase.documentId,
     });
+    const listedCases = Array.isArray(listedResult) ? listedResult : listedResult.cases || [];
     const listedCase = listedCases.find((supportCase) => supportCase.documentId === ensured.supportCase.documentId);
 
     assert(listedCase, 'Expected support case to be returned by listCases.');

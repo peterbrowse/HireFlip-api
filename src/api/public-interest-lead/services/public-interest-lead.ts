@@ -64,12 +64,10 @@ const syncPendingLeadsSchema = z
   .object({
     documentId: optionalString(80),
     includeFailed: booleanValue.default(false),
-    limit: z.number().int().min(1).max(200).default(50),
   })
   .strict()
   .default({
     includeFailed: false,
-    limit: 50,
   });
 const validateSyncPendingLeads = validateZodSchema(syncPendingLeadsSchema);
 
@@ -131,6 +129,7 @@ type PublicInterestLeadRecord = Partial<PublicInterestLeadData> &
   };
 
 type PublicInterestLeadDocuments = {
+  count(input: Record<string, unknown>): Promise<number>;
   create(input: { data: PublicInterestLeadData }): Promise<PublicInterestLeadRecord>;
   findMany(input: Record<string, unknown>): Promise<PublicInterestLeadRecord[]>;
   update(input: {
@@ -150,6 +149,28 @@ type StrapiDocumentService = {
 
 const publicInterestLeadDocuments = (strapi: StrapiDocumentService) =>
   strapi.documents('api::public-interest-lead.public-interest-lead') as PublicInterestLeadDocuments;
+
+const findAllPublicInterestLeads = async (
+  strapi: StrapiDocumentService,
+  input: Record<string, unknown>,
+  pageSize = 100
+) => {
+  const collection = publicInterestLeadDocuments(strapi);
+  const total = await collection.count({ filters: input.filters || {} });
+  const records: PublicInterestLeadRecord[] = [];
+
+  for (let start = 0; start < total; start += pageSize) {
+    records.push(
+      ...(await collection.findMany({
+        ...input,
+        limit: pageSize,
+        start,
+      }))
+    );
+  }
+
+  return records;
+};
 
 const auditEvents = (strapi: StrapiDocumentService) =>
   strapi.service('api::audit-event.audit-event') as AuditEventService;
@@ -445,12 +466,11 @@ export default factories.createCoreService('api::public-interest-lead.public-int
       };
     }
 
-    const leads = await publicInterestLeadDocuments(strapi).findMany({
+    const leads = await findAllPublicInterestLeads(strapi, {
       filters: {
         ...syncableLeadFilters(payload.includeFailed),
         ...(payload.documentId ? { documentId: payload.documentId } : {}),
       },
-      limit: payload.limit,
       sort: ['createdAt:asc'],
     });
     const results: Array<Record<string, unknown>> = [];

@@ -137,6 +137,16 @@
     "errorMessage": {
       "type": "text"
     },
+    "issueClearedAt": {
+      "type": "datetime"
+    },
+    "issueClearedByEmail": {
+      "type": "email",
+      "maxLength": 254
+    },
+    "issueClearReason": {
+      "type": "text"
+    },
     "metadata": {
       "type": "json"
     }

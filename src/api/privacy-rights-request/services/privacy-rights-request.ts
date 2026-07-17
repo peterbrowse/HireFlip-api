@@ -72,6 +72,7 @@ type DocumentRecord = Record<string, unknown> & {
 };
 
 type DocumentCollection = {
+  count(input: Record<string, unknown>): Promise<number>;
   create(input: Record<string, unknown>): Promise<DocumentRecord>;
   findMany(input: Record<string, unknown>): Promise<DocumentRecord[]>;
   update(input: Record<string, unknown>): Promise<DocumentRecord>;
@@ -211,6 +212,29 @@ const validateAdminAnonymise = validateZodSchema(adminAnonymiseSchema);
 const documents = (strapi: StrapiService, uid: string) =>
   strapi.documents(uid) as DocumentCollection;
 
+const findAllDocuments = async (
+  strapi: StrapiService,
+  uid: string,
+  input: Record<string, unknown>,
+  pageSize = 100
+) => {
+  const collection = documents(strapi, uid);
+  const total = await collection.count({ filters: input.filters || {} });
+  const records: DocumentRecord[] = [];
+
+  for (let start = 0; start < total; start += pageSize) {
+    records.push(
+      ...(await collection.findMany({
+        ...input,
+        limit: pageSize,
+        start,
+      }))
+    );
+  }
+
+  return records;
+};
+
 const adminAuthService = (strapi: StrapiService) =>
   strapi.service('api::admin-auth.admin-auth') as unknown as AdminAuthService;
 
@@ -314,6 +338,52 @@ const publicRequest = (request: DocumentRecord, includeInternal = false) => {
         }
       : {}),
   };
+};
+
+const activePrivacyRequestStates = [
+  'received',
+  'identity_verification_required',
+  'in_review',
+  'clarification_requested',
+  'processing',
+] as const;
+
+type AdminListInput = z.infer<typeof adminListSchema>;
+
+const adminPrivacyRequestFilters = (body: AdminListInput) => {
+  const filters: Record<string, unknown> = {};
+
+  if (body.requestState !== 'all') {
+    filters.requestState = body.requestState;
+  }
+
+  if (body.requestType !== 'all') {
+    filters.requestType = body.requestType;
+  }
+
+  if (body.subjectUserType !== 'all') {
+    filters.subjectUserType = body.subjectUserType;
+  }
+
+  if (body.search) {
+    const search = body.search;
+
+    filters.$or = [
+      { documentId: { $containsi: search } },
+      { requestState: { $containsi: search } },
+      { requestType: { $containsi: search } },
+      { requestingUserId: { $containsi: search } },
+      { subjectUserId: { $containsi: search } },
+      { candidate: { email: { $containsi: search } } },
+      { candidate: { firstName: { $containsi: search } } },
+      { candidate: { lastName: { $containsi: search } } },
+      { employerContact: { email: { $containsi: search } } },
+      { employerContact: { firstName: { $containsi: search } } },
+      { employerContact: { lastName: { $containsi: search } } },
+    ];
+  }
+
+  return filters;
 };
 
 const privacyRequestPopulate = {
@@ -984,9 +1054,8 @@ const listRequestsForSubject = async (
     subjectType === 'candidate'
       ? { candidate: { documentId: getDocumentId(subject) } }
       : { employerContact: { documentId: getDocumentId(subject) } };
-  const requests = await documents(strapi, 'api::privacy-rights-request.privacy-rights-request').findMany({
+  const requests = await findAllDocuments(strapi, 'api::privacy-rights-request.privacy-rights-request', {
     filters: relationFilter,
-    limit: 100,
     populate: privacyRequestPopulate,
     sort: ['receivedAt:desc', 'createdAt:desc'],
   });
@@ -1083,41 +1152,34 @@ const candidateDataExport = async (strapi: StrapiService, candidate: DocumentRec
     notificationEvents,
     privacyRequests,
   ] = await Promise.all([
-    documents(strapi, 'api::candidate-profile.candidate-profile').findMany({
+    findAllDocuments(strapi, 'api::candidate-profile.candidate-profile', {
       filters: { candidate: { documentId: candidateDocumentId } },
-      limit: 100,
     }),
-    documents(strapi, 'api::enrollment.enrollment').findMany({
+    findAllDocuments(strapi, 'api::enrollment.enrollment', {
       filters: { candidate: { documentId: candidateDocumentId } },
-      limit: 200,
       populate: '*',
     }),
-    documents(strapi, 'api::interview-request.interview-request').findMany({
+    findAllDocuments(strapi, 'api::interview-request.interview-request', {
       filters: { candidate: { documentId: candidateDocumentId } },
-      limit: 200,
       populate: '*',
     }),
-    documents(strapi, 'api::interview-slot-offer.interview-slot-offer').findMany({
+    findAllDocuments(strapi, 'api::interview-slot-offer.interview-slot-offer', {
       filters: { candidate: { documentId: candidateDocumentId } },
-      limit: 200,
       populate: '*',
     }),
-    documents(strapi, 'api::interview.interview').findMany({
+    findAllDocuments(strapi, 'api::interview.interview', {
       filters: { candidate: { documentId: candidateDocumentId } },
-      limit: 200,
       populate: '*',
     }),
-    documents(strapi, 'api::candidate-interview-strike.candidate-interview-strike').findMany({
+    findAllDocuments(strapi, 'api::candidate-interview-strike.candidate-interview-strike', {
       filters: { candidate: { documentId: candidateDocumentId } },
-      limit: 200,
       populate: '*',
     }),
-    documents(strapi, 'api::support-case.support-case').findMany({
+    findAllDocuments(strapi, 'api::support-case.support-case', {
       filters: { candidate: { documentId: candidateDocumentId } },
-      limit: 500,
       populate: '*',
     }),
-    documents(strapi, 'api::audit-event.audit-event').findMany({
+    findAllDocuments(strapi, 'api::audit-event.audit-event', {
       filters: {
         $or: [
           { actorId: candidate.authIdentityId || candidateDocumentId },
@@ -1126,23 +1188,20 @@ const candidateDataExport = async (strapi: StrapiService, candidate: DocumentRec
           { subjectDisplayName: displayName(candidate) },
         ],
       },
-      limit: 1000,
       sort: ['occurredAt:desc', 'createdAt:desc'],
     }),
-    documents(strapi, 'api::notification-event.notification-event').findMany({
+    findAllDocuments(strapi, 'api::notification-event.notification-event', {
       filters: { candidate: { documentId: candidateDocumentId } },
-      limit: 1000,
       sort: ['createdAt:desc'],
     }),
-    documents(strapi, 'api::privacy-rights-request.privacy-rights-request').findMany({
+    findAllDocuments(strapi, 'api::privacy-rights-request.privacy-rights-request', {
       filters: { candidate: { documentId: candidateDocumentId } },
-      limit: 100,
       sort: ['receivedAt:desc', 'createdAt:desc'],
     }),
   ]);
   const supportCaseIds = compact(supportCases.map(getDocumentId));
   const supportMessages = supportCaseIds.length
-    ? await documents(strapi, 'api::support-message.support-message').findMany({
+    ? await findAllDocuments(strapi, 'api::support-message.support-message', {
         filters: {
           supportCase: {
             documentId: {
@@ -1150,13 +1209,12 @@ const candidateDataExport = async (strapi: StrapiService, candidate: DocumentRec
             },
           },
         },
-        limit: 1000,
         sort: ['createdAt:asc'],
       })
     : [];
   const interviewIds = compact(interviews.map(getDocumentId));
   const interviewFeedback = interviewIds.length
-    ? await documents(strapi, 'api::interview-feedback.interview-feedback').findMany({
+    ? await findAllDocuments(strapi, 'api::interview-feedback.interview-feedback', {
         filters: {
           interview: {
             documentId: {
@@ -1164,7 +1222,6 @@ const candidateDataExport = async (strapi: StrapiService, candidate: DocumentRec
             },
           },
         },
-        limit: 1000,
         sort: ['createdAt:asc'],
       })
     : [];
@@ -1210,20 +1267,18 @@ const employerDataExport = async (
     feedback,
     invites,
   ] = await Promise.all([
-    documents(strapi, 'api::notification-event.notification-event').findMany({
+    findAllDocuments(strapi, 'api::notification-event.notification-event', {
       filters: {
         recipientType: 'employer_contact',
         recipientId: contactDocumentId,
       },
-      limit: 1000,
       sort: ['createdAt:desc'],
     }),
-    documents(strapi, 'api::privacy-rights-request.privacy-rights-request').findMany({
+    findAllDocuments(strapi, 'api::privacy-rights-request.privacy-rights-request', {
       filters: { employerContact: { documentId: contactDocumentId } },
-      limit: 100,
       sort: ['receivedAt:desc', 'createdAt:desc'],
     }),
-    documents(strapi, 'api::audit-event.audit-event').findMany({
+    findAllDocuments(strapi, 'api::audit-event.audit-event', {
       filters: {
         $or: [
           { actorId: contact.authIdentityId || contactDocumentId },
@@ -1232,35 +1287,30 @@ const employerDataExport = async (
           ...(includeCompany && employerDocumentId ? [{ subjectId: employerDocumentId }] : []),
         ],
       },
-      limit: 1000,
       sort: ['occurredAt:desc', 'createdAt:desc'],
     }),
-    documents(strapi, 'api::interview.interview').findMany({
+    findAllDocuments(strapi, 'api::interview.interview', {
       filters: includeCompany && employerDocumentId
         ? { employer: { documentId: employerDocumentId } }
         : { employerContact: { documentId: contactDocumentId } },
-      limit: 1000,
       populate: '*',
     }),
-    documents(strapi, 'api::employer-capacity-claim.employer-capacity-claim').findMany({
+    findAllDocuments(strapi, 'api::employer-capacity-claim.employer-capacity-claim', {
       filters: includeCompany && employerDocumentId
         ? { employer: { documentId: employerDocumentId } }
         : { employerContact: { documentId: contactDocumentId } },
-      limit: 1000,
       populate: '*',
     }),
-    documents(strapi, 'api::interview-feedback.interview-feedback').findMany({
+    findAllDocuments(strapi, 'api::interview-feedback.interview-feedback', {
       filters: includeCompany && employerDocumentId
         ? { interview: { employer: { documentId: employerDocumentId } } }
         : { interview: { employerContact: { documentId: contactDocumentId } } },
-      limit: 1000,
       populate: '*',
     }),
-    documents(strapi, 'api::employer-invite.employer-invite').findMany({
+    findAllDocuments(strapi, 'api::employer-invite.employer-invite', {
       filters: includeCompany && employerDocumentId
         ? { employer: { documentId: employerDocumentId } }
         : { employerContact: { documentId: contactDocumentId } },
-      limit: 1000,
       populate: '*',
     }),
   ]);
@@ -1571,9 +1621,8 @@ const anonymiseCandidate = async (
       workSectorPreferences: {},
     },
   });
-  const profiles = await documents(strapi, 'api::candidate-profile.candidate-profile').findMany({
+  const profiles = await findAllDocuments(strapi, 'api::candidate-profile.candidate-profile', {
     filters: { candidate: { documentId: candidateDocumentId } },
-    limit: 100,
   });
 
   await Promise.all(
@@ -1974,63 +2023,50 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
   async adminListRequests(input: unknown, context: RequestContext) {
     const body = validateAdminList(input);
     const session = await assertAdminSession(strapi, body.sessionToken, context);
-    const filters: Record<string, unknown> = {};
-
-    if (body.requestState !== 'all') {
-      filters.requestState = body.requestState;
-    }
-
-    if (body.requestType !== 'all') {
-      filters.requestType = body.requestType;
-    }
-
-    if (body.subjectUserType !== 'all') {
-      filters.subjectUserType = body.subjectUserType;
-    }
-
-    const requests = await documents(strapi, 'api::privacy-rights-request.privacy-rights-request').findMany({
+    const requestDocuments = documents(strapi, 'api::privacy-rights-request.privacy-rights-request');
+    const filters = adminPrivacyRequestFilters(body);
+    const [filteredTotal, activeCount, overdueCount, totalCount] = await Promise.all([
+      requestDocuments.count({ filters }),
+      requestDocuments.count({
+        filters: {
+          requestState: {
+            $in: activePrivacyRequestStates,
+          },
+        },
+      }),
+      requestDocuments.count({
+        filters: {
+          dueAt: {
+            $lt: new Date().toISOString(),
+          },
+          requestState: {
+            $in: activePrivacyRequestStates,
+          },
+        },
+      }),
+      requestDocuments.count({ filters: {} }),
+    ]);
+    const pageCount = Math.max(1, Math.ceil(filteredTotal / body.pageSize));
+    const page = Math.min(body.page, pageCount);
+    const pageRequests = await requestDocuments.findMany({
       filters,
-      limit: 500,
+      limit: body.pageSize,
       populate: privacyRequestPopulate,
       sort: ['receivedAt:desc', 'createdAt:desc'],
+      start: (page - 1) * body.pageSize,
     });
-    const search = body.search?.toLowerCase();
-    const searched = search
-      ? requests.filter((request) =>
-          [
-            request.requestType,
-            request.requestState,
-            request.candidate?.email,
-            request.employerContact?.email,
-            displayName(request.candidate),
-            displayName(request.employerContact),
-          ]
-            .filter(Boolean)
-            .join(' ')
-            .toLowerCase()
-            .includes(search)
-        )
-      : requests;
-    const pageCount = Math.max(1, Math.ceil(searched.length / body.pageSize));
-    const page = Math.min(body.page, pageCount);
-    const start = (page - 1) * body.pageSize;
-    const pageRequests = searched.slice(start, start + body.pageSize);
 
     return {
       counts: {
-        active: requests.filter((request) =>
-          ['received', 'identity_verification_required', 'in_review', 'clarification_requested', 'processing'].includes(
-            String(request.requestState)
-          )
-        ).length,
-        overdue: requests.filter((request) => request.dueAt && new Date(request.dueAt).getTime() < Date.now()).length,
-        total: requests.length,
+        active: activeCount,
+        overdue: overdueCount,
+        total: totalCount,
       },
       pagination: {
         page,
         pageCount,
         pageSize: body.pageSize,
-        total: searched.length,
+        total: filteredTotal,
       },
       requests: pageRequests.map((request) => publicRequest(request, true)),
       user: session.user,

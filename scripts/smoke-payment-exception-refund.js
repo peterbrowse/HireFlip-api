@@ -49,7 +49,7 @@ const loadEnvFile = () => {
   }
 };
 
-const documents = (strapi, uid) => strapi.documents(uid);
+const { documents } = require('./lib/strapi-documents');
 
 const assert = (condition, message) => {
   if (!condition) {
@@ -84,7 +84,6 @@ const findSupportCasesForRefund = (strapi, refundDocumentId) =>
         documentId: refundDocumentId,
       },
     },
-    limit: 20,
   });
 
 const findSupportMessagesForRefund = (strapi, refundDocumentId) =>
@@ -94,7 +93,6 @@ const findSupportMessagesForRefund = (strapi, refundDocumentId) =>
         documentId: refundDocumentId,
       },
     },
-    limit: 20,
     sort: ['createdAt:asc'],
   });
 
@@ -103,7 +101,6 @@ const findAuditEventsForRequest = (strapi, requestId) =>
     filters: {
       requestId,
     },
-    limit: 20,
   });
 
 const main = async () => {
@@ -295,7 +292,6 @@ const main = async () => {
           documentId: payment.documentId,
         },
       },
-      limit: 5,
       populate: ['candidate', 'enrollment', 'payment'],
     });
     const refund = refunds[0];

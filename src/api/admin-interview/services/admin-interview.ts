@@ -27,8 +27,14 @@ type EmployerReliabilityEventService = {
   action(input: Record<string, unknown>, context?: RequestContext): Promise<unknown>;
 };
 
+type AdminTaskService = {
+  listTasks(input: unknown, context?: RequestContext): Promise<unknown>;
+};
+
 type DocumentRecord = Record<string, unknown> & {
+  actionPath?: string;
   candidate?: DocumentRecord;
+  candidateLabel?: string;
   candidateFollowUpCompletedAt?: string;
   candidateFollowUpOutcome?: string;
   candidateFollowUpState?: string;
@@ -57,6 +63,7 @@ type DocumentRecord = Record<string, unknown> & {
   insufficientCapacityReason?: string;
   interviewSlot?: DocumentRecord;
   interviewState?: string;
+  issueKey?: string;
   lastName?: string;
   metadata?: unknown;
   name?: string;
@@ -66,6 +73,11 @@ type DocumentRecord = Record<string, unknown> & {
   region?: DocumentRecord;
   requestedDetailsAt?: string;
   requestState?: string;
+  dueAt?: string;
+  employerLabel?: string;
+  priority?: 'high' | 'normal' | 'urgent';
+  priorityRank?: number;
+  regionLabel?: string;
   scheduledEndTime?: string;
   scheduledStartTime?: string;
   sourceDocumentId?: string;
@@ -73,10 +85,14 @@ type DocumentRecord = Record<string, unknown> & {
   strikeNumber?: number;
   title?: string;
   summary?: string;
+  taskKey?: string;
+  taskState?: string;
+  taskType?: string;
   updatedAt?: string;
 };
 
 type DocumentCollection = {
+  count(input: Record<string, unknown>): Promise<number>;
   findMany(input: Record<string, unknown>): Promise<DocumentRecord[]>;
 };
 
@@ -88,6 +104,7 @@ type StrapiDocumentService = {
 type OperationIssue =
   | 'all'
   | 'capacity_shortfall'
+  | 'candidate_restriction_cancelled'
   | 'details_overdue'
   | 'details_pending'
   | 'details_released'
@@ -130,6 +147,7 @@ const operationsSchema = z
       .enum([
         'all',
         'capacity_shortfall',
+        'candidate_restriction_cancelled',
         'details_overdue',
         'details_pending',
         'details_released',
@@ -177,6 +195,9 @@ const employerReliabilityEventService = (strapi: StrapiDocumentService): Employe
     'api::employer-reliability-event.employer-reliability-event'
   ) as unknown as EmployerReliabilityEventService;
 
+const adminTaskService = (strapi: StrapiDocumentService): AdminTaskService =>
+  strapi.service('api::admin-task.admin-task') as unknown as AdminTaskService;
+
 const getDocumentId = (record?: DocumentRecord | null) =>
   typeof record?.documentId === 'string'
     ? record.documentId
@@ -188,6 +209,14 @@ const documentRecordValue = (value: unknown): DocumentRecord | undefined =>
   value && typeof value === 'object' && !Array.isArray(value)
     ? (value as DocumentRecord)
     : undefined;
+
+const objectValue = (value: unknown) =>
+  value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+
+const stringValue = (value: unknown) =>
+  typeof value === 'string' && value.trim() ? value.trim() : null;
 
 const displayName = (record?: DocumentRecord | null) => {
   if (!record) {
@@ -239,6 +268,7 @@ const feedbackDueAt = (interview: DocumentRecord) =>
 
 const issueLabels: Record<Exclude<OperationIssue, 'all'>, string> = {
   capacity_shortfall: 'Capacity shortfall',
+  candidate_restriction_cancelled: 'Candidate restriction cancelled',
   details_overdue: 'Details overdue',
   details_pending: 'Details pending',
   details_released: 'Details released',
@@ -528,146 +558,264 @@ const compareRows = (
   return String(leftValue).localeCompare(String(rightValue)) * multiplier;
 };
 
+const operationIssues = new Set<Exclude<OperationIssue, 'all'>>([
+  'capacity_shortfall',
+  'candidate_restriction_cancelled',
+  'details_overdue',
+  'details_pending',
+  'details_released',
+  'feedback_due',
+  'feedback_overdue',
+  'progression_expired',
+  'progression_follow_up_concern',
+]);
+
+const operationIssueFromTask = (task: DocumentRecord): Exclude<OperationIssue, 'all'> | null => {
+  const metadata = objectValue(task.metadata);
+  const issue = stringValue(task.issueKey) || stringValue(metadata.issue);
+
+  return issue && operationIssues.has(issue as Exclude<OperationIssue, 'all'>)
+    ? (issue as Exclude<OperationIssue, 'all'>)
+    : null;
+};
+
+const adminTaskVisibilityFilter = (session: AdminSession) => {
+  if (session.user.roleKeys.includes('super_admin')) {
+    return null;
+  }
+
+  if (session.user.roleKeys.some((roleKey) => ['sales', 'support'].includes(roleKey))) {
+    return null;
+  }
+
+  return {
+    $or: session.user.roleKeys.map((roleKey) => ({
+      ownerKeyText: {
+        $containsi: roleKey,
+      },
+    })),
+  };
+};
+
+const operationSearchFilter = (search?: string) => {
+  if (!search) {
+    return null;
+  }
+
+  return {
+    $or: [
+      { candidateLabel: { $containsi: search } },
+      { classLabel: { $containsi: search } },
+      { employerLabel: { $containsi: search } },
+      { issueKey: { $containsi: search } },
+      { regionLabel: { $containsi: search } },
+      { relatedDocumentId: { $containsi: search } },
+      { searchText: { $containsi: search } },
+      { sourceDocumentId: { $containsi: search } },
+      { summary: { $containsi: search } },
+      { taskKey: { $containsi: search } },
+      { title: { $containsi: search } },
+    ],
+  };
+};
+
+const operationTaskFilters = ({
+  issue,
+  search,
+  session,
+}: {
+  issue?: OperationIssue;
+  search?: string;
+  session: AdminSession;
+}) => {
+  const filters: Record<string, unknown> = {
+    taskState: 'open',
+    taskType: 'interview_operation',
+  };
+  const andFilters: Record<string, unknown>[] = [];
+
+  if (issue && issue !== 'all') {
+    filters.issueKey = issue;
+  }
+
+  const searchFilter = operationSearchFilter(search);
+  const visibilityFilter = adminTaskVisibilityFilter(session);
+
+  if (searchFilter) {
+    andFilters.push(searchFilter);
+  }
+
+  if (visibilityFilter) {
+    andFilters.push(visibilityFilter);
+  }
+
+  return andFilters.length ? { ...filters, $and: andFilters } : filters;
+};
+
+const operationTaskSort = (
+  sortBy: 'candidate' | 'dueAt' | 'employer' | 'issue' | 'priority' | 'updatedAt',
+  sortDirection: 'asc' | 'desc'
+) => {
+  const direction = sortDirection === 'desc' ? 'desc' : 'asc';
+  const primary =
+    sortBy === 'candidate'
+      ? 'candidateLabel'
+      : sortBy === 'employer'
+        ? 'employerLabel'
+        : sortBy === 'issue'
+          ? 'issueKey'
+          : sortBy === 'priority'
+            ? 'priorityRank'
+            : sortBy === 'updatedAt'
+              ? 'lastDetectedAt'
+              : 'dueAt';
+
+  return [`${primary}:${direction}`, 'createdAt:desc'];
+};
+
+const operationSourceType = (task: DocumentRecord): OperationRow['sourceType'] => {
+  if (task.sourceType === 'interview_request') {
+    return 'interview_request';
+  }
+
+  if (task.sourceType === 'progression_request') {
+    return 'progression_request';
+  }
+
+  return 'interview';
+};
+
+const metadataString = (metadata: Record<string, unknown>, keys: string[]) => {
+  for (const key of keys) {
+    const value = stringValue(metadata[key]);
+
+    if (value) {
+      return value;
+    }
+  }
+
+  return null;
+};
+
+const operationRowFromTask = (task: DocumentRecord): OperationRow | null => {
+  const sourceDocumentId = stringValue(task.sourceDocumentId);
+  const issue = operationIssueFromTask(task);
+
+  if (!sourceDocumentId || !issue) {
+    return null;
+  }
+
+  const metadata = objectValue(task.metadata);
+  const dueAt =
+    stringValue(task.dueAt) ||
+    metadataString(metadata, [
+      'candidateResponseDeadline',
+      'dueAt',
+      'employerDetailsDueAt',
+      'feedbackDueAt',
+      'releasedAt',
+    ]);
+  const referenceAt =
+    stringValue(task.lastDetectedAt) ||
+    metadataString(metadata, ['sourceDetectedAt', 'releasedAt', 'cancelledAt']) ||
+    stringValue(task.updatedAt) ||
+    stringValue(task.createdAt);
+  const status =
+    metadataString(metadata, [
+      'interviewState',
+      'progressionState',
+      'requestState',
+      'state',
+    ]) ||
+    stringValue(task.title) ||
+    'Open';
+
+  return {
+    actionPath: stringValue(task.actionPath) || actionPath(issue, sourceDocumentId),
+    candidateName:
+      stringValue(task.candidateLabel) ||
+      metadataString(metadata, ['candidateName', 'subjectName']),
+    dueAt: dueAt || referenceAt,
+    employerDocumentId: stringValue(metadata.employerDocumentId),
+    employerName: stringValue(task.employerLabel) || metadataString(metadata, ['employerName']),
+    issue,
+    issueLabel: issueLabels[issue],
+    priority: task.priority === 'urgent' || task.priority === 'high' ? task.priority : 'normal',
+    referenceAt,
+    regionName: stringValue(task.regionLabel) || metadataString(metadata, ['regionName']),
+    sourceDocumentId,
+    sourceType: operationSourceType(task),
+    statusLabel: humanize(status),
+    summary: stringValue(task.summary) || '',
+    reliabilityEvent: null,
+  };
+};
+
+const findAllDocuments = async (
+  strapi: StrapiDocumentService,
+  uid: string,
+  input: Record<string, unknown>,
+  pageSize = 100
+) => {
+  const collection = documents(strapi, uid);
+  const filters = (input.filters || {}) as Record<string, unknown>;
+  const total = await collection.count({ filters });
+  const records: DocumentRecord[] = [];
+
+  for (let start = 0; start < total; start += pageSize) {
+    records.push(
+      ...(await collection.findMany({
+        ...input,
+        limit: pageSize,
+        start,
+      }))
+    );
+  }
+
+  return records;
+};
+
 export default ({ strapi }) => ({
   async getOperations(input: unknown, requestContext: RequestContext = {}) {
     const body = validateOperations(input);
     const session = await assertSession(strapi, body.sessionToken, requestContext);
-    const now = Date.now();
-
-    const [interviews, requests, progressionRequests, progressionFollowUpConcerns] = await Promise.all([
-      documents(strapi, 'api::interview.interview').findMany({
-        filters: {
-          interviewState: {
-            $in: ['awaiting_employer_details', 'employer_cancelled', 'completed'],
-          },
-        },
-        limit: 300,
-        populate: {
-          candidate: true,
-          employer: true,
-          employerContact: true,
-          interviewSlot: {
-            populate: ['region'],
-          },
-        },
-        sort: ['employerDetailsDueAt:asc', 'feedbackDueAt:asc', 'updatedAt:desc'],
-      }),
-      documents(strapi, 'api::interview-request.interview-request').findMany({
-        filters: {
-          insufficientCapacityDetectedAt: {
-            $notNull: true,
-          },
-          requestState: 'pending_capacity',
-        },
-        limit: 100,
-        populate: ['candidate', 'class', 'region'],
-        sort: ['insufficientCapacityDetectedAt:desc', 'updatedAt:desc'],
-      }),
-      documents(strapi, 'api::offer.offer').findMany({
-        filters: {
-          progressionState: 'expired',
-        },
-        limit: 100,
-        populate: {
-          candidate: true,
-          employer: true,
-          interview: {
-            populate: ['interviewSlot'],
-          },
-          requestedByEmployerContact: true,
-        },
-        sort: ['candidateRespondedAt:desc', 'updatedAt:desc'],
-      }),
-      documents(strapi, 'api::offer.offer').findMany({
-        filters: {
-          progressionState: 'accepted',
-          $or: [
-            {
-              candidateFollowUpOutcome: {
-                $in: ['employer_did_not_contact_me', 'need_support'],
-              },
-            },
-            {
-              employerFollowUpOutcome: 'no_response_from_candidate',
-            },
-          ],
-        },
-        limit: 100,
-        populate: {
-          candidate: true,
-          employer: true,
-          interview: {
-            populate: ['interviewSlot'],
-          },
-          requestedByEmployerContact: true,
-        },
-        sort: ['candidateFollowUpCompletedAt:desc', 'employerFollowUpCompletedAt:desc', 'updatedAt:desc'],
-      }),
-    ]);
-    const interviewDocumentIds = interviews
-      .map(getDocumentId)
-      .filter((documentId): documentId is string => Boolean(documentId));
-    const feedbackRecords = interviewDocumentIds.length
-      ? await documents(strapi, 'api::interview-feedback.interview-feedback').findMany({
-          filters: {
-            interview: {
-              documentId: {
-                $in: interviewDocumentIds,
-              },
-            },
-            submittedByType: 'employer_contact',
-          },
-          limit: Math.max(interviewDocumentIds.length, 100),
-          populate: ['interview'],
-        })
-      : [];
-    const feedbackInterviewIds = new Set(
-      feedbackRecords
-        .map((feedback) => getDocumentId(documentRecordValue(feedback.interview)))
-        .filter((documentId): documentId is string => Boolean(documentId))
+    await adminTaskService(strapi).listTasks(
+      {
+        page: 1,
+        pageSize: 1,
+        sessionToken: body.sessionToken,
+        taskState: 'open',
+        taskType: 'interview_operation',
+      },
+      requestContext
     );
-    const rows: OperationRow[] = [];
 
-    for (const interview of interviews) {
-      const interviewDocumentId = getDocumentId(interview);
-
-      if (!interviewDocumentId) {
-        continue;
-      }
-
-      if (interview.interviewState === 'awaiting_employer_details') {
-        const dueAt = interview.employerDetailsDueAt;
-        rows.push(interviewRow(interview, dueAt && Date.parse(dueAt) <= now ? 'details_overdue' : 'details_pending'));
-      }
-
-      if (
-        interview.interviewState === 'employer_cancelled' &&
-        interview.employerDetailsReleaseReason === 'employer_did_not_confirm'
-      ) {
-        rows.push(interviewRow(interview, 'details_released'));
-      }
-
-      if (
-        interview.interviewState === 'completed' &&
-        !feedbackInterviewIds.has(interviewDocumentId)
-      ) {
-        const dueAt = feedbackDueAt(interview);
-        rows.push(interviewRow(interview, dueAt && Date.parse(dueAt) <= now ? 'feedback_overdue' : 'feedback_due'));
-      }
-    }
-
-    rows.push(...requests.map(requestRow));
-    rows.push(...progressionRequests.map(progressionRequestRow));
-    rows.push(...progressionFollowUpConcerns.map(progressionFollowUpConcernRow));
-
-    const compactRows = rows.filter((row): row is OperationRow => Boolean(row));
+    const taskDocuments = documents(strapi, 'api::admin-task.admin-task');
+    const baseFilters = operationTaskFilters({ issue: 'all', session });
+    const filters = operationTaskFilters({
+      issue: body.issue,
+      search: body.search,
+      session,
+    });
+    const filteredTotal = await taskDocuments.count({ filters });
+    const pageCount = Math.max(1, Math.ceil(filteredTotal / body.pageSize));
+    const page = Math.min(body.page, pageCount);
+    const taskRecords = await taskDocuments.findMany({
+      filters,
+      limit: body.pageSize,
+      sort: operationTaskSort(body.sortBy, body.sortDirection),
+      start: (page - 1) * body.pageSize,
+    });
+    const compactRows = taskRecords
+      .map(operationRowFromTask)
+      .filter((row): row is OperationRow => Boolean(row));
     const reliabilitySourceDocumentIds = compactRows
       .map((row) => row.sourceDocumentId)
       .filter((documentId): documentId is string => Boolean(documentId));
     const reliabilityEventTypes = Object.values(reliabilityEventTypeByIssue);
     const reliabilityEvents =
       reliabilitySourceDocumentIds.length > 0
-        ? await documents(strapi, 'api::employer-reliability-event.employer-reliability-event').findMany({
+        ? await findAllDocuments(strapi, 'api::employer-reliability-event.employer-reliability-event', {
             filters: {
               eventState: {
                 $in: ['active', 'acknowledged'],
@@ -680,7 +828,6 @@ export default ({ strapi }) => ({
               },
               sourceType: 'interview',
             },
-            limit: Math.max(reliabilitySourceDocumentIds.length, 100),
             sort: ['eventAt:desc', 'createdAt:desc'],
           })
         : [];
@@ -707,39 +854,47 @@ export default ({ strapi }) => ({
         reliabilityEvent: key ? reliabilityEventsByKey.get(key) || null : null,
       };
     });
-
-    const filteredRows = rowsWithReliability
-      .filter((row) => body.issue === 'all' || row.issue === body.issue)
-      .filter((row) => includesSearch(row, body.search))
-      .sort(compareRows(body.sortBy, body.sortDirection));
-    const filteredTotal = filteredRows.length;
-    const pageCount = Math.max(1, Math.ceil(filteredTotal / body.pageSize));
-    const page = Math.min(body.page, pageCount);
-    const pageStart = (page - 1) * body.pageSize;
+    const [
+      capacityShortfall,
+      detailsOverdue,
+      detailsPending,
+      detailsReleased,
+      feedbackDue,
+      feedbackOverdue,
+      progressionFollowUpConcerns,
+      totalOperations,
+    ] = await Promise.all([
+      taskDocuments.count({ filters: { ...baseFilters, issueKey: 'capacity_shortfall' } }),
+      taskDocuments.count({ filters: { ...baseFilters, issueKey: 'details_overdue' } }),
+      taskDocuments.count({ filters: { ...baseFilters, issueKey: 'details_pending' } }),
+      taskDocuments.count({ filters: { ...baseFilters, issueKey: 'details_released' } }),
+      taskDocuments.count({ filters: { ...baseFilters, issueKey: 'feedback_due' } }),
+      taskDocuments.count({ filters: { ...baseFilters, issueKey: 'feedback_overdue' } }),
+      taskDocuments.count({ filters: { ...baseFilters, issueKey: 'progression_follow_up_concern' } }),
+      taskDocuments.count({ filters: baseFilters }),
+    ]);
 
     return {
       counts: {
-        capacityShortfall: rowsWithReliability.filter((row) => row.issue === 'capacity_shortfall').length,
-        detailsOverdue: rowsWithReliability.filter((row) => row.issue === 'details_overdue').length,
-        detailsPending: rowsWithReliability.filter((row) => row.issue === 'details_pending').length,
-        detailsReleased: rowsWithReliability.filter((row) => row.issue === 'details_released').length,
-        feedbackDue: rowsWithReliability.filter((row) => row.issue === 'feedback_due').length,
-        feedbackOverdue: rowsWithReliability.filter((row) => row.issue === 'feedback_overdue').length,
-        progressionFollowUpConcerns: rowsWithReliability.filter(
-          (row) => row.issue === 'progression_follow_up_concern'
-        ).length,
-        total: rowsWithReliability.length,
+        capacityShortfall,
+        detailsOverdue,
+        detailsPending,
+        detailsReleased,
+        feedbackDue,
+        feedbackOverdue,
+        progressionFollowUpConcerns,
+        total: totalOperations,
       },
       filteredOperations: filteredTotal,
       generatedAt: new Date().toISOString(),
-      operations: filteredRows.slice(pageStart, pageStart + body.pageSize),
+      operations: rowsWithReliability,
       pagination: {
         page,
         pageCount,
         pageSize: body.pageSize,
         total: filteredTotal,
       },
-      totalOperations: rowsWithReliability.length,
+      totalOperations,
       user: session.user,
     };
   },

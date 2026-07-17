@@ -50,10 +50,12 @@ type DocumentRecord = Record<string, unknown> & {
   candidateReportLastAttemptAt?: string;
   candidateReportRetryCount?: number;
   candidateReportState?: string;
+  candidateLabel?: string;
   candidateResponseDeadline?: string;
   candidateRespondedAt?: string;
   class?: DocumentRecord;
   classArea?: DocumentRecord;
+  classLabel?: string;
   companyName?: string;
   completedAt?: string;
   courseTestAttempt?: DocumentRecord;
@@ -61,6 +63,7 @@ type DocumentRecord = Record<string, unknown> & {
   currency?: string;
   deliveryState?: string;
   documentId?: string;
+  dueAt?: string;
   displayTitle?: string;
   email?: string;
   enrollment?: DocumentRecord;
@@ -73,10 +76,12 @@ type DocumentRecord = Record<string, unknown> & {
   id?: number | string;
   interview?: DocumentRecord;
   interviewState?: string;
+  issueKey?: string;
   lastDetectedAt?: string;
   lastName?: string;
   employer?: DocumentRecord;
   employerContact?: DocumentRecord;
+  employerLabel?: string;
   employerDetailsDueAt?: string;
   employerDetailsReleaseEligibleAt?: string;
   employerDetailsReleaseReason?: string;
@@ -88,11 +93,13 @@ type DocumentRecord = Record<string, unknown> & {
   openingReadinessCheckedAt?: string;
   openingReadinessStatus?: string;
   openingReadinessSummary?: unknown;
+  ownerKeyText?: string;
   occurredAt?: string;
   payment?: DocumentRecord;
   paymentState?: string;
   paymentStatus?: string;
   priority?: AdminTaskPriority;
+  priorityRank?: number;
   progressionState?: string;
   refund?: DocumentRecord;
   refundState?: string;
@@ -102,12 +109,14 @@ type DocumentRecord = Record<string, unknown> & {
   reservation?: DocumentRecord;
   reservationState?: string;
   region?: string;
+  regionLabel?: string;
   resolvedAt?: string | null;
   requestedDetailsAt?: string;
   scheduledEndTime?: string;
   scheduledStartTime?: string;
   severity?: string;
   sector?: string;
+  searchText?: string;
   sourceDocumentId?: string;
   sourceType?: AdminTaskSourceType;
   submittedAt?: string;
@@ -125,6 +134,7 @@ type DocumentRecord = Record<string, unknown> & {
 };
 
 type DocumentCollection = {
+  count(input: Record<string, unknown>): Promise<number>;
   create(input: Record<string, unknown>): Promise<DocumentRecord>;
   findMany(input: Record<string, unknown>): Promise<DocumentRecord[]>;
   update(input: Record<string, unknown>): Promise<DocumentRecord>;
@@ -143,6 +153,7 @@ type AdminTaskSourceType =
   | 'enrollment'
   | 'interview'
   | 'interview_feedback'
+  | 'interview_request'
   | 'notification_event'
   | 'payment'
   | 'privacy_rights_request'
@@ -201,8 +212,11 @@ const taskListSchema = overviewSchema
     dueDate: z.enum(['overdue', 'next_24h', 'next_7d', 'none']).optional(),
     employer: z.string().trim().max(160).optional(),
     owner: z.string().trim().max(80).optional(),
+    page: z.coerce.number().int().min(1).max(500).default(1),
+    pageSize: z.coerce.number().int().min(1).max(100).default(50),
     priority: z.enum(['low', 'normal', 'high', 'urgent']).optional(),
     region: z.string().trim().max(160).optional(),
+    issueKey: z.string().trim().max(120).optional(),
     search: z.string().trim().max(220).optional(),
     sourceType: z
       .enum([
@@ -212,6 +226,7 @@ const taskListSchema = overviewSchema
         'enrollment',
         'interview',
         'interview_feedback',
+        'interview_request',
         'notification_event',
         'payment',
         'privacy_rights_request',
@@ -246,6 +261,30 @@ const validateTaskList = validateZodSchema(taskListSchema);
 
 const documents = (strapi: StrapiDocumentService, uid: string) =>
   strapi.documents(uid) as unknown as DocumentCollection;
+
+const findAllDocuments = async (
+  strapi: StrapiDocumentService,
+  uid: string,
+  input: Record<string, unknown>,
+  pageSize = 100
+) => {
+  const collection = documents(strapi, uid);
+  const filters = (input.filters || {}) as Record<string, unknown>;
+  const total = await collection.count({ filters });
+  const records: DocumentRecord[] = [];
+
+  for (let start = 0; start < total; start += pageSize) {
+    records.push(
+      ...(await collection.findMany({
+        ...input,
+        limit: pageSize,
+        start,
+      }))
+    );
+  }
+
+  return records;
+};
 
 const adminAuthService = (strapi: StrapiDocumentService) =>
   strapi.service('api::admin-auth.admin-auth') as unknown as AdminAuthService;
@@ -485,26 +524,136 @@ const findExistingTask = async (strapi: StrapiDocumentService, taskKey: string) 
   return tasks[0];
 };
 
-const taskData = (draft: AdminTaskDraft, detectedAt: string) => ({
-  actionLabel: draft.actionLabel,
-  actionPath: draft.actionPath,
-  lastDetectedAt:
-    typeof draft.metadata.sourceDetectedAt === 'string'
-      ? draft.metadata.sourceDetectedAt
-      : detectedAt,
-  metadata: draft.metadata,
-  priority: draft.priority,
-  relatedDocumentId: draft.relatedDocumentId,
-  relatedType: draft.relatedType,
-  resolvedAt: null,
-  sourceDocumentId: draft.sourceDocumentId,
-  sourceType: draft.sourceType,
-  summary: draft.summary,
-  taskKey: draft.taskKey,
-  taskState: 'open',
-  taskType: draft.taskType,
-  title: draft.title,
-});
+const metadataString = (metadata: Record<string, unknown>, keys: string[]) => {
+  for (const key of keys) {
+    const value = metadata[key];
+
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+  }
+
+  return null;
+};
+
+const draftDueAt = (draft: AdminTaskDraft) =>
+  metadataString(draft.metadata, [
+    'appealResponseDueAt',
+    'candidateResponseDeadline',
+    'dueAt',
+    'employerDetailsDueAt',
+    'feedbackDueAt',
+    'responseDueAt',
+  ]);
+
+const draftOwnerKeys = (draft: AdminTaskDraft) => {
+  const visibleRoleKeys = draft.metadata.visibleRoleKeys;
+
+  if (
+    Array.isArray(visibleRoleKeys) &&
+    visibleRoleKeys.every((roleKey) => typeof roleKey === 'string')
+  ) {
+    return uniqueStringValues(visibleRoleKeys);
+  }
+
+  return defaultOwnerKeysByTaskType[draft.taskType] || ['admin'];
+};
+
+const draftSearchText = ({
+  candidateLabel,
+  classLabel,
+  dueAt,
+  draft,
+  employerLabel,
+  ownerKeys,
+  regionLabel,
+}: {
+  candidateLabel: string | null;
+  classLabel: string | null;
+  dueAt: string | null;
+  draft: AdminTaskDraft;
+  employerLabel: string | null;
+  ownerKeys: string[];
+  regionLabel: string | null;
+}) =>
+  [
+    draft.actionLabel,
+    draft.actionPath,
+    candidateLabel,
+    classLabel,
+    dueAt,
+    employerLabel,
+    ownerKeys.join(' '),
+    regionLabel,
+    draft.priority,
+    draft.relatedDocumentId,
+    draft.relatedType,
+    draft.sourceDocumentId,
+    draft.sourceType,
+    draft.summary,
+    draft.taskKey,
+    draft.taskType,
+    taskTypeLabels[draft.taskType],
+    draft.title,
+    draft.metadata.eventType,
+    draft.metadata.interviewDocumentId,
+    draft.metadata.paymentDocumentId,
+    draft.metadata.progressionRequestDocumentId,
+    draft.metadata.requestType,
+    draft.metadata.templateKey,
+    JSON.stringify(draft.metadata),
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+
+const taskData = (draft: AdminTaskDraft, detectedAt: string) => {
+  const candidateLabel = metadataString(draft.metadata, ['candidateName', 'subjectName']);
+  const classLabel = metadataString(draft.metadata, ['className']);
+  const dueAt = draftDueAt(draft);
+  const employerLabel = metadataString(draft.metadata, ['employerName']);
+  const issueKey = metadataString(draft.metadata, ['issue']);
+  const ownerKeys = draftOwnerKeys(draft);
+  const regionLabel = metadataString(draft.metadata, ['regionName']);
+
+  return {
+    actionLabel: draft.actionLabel,
+    actionPath: draft.actionPath,
+    candidateLabel,
+    classLabel,
+    dueAt,
+    employerLabel,
+    issueKey,
+    lastDetectedAt:
+      typeof draft.metadata.sourceDetectedAt === 'string'
+        ? draft.metadata.sourceDetectedAt
+        : detectedAt,
+    metadata: draft.metadata,
+    ownerKeyText: ownerKeys.join(' '),
+    priority: draft.priority,
+    priorityRank: priorityRank[draft.priority],
+    regionLabel,
+    relatedDocumentId: draft.relatedDocumentId,
+    relatedType: draft.relatedType,
+    resolvedAt: null,
+    searchText: draftSearchText({
+      candidateLabel,
+      classLabel,
+      dueAt,
+      draft,
+      employerLabel,
+      ownerKeys,
+      regionLabel,
+    }),
+    sourceDocumentId: draft.sourceDocumentId,
+    sourceType: draft.sourceType,
+    summary: draft.summary,
+    taskKey: draft.taskKey,
+    taskState: 'open',
+    taskType: draft.taskType,
+    title: draft.title,
+  };
+};
 
 const upsertTask = async (
   strapi: StrapiDocumentService,
@@ -537,7 +686,7 @@ const resolveStaleTasks = async (
   activeTaskKeys: Set<string>,
   resolvedAt: string
 ) => {
-  const openTasks = await documents(strapi, 'api::admin-task.admin-task').findMany({
+  const openTasks = await findAllDocuments(strapi, 'api::admin-task.admin-task', {
     filters: {
       taskState: {
         $in: activeTaskStates,
@@ -546,7 +695,6 @@ const resolveStaleTasks = async (
         $in: monitoredTaskTypes,
       },
     },
-    limit: 1000,
   });
 
   await Promise.all(
@@ -1091,6 +1239,7 @@ const interviewDetailsOverdueTask = (interview: DocumentRecord): AdminTaskDraft 
       candidateName,
       dueAt,
       employerName,
+      issue: 'details_overdue',
       interviewDocumentId: documentId,
       releaseEligibleAt,
       sourceCreatedAt: interview.createdAt,
@@ -1140,6 +1289,7 @@ const interviewDetailsReleasedTask = (interview: DocumentRecord): AdminTaskDraft
     metadata: {
       candidateName,
       employerName,
+      issue: 'details_released',
       interviewDocumentId: documentId,
       releasedAt,
       sourceCreatedAt: interview.createdAt,
@@ -1195,6 +1345,7 @@ const interviewCandidateRestrictionCancelledTask = (interview: DocumentRecord): 
       candidateName,
       cancelledAt,
       employerName,
+      issue: 'candidate_restriction_cancelled',
       interviewDocumentId: documentId,
       sourceCreatedAt: interview.createdAt,
       sourceDetectedAt: cancelledAt,
@@ -1245,6 +1396,7 @@ const interviewFeedbackOverdueTask = (interview: DocumentRecord): AdminTaskDraft
       dueAt,
       employerName,
       escalatedToAdminAt,
+      issue: 'feedback_overdue',
       interviewDocumentId: documentId,
       sourceCreatedAt: interview.createdAt,
       sourceDetectedAt: interview.feedbackOverdueDetectedAt || dueAt,
@@ -1299,6 +1451,7 @@ const interviewProgressionExpiredTask = (request: DocumentRecord): AdminTaskDraf
     metadata: {
       candidateName,
       employerName,
+      issue: 'progression_expired',
       progressionRequestDocumentId: documentId,
       sourceCreatedAt: request.createdAt,
       sourceDetectedAt: referenceAt,
@@ -1323,12 +1476,78 @@ const interviewProgressionExpiredTask = (request: DocumentRecord): AdminTaskDraf
   };
 };
 
+const interviewCapacityShortfallTask = (request: DocumentRecord): AdminTaskDraft | null => {
+  const documentId = getDocumentId(request);
+
+  if (!documentId || request.requestState !== 'pending_capacity') {
+    return null;
+  }
+
+  const candidateName = candidateDisplayName(documentRecordValue(request.candidate));
+  const classRecord = documentRecordValue(request.class);
+  const regionRecord = documentRecordValue(request.region);
+  const className =
+    typeof classRecord?.displayTitle === 'string'
+      ? classRecord.displayTitle
+      : typeof classRecord?.name === 'string'
+        ? classRecord.name
+        : undefined;
+  const regionName =
+    typeof regionRecord?.name === 'string'
+      ? regionRecord.name
+      : typeof classRecord?.region === 'string'
+        ? classRecord.region
+        : undefined;
+  const detectedAt =
+    request.insufficientCapacityDetectedAt ||
+    request.updatedAt ||
+    request.createdAt ||
+    new Date().toISOString();
+
+  return {
+    actionLabel: 'Review capacity',
+    actionPath: interviewOperationsPath({
+      issue: 'capacity_shortfall',
+      request: documentId,
+    }),
+    metadata: {
+      candidateName,
+      className,
+      dueAt: detectedAt,
+      issue: 'capacity_shortfall',
+      reason: request.insufficientCapacityReason || null,
+      regionName: regionName || null,
+      requestDocumentId: documentId,
+      requestState: request.requestState || null,
+      sourceCreatedAt: request.createdAt,
+      sourceDetectedAt: detectedAt,
+      visibleRoleKeys: ['sales', 'admin', 'super_admin'],
+    },
+    priority: 'urgent',
+    relatedDocumentId: getDocumentId(classRecord),
+    relatedType: getDocumentId(classRecord) ? 'class' : undefined,
+    sourceDocumentId: documentId,
+    sourceType: 'interview_request',
+    summary: trimToLength(
+      [
+        request.insufficientCapacityReason || 'Insufficient employer interview capacity for an interview request.',
+        candidateName ? `Candidate: ${candidateName}.` : '',
+        className ? `Class: ${className}.` : '',
+        regionName ? `Region: ${regionName}.` : '',
+      ].filter(Boolean).join(' '),
+      500
+    ),
+    taskKey: `interview-request:${documentId}:capacity_shortfall`,
+    taskType: 'interview_operation',
+    title: 'Capacity shortfall',
+  };
+};
+
 const collectPaymentTasks = async (strapi: StrapiDocumentService) => {
-  const payments = await documents(strapi, 'api::payment.payment').findMany({
+  const payments = await findAllDocuments(strapi, 'api::payment.payment', {
     filters: {
       paymentState: 'requires_review',
     },
-    limit: 100,
     populate: ['candidate', 'enrollment', 'reservation'],
     sort: ['createdAt:desc'],
   });
@@ -1337,11 +1556,10 @@ const collectPaymentTasks = async (strapi: StrapiDocumentService) => {
 };
 
 const collectReservationTasks = async (strapi: StrapiDocumentService) => {
-  const reservations = await documents(strapi, 'api::reservation.reservation').findMany({
+  const reservations = await findAllDocuments(strapi, 'api::reservation.reservation', {
     filters: {
       reservationState: 'payment_exception',
     },
-    limit: 100,
     populate: ['candidate', 'class', 'enrollment'],
     sort: ['createdAt:desc'],
   });
@@ -1364,7 +1582,7 @@ const collectReservationTasks = async (strapi: StrapiDocumentService) => {
 };
 
 const collectEnrollmentTasks = async (strapi: StrapiDocumentService) => {
-  const enrollments = await documents(strapi, 'api::enrollment.enrollment').findMany({
+  const enrollments = await findAllDocuments(strapi, 'api::enrollment.enrollment', {
     filters: {
       $or: [
         {
@@ -1375,7 +1593,6 @@ const collectEnrollmentTasks = async (strapi: StrapiDocumentService) => {
         },
       ],
     },
-    limit: 100,
     populate: ['candidate', 'class'],
     sort: ['createdAt:desc'],
   });
@@ -1399,13 +1616,12 @@ const collectEnrollmentTasks = async (strapi: StrapiDocumentService) => {
 };
 
 const collectRefundTasks = async (strapi: StrapiDocumentService) => {
-  const refunds = await documents(strapi, 'api::refund.refund').findMany({
+  const refunds = await findAllDocuments(strapi, 'api::refund.refund', {
     filters: {
       refundState: {
         $in: ['requested', 'approved', 'failed'],
       },
     },
-    limit: 100,
     populate: ['candidate', 'enrollment', 'payment'],
     sort: ['createdAt:desc'],
   });
@@ -1414,13 +1630,12 @@ const collectRefundTasks = async (strapi: StrapiDocumentService) => {
 };
 
 const collectAssessmentAppealTasks = async (strapi: StrapiDocumentService) => {
-  const appeals = await documents(strapi, 'api::assessment-appeal.assessment-appeal').findMany({
+  const appeals = await findAllDocuments(strapi, 'api::assessment-appeal.assessment-appeal', {
     filters: {
       appealState: {
         $in: ['submitted', 'under_review'],
       },
     },
-    limit: 100,
     populate: ['candidate', 'courseTestAttempt', 'enrollment'],
     sort: ['submittedAt:desc', 'createdAt:desc'],
   });
@@ -1429,13 +1644,12 @@ const collectAssessmentAppealTasks = async (strapi: StrapiDocumentService) => {
 };
 
 const collectNotificationTasks = async (strapi: StrapiDocumentService) => {
-  const events = await documents(strapi, 'api::notification-event.notification-event').findMany({
+  const events = await findAllDocuments(strapi, 'api::notification-event.notification-event', {
     filters: {
       deliveryState: {
         $in: notificationFailureStates,
       },
     },
-    limit: 100,
     sort: ['failedAt:desc', 'updatedAt:desc', 'createdAt:desc'],
   });
 
@@ -1447,7 +1661,7 @@ const collectNotificationTasks = async (strapi: StrapiDocumentService) => {
 
 const collectAuditTasks = async (strapi: StrapiDocumentService) => {
   const occurredAfter = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-  const events = await documents(strapi, 'api::audit-event.audit-event').findMany({
+  const events = await findAllDocuments(strapi, 'api::audit-event.audit-event', {
     filters: {
       occurredAt: {
         $gte: occurredAfter,
@@ -1456,7 +1670,6 @@ const collectAuditTasks = async (strapi: StrapiDocumentService) => {
         $in: ['error', 'critical'],
       },
     },
-    limit: 50,
     sort: ['occurredAt:desc', 'createdAt:desc'],
   });
 
@@ -1464,13 +1677,12 @@ const collectAuditTasks = async (strapi: StrapiDocumentService) => {
 };
 
 const collectSupportCaseTasks = async (strapi: StrapiDocumentService) => {
-  const cases = await documents(strapi, 'api::support-case.support-case').findMany({
+  const cases = await findAllDocuments(strapi, 'api::support-case.support-case', {
     filters: {
       caseState: {
         $in: ['open', 'awaiting_staff', 'in_progress'],
       },
     },
-    limit: 100,
     populate: ['candidate', 'employer', 'employerContact'],
     sort: ['lastMessageAt:desc', 'createdAt:desc'],
   });
@@ -1553,13 +1765,12 @@ function displayNameFallback(record?: DocumentRecord) {
 }
 
 const collectPrivacyRequestTasks = async (strapi: StrapiDocumentService) => {
-  const requests = await documents(strapi, 'api::privacy-rights-request.privacy-rights-request').findMany({
+  const requests = await findAllDocuments(strapi, 'api::privacy-rights-request.privacy-rights-request', {
     filters: {
       requestState: {
         $in: activePrivacyRequestStates,
       },
     },
-    limit: 100,
     populate: {
       candidate: true,
       employerContact: {
@@ -1648,14 +1859,13 @@ const classReadinessTask = (classRecord: DocumentRecord): AdminTaskDraft | null 
 };
 
 const collectClassReadinessTasks = async (strapi: StrapiDocumentService) => {
-  const classes = await documents(strapi, 'api::class.class').findMany({
+  const classes = await findAllDocuments(strapi, 'api::class.class', {
     filters: {
       openingReadinessStatus: 'blocked',
       state: {
         $in: ['draft', 'coming_soon', 'waitlist_open'],
       },
     },
-    limit: 100,
     populate: ['classArea', 'workSector'],
     sort: ['openingReadinessCheckedAt:desc', 'updatedAt:desc', 'createdAt:desc'],
   });
@@ -1664,11 +1874,10 @@ const collectClassReadinessTasks = async (strapi: StrapiDocumentService) => {
 };
 
 const collectAiFeedbackFailureTasks = async (strapi: StrapiDocumentService) => {
-  const feedbackRecords = await documents(strapi, 'api::interview-feedback.interview-feedback').findMany({
+  const feedbackRecords = await findAllDocuments(strapi, 'api::interview-feedback.interview-feedback', {
     filters: {
       candidateReportState: 'failed',
     },
-    limit: 100,
     populate: {
       interview: {
         populate: ['candidate', 'employer'],
@@ -1683,7 +1892,7 @@ const collectAiFeedbackFailureTasks = async (strapi: StrapiDocumentService) => {
 };
 
 const collectInterviewDetailTasks = async (strapi: StrapiDocumentService) => {
-  const interviews = await documents(strapi, 'api::interview.interview').findMany({
+  const interviews = await findAllDocuments(strapi, 'api::interview.interview', {
     filters: {
       $or: [
         {
@@ -1699,7 +1908,6 @@ const collectInterviewDetailTasks = async (strapi: StrapiDocumentService) => {
         },
       ],
     },
-    limit: 100,
     populate: ['candidate', 'employer', 'employerContact'],
     sort: ['employerDetailsDueAt:asc', 'createdAt:asc'],
   });
@@ -1714,11 +1922,10 @@ const collectInterviewDetailTasks = async (strapi: StrapiDocumentService) => {
 };
 
 const collectInterviewFeedbackTasks = async (strapi: StrapiDocumentService) => {
-  const interviews = await documents(strapi, 'api::interview.interview').findMany({
+  const interviews = await findAllDocuments(strapi, 'api::interview.interview', {
     filters: {
       interviewState: 'completed',
     },
-    limit: 100,
     populate: ['candidate', 'employer', 'employerContact'],
     sort: ['feedbackDueAt:asc', 'completedAt:asc', 'createdAt:asc'],
   });
@@ -1726,7 +1933,7 @@ const collectInterviewFeedbackTasks = async (strapi: StrapiDocumentService) => {
     .map(getDocumentId)
     .filter((documentId): documentId is string => Boolean(documentId));
   const feedbackRecords = interviewDocumentIds.length
-    ? await documents(strapi, 'api::interview-feedback.interview-feedback').findMany({
+    ? await findAllDocuments(strapi, 'api::interview-feedback.interview-feedback', {
         filters: {
           interview: {
             documentId: {
@@ -1735,7 +1942,6 @@ const collectInterviewFeedbackTasks = async (strapi: StrapiDocumentService) => {
           },
           submittedByType: 'employer_contact',
         },
-        limit: 100,
         populate: ['interview'],
       })
     : [];
@@ -1755,11 +1961,10 @@ const collectInterviewFeedbackTasks = async (strapi: StrapiDocumentService) => {
 };
 
 const collectInterviewProgressionTasks = async (strapi: StrapiDocumentService) => {
-  const progressionRequests = await documents(strapi, 'api::offer.offer').findMany({
+  const progressionRequests = await findAllDocuments(strapi, 'api::offer.offer', {
     filters: {
       progressionState: 'expired',
     },
-    limit: 100,
     populate: ['candidate', 'employer', 'interview', 'requestedByEmployerContact'],
     sort: ['candidateRespondedAt:desc', 'updatedAt:desc', 'createdAt:desc'],
   });
@@ -1769,9 +1974,27 @@ const collectInterviewProgressionTasks = async (strapi: StrapiDocumentService) =
     .filter((task): task is AdminTaskDraft => Boolean(task));
 };
 
+const collectInterviewCapacityShortfallTasks = async (strapi: StrapiDocumentService) => {
+  const requests = await findAllDocuments(strapi, 'api::interview-request.interview-request', {
+    filters: {
+      insufficientCapacityDetectedAt: {
+        $notNull: true,
+      },
+      requestState: 'pending_capacity',
+    },
+    populate: ['candidate', 'class', 'region'],
+    sort: ['insufficientCapacityDetectedAt:desc', 'updatedAt:desc'],
+  });
+
+  return requests
+    .map(interviewCapacityShortfallTask)
+    .filter((task): task is AdminTaskDraft => Boolean(task));
+};
+
 const collectTaskDrafts = async (strapi: StrapiDocumentService) => {
   const [
     assessmentAppeals,
+    interviewCapacityShortfalls,
     interviewDetails,
     interviewFeedback,
     interviewProgression,
@@ -1787,6 +2010,7 @@ const collectTaskDrafts = async (strapi: StrapiDocumentService) => {
     supportCases,
   ] = await Promise.all([
     collectAssessmentAppealTasks(strapi),
+    collectInterviewCapacityShortfallTasks(strapi),
     collectInterviewDetailTasks(strapi),
     collectInterviewFeedbackTasks(strapi),
     collectInterviewProgressionTasks(strapi),
@@ -1804,6 +2028,7 @@ const collectTaskDrafts = async (strapi: StrapiDocumentService) => {
 
   return [
     ...assessmentAppeals,
+    ...interviewCapacityShortfalls,
     ...interviewDetails,
     ...interviewFeedback,
     ...interviewProgression,
@@ -1836,6 +2061,7 @@ const publicTask = (task: DocumentRecord) => {
     relatedType: task.relatedType || null,
     sourceDocumentId: task.sourceDocumentId || null,
     sourceType: task.sourceType || null,
+    issueKey: task.issueKey || firstMetadataString(objectValue(task.metadata), ['issue']),
     summary: task.summary || '',
     taskKey: task.taskKey || '',
     taskState,
@@ -1929,18 +2155,22 @@ const publicTaskListItem = (task: DocumentRecord) => {
   return {
     ...publicTask(task),
     candidateLabel:
+      stringValue(task.candidateLabel) ||
       firstMetadataString(metadata, ['candidateName', 'subjectName']) ||
       summaryField(task.summary, 'Candidate'),
     classLabel:
+      stringValue(task.classLabel) ||
       firstMetadataString(metadata, ['className']) ||
       summaryField(task.summary, 'Class'),
-    dueAt: taskDueAt(task),
+    dueAt: stringValue(task.dueAt) || taskDueAt(task),
     employerLabel:
+      stringValue(task.employerLabel) ||
       firstMetadataString(metadata, ['employerName']) ||
       summaryField(task.summary, 'Employer'),
     ownerKeys,
     ownerLabels: ownerKeys.map((ownerKey) => ownerLabels[ownerKey] || ownerKey),
     regionLabel:
+      stringValue(task.regionLabel) ||
       firstMetadataString(metadata, ['regionName']) ||
       summaryField(task.summary, 'Region'),
   };
@@ -1952,134 +2182,183 @@ type TaskListQuery = z.infer<typeof taskListSchema>;
 const uniqueStringValues = (values: unknown[]) =>
   [...new Set(values.map((value) => stringValue(value)).filter(Boolean))];
 
-const normalized = (value: unknown) => stringValue(value).toLowerCase();
+const taskVisibilityFilter = (session: AdminSession) => {
+  if (session.user.roleKeys.includes('super_admin')) {
+    return null;
+  }
 
-const containsNeedle = (value: unknown, needle: string) =>
-  !needle || normalized(value).includes(needle);
+  if (session.user.roleKeys.some((roleKey) => ['sales', 'support'].includes(roleKey))) {
+    return null;
+  }
 
-const itemSearchHaystack = (item: PublicTaskListItem, task: DocumentRecord) => {
-  const metadata = objectValue(task.metadata);
-
-  return [
-    item.actionLabel,
-    item.actionPath,
-    item.candidateLabel,
-    item.classLabel,
-    item.documentId,
-    item.employerLabel,
-    item.ownerLabels.join(' '),
-    item.priority,
-    item.regionLabel,
-    item.relatedDocumentId,
-    item.relatedType,
-    item.sourceDocumentId,
-    item.sourceType,
-    item.summary,
-    item.taskKey,
-    item.taskState,
-    item.taskType,
-    item.taskTypeLabel,
-    item.title,
-    metadata.eventType,
-    metadata.interviewDocumentId,
-    metadata.paymentDocumentId,
-    metadata.progressionRequestDocumentId,
-    metadata.requestType,
-    metadata.templateKey,
-    JSON.stringify(metadata),
-  ]
-    .filter(Boolean)
-    .join(' ')
-    .toLowerCase();
+  return {
+    $or: session.user.roleKeys.map((roleKey) => ({
+      ownerKeyText: {
+        $containsi: roleKey,
+      },
+    })),
+  };
 };
 
-const matchesDueDateFilter = (item: PublicTaskListItem, dueDate?: string) => {
+const taskDueDateFilter = (dueDate?: string) => {
   if (!dueDate) {
-    return true;
+    return null;
   }
 
-  const dueTime = Date.parse(item.dueAt || '');
+  const now = new Date();
 
   if (dueDate === 'none') {
-    return !Number.isFinite(dueTime);
+    return {
+      dueAt: {
+        $null: true,
+      },
+    };
   }
-
-  if (!Number.isFinite(dueTime)) {
-    return false;
-  }
-
-  const now = Date.now();
 
   if (dueDate === 'overdue') {
-    return dueTime < now;
+    return {
+      dueAt: {
+        $lt: now.toISOString(),
+      },
+    };
   }
 
   if (dueDate === 'next_24h') {
-    return dueTime >= now && dueTime <= now + 24 * 60 * 60 * 1000;
+    return {
+      dueAt: {
+        $gte: now.toISOString(),
+        $lte: new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString(),
+      },
+    };
   }
 
   if (dueDate === 'next_7d') {
-    return dueTime >= now && dueTime <= now + 7 * 24 * 60 * 60 * 1000;
+    return {
+      dueAt: {
+        $gte: now.toISOString(),
+        $lte: new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+      },
+    };
   }
 
-  return true;
+  return null;
 };
 
-const filterTaskItems = (
-  entries: { item: PublicTaskListItem; task: DocumentRecord }[],
-  query: TaskListQuery
-) => {
-  const search = normalized(query.search);
-  const candidate = normalized(query.candidate);
-  const employer = normalized(query.employer);
-  const className = normalized(query.className);
-  const region = normalized(query.region);
+const taskRecordFilters = (query: Partial<TaskListQuery>, session: AdminSession) => {
+  const filters: Record<string, unknown> = {
+    taskType: {
+      $in: monitoredTaskTypes,
+    },
+  };
+  const andFilters: Record<string, unknown>[] = [];
 
-  return entries
-    .filter(({ item, task }) => !query.taskType || item.taskType === query.taskType)
-    .filter(({ item }) =>
-      query.taskState === 'all'
-        ? true
-        : query.taskState
-          ? item.taskState === query.taskState
-          : item.taskState === 'open'
-    )
-    .filter(({ item }) => !query.priority || item.priority === query.priority)
-    .filter(({ item }) => !query.sourceType || item.sourceType === query.sourceType)
-    .filter(({ item }) => !query.owner || item.ownerKeys.includes(query.owner))
-    .filter(({ item }) => containsNeedle(item.candidateLabel, candidate))
-    .filter(({ item }) => containsNeedle(item.employerLabel, employer))
-    .filter(({ item }) => containsNeedle(item.classLabel, className))
-    .filter(({ item }) => containsNeedle(item.regionLabel, region))
-    .filter(({ item }) => matchesDueDateFilter(item, query.dueDate))
-    .filter(({ item, task }) => !search || itemSearchHaystack(item, task).includes(search))
-    .map(({ item }) => item);
+  if (query.taskType) {
+    filters.taskType = query.taskType;
+  }
+
+  if (query.taskState === 'all') {
+    // No state filter.
+  } else if (query.taskState) {
+    filters.taskState = query.taskState;
+  } else {
+    filters.taskState = 'open';
+  }
+
+  if (query.priority) {
+    filters.priority = query.priority;
+  }
+
+  if (query.sourceType) {
+    filters.sourceType = query.sourceType;
+  }
+
+  if (query.issueKey) {
+    filters.issueKey = query.issueKey;
+  }
+
+  if (query.owner) {
+    filters.ownerKeyText = {
+      $containsi: query.owner,
+    };
+  }
+
+  if (query.candidate) {
+    filters.candidateLabel = {
+      $containsi: query.candidate,
+    };
+  }
+
+  if (query.employer) {
+    filters.employerLabel = {
+      $containsi: query.employer,
+    };
+  }
+
+  if (query.className) {
+    filters.classLabel = {
+      $containsi: query.className,
+    };
+  }
+
+  if (query.region) {
+    filters.regionLabel = {
+      $containsi: query.region,
+    };
+  }
+
+  const dueDate = taskDueDateFilter(query.dueDate);
+
+  if (dueDate) {
+    andFilters.push(dueDate);
+  }
+
+  if (query.search) {
+    andFilters.push({
+      $or: [
+        { searchText: { $containsi: query.search } },
+        { taskKey: { $containsi: query.search } },
+        { sourceDocumentId: { $containsi: query.search } },
+        { relatedDocumentId: { $containsi: query.search } },
+        { title: { $containsi: query.search } },
+        { summary: { $containsi: query.search } },
+      ],
+    });
+  }
+
+  const visibility = taskVisibilityFilter(session);
+
+  if (visibility) {
+    andFilters.push(visibility);
+  }
+
+  return andFilters.length ? { ...filters, $and: andFilters } : filters;
 };
 
 const option = (value: string, label: string) => ({ label, value });
 
-const taskListFilterOptions = (items: PublicTaskListItem[]) => ({
-  owners: [...new Set(items.flatMap((item) => item.ownerKeys))]
-    .sort()
-    .map((ownerKey) => option(ownerKey, ownerLabels[ownerKey] || ownerKey)),
-  priorities: [...new Set(items.map((item) => item.priority))]
+const taskListFilterOptions = () => ({
+  owners: Object.keys(ownerLabels).sort().map((ownerKey) => option(ownerKey, ownerLabels[ownerKey] || ownerKey)),
+  priorities: (Object.keys(priorityRank) as AdminTaskPriority[])
     .sort((left, right) => priorityRank[left] - priorityRank[right])
     .map((priority) => option(priority, priority)),
-  sourceTypes: [...new Set(items.map((item) => item.sourceType))]
-    .sort()
-    .map((sourceType) => option(sourceType, String(sourceType).replace(/[_-]+/g, ' '))),
-  states: [...new Set(items.map((item) => item.taskState))]
-    .sort()
-    .map((state) => option(state, state)),
-  taskTypes: [...new Set(items.map((item) => item.taskType))]
-    .sort()
-    .map((taskType) => option(taskType, taskTypeLabels[taskType] || taskType)),
-});
-
-const taskListCounts = (items: PublicTaskListItem[], filteredItems: PublicTaskListItem[]) => ({
-  filteredTasks: filteredItems.length,
-  openTasks: items.filter((item) => item.taskState === 'open').length,
-  totalTasks: items.length,
+  sourceTypes: [
+    'assessment_appeal',
+    'audit_event',
+    'class',
+    'enrollment',
+    'interview',
+    'interview_feedback',
+    'interview_request',
+    'notification_event',
+    'payment',
+    'privacy_rights_request',
+    'progression_request',
+    'refund',
+    'reservation',
+    'support_case',
+  ].map((sourceType) => option(sourceType, String(sourceType).replace(/[_-]+/g, ' '))),
+  states: ['acknowledged', 'dismissed', 'open', 'resolved'].map((state) => option(state, state)),
+  taskTypes: monitoredTaskTypes.map((taskType) => option(taskType, taskTypeLabels[taskType] || taskType)),
 });
 
 const publishTaskChange = (strapi: StrapiDocumentService, task?: DocumentRecord) =>
@@ -2092,20 +2371,6 @@ const publishTaskChange = (strapi: StrapiDocumentService, task?: DocumentRecord)
     },
     (strapi as { log?: { error?: (message: string, error?: unknown) => void } }).log
   );
-
-const compareTasks = (left: DocumentRecord, right: DocumentRecord) => {
-  const priorityDifference =
-    priorityRank[left.priority || 'normal'] - priorityRank[right.priority || 'normal'];
-
-  if (priorityDifference !== 0) {
-    return priorityDifference;
-  }
-
-  return (
-    new Date(right.lastDetectedAt || right.createdAt || 0).getTime() -
-    new Date(left.lastDetectedAt || left.createdAt || 0).getTime()
-  );
-};
 
 const taskCounts = (tasks: ReturnType<typeof publicTask>[]) => {
   const totalActiveTasks = tasks.length;
@@ -2126,34 +2391,34 @@ const taskCounts = (tasks: ReturnType<typeof publicTask>[]) => {
   };
 };
 
-const syncTaskRecords = async (strapi: StrapiDocumentService, session?: AdminSession) => {
+const syncTaskRecords = async (strapi: StrapiDocumentService) => {
   const detectedAt = new Date().toISOString();
   const drafts = await collectTaskDrafts(strapi);
   const activeTaskKeys = new Set(drafts.map((draft) => draft.taskKey));
 
   await Promise.all(drafts.map((draft) => upsertTask(strapi, draft, detectedAt)));
   await resolveStaleTasks(strapi, activeTaskKeys, detectedAt);
-
-  const tasks = await documents(strapi, 'api::admin-task.admin-task').findMany({
-    filters: {
-      taskType: {
-        $in: monitoredTaskTypes,
-      },
-    },
-    limit: 500,
-    sort: ['createdAt:desc'],
-  });
-
-  return tasks
-    .filter((task) => (session ? canViewTaskRecordForSession(task, session) : true))
-    .sort(compareTasks);
 };
 
 const syncTasks = async (strapi: StrapiDocumentService, session?: AdminSession) =>
-  (await syncTaskRecords(strapi, session))
-    .filter((task) => activeTaskStates.includes((task.taskState || 'open') as AdminTaskState))
-    .slice(0, 20)
-    .map(publicTask);
+  {
+    await syncTaskRecords(strapi);
+    const filters: Record<string, unknown> = {
+      taskState: {
+        $in: activeTaskStates,
+      },
+      taskType: {
+        $in: monitoredTaskTypes,
+      },
+    };
+    const visibility = session ? taskVisibilityFilter(session) : null;
+    const tasks = await findAllDocuments(strapi, 'api::admin-task.admin-task', {
+      filters: visibility ? { ...filters, $and: [visibility] } : filters,
+      sort: ['priorityRank:asc', 'lastDetectedAt:desc', 'createdAt:desc'],
+    });
+
+    return tasks.map(publicTask);
+  };
 
 export default factories.createCoreService('api::admin-task.admin-task', ({ strapi }) => ({
   async getOverview(input: unknown, requestContext: RequestContext = {}) {
@@ -2172,14 +2437,29 @@ export default factories.createCoreService('api::admin-task.admin-task', ({ stra
   async listTasks(input: unknown, requestContext: RequestContext = {}) {
     const body = validateTaskList(input);
     const session = await assertOperationsSession(strapi, body.sessionToken, requestContext);
-    const taskRecords = await syncTaskRecords(strapi, session);
-    const entries = taskRecords.map((task) => ({
-      item: publicTaskListItem(task),
-      task,
-    }));
-    const items = entries.map((entry) => entry.item);
-    const filteredTasks = filterTaskItems(entries, body);
-    const visibleTasks = filteredTasks.slice(0, 200);
+    await syncTaskRecords(strapi);
+    const taskDocuments = documents(strapi, 'api::admin-task.admin-task');
+    const filters = taskRecordFilters(body, session);
+    const baseFilters = taskRecordFilters({ sessionToken: body.sessionToken }, session);
+    const [filteredTasksCount, openTasksCount, totalTasksCount] = await Promise.all([
+      taskDocuments.count({ filters }),
+      taskDocuments.count({
+        filters: {
+          ...baseFilters,
+          taskState: 'open',
+        },
+      }),
+      taskDocuments.count({ filters: baseFilters }),
+    ]);
+    const pageCount = Math.max(1, Math.ceil(filteredTasksCount / body.pageSize));
+    const page = Math.min(body.page, pageCount);
+    const taskRecords = await taskDocuments.findMany({
+      filters,
+      limit: body.pageSize,
+      sort: ['priorityRank:asc', 'lastDetectedAt:desc', 'createdAt:desc'],
+      start: (page - 1) * body.pageSize,
+    });
+    const visibleTasks = taskRecords.map(publicTaskListItem);
     const reviewClaims = await reviewClaimService(strapi).activeClaimsForSession(
       visibleTasks.map((task) => ({
         resourceDocumentId: task.documentId,
@@ -2191,9 +2471,19 @@ export default factories.createCoreService('api::admin-task.admin-task', ({ stra
     );
 
     return {
-      counts: taskListCounts(items, filteredTasks),
-      filters: taskListFilterOptions(items),
+      counts: {
+        filteredTasks: filteredTasksCount,
+        openTasks: openTasksCount,
+        totalTasks: totalTasksCount,
+      },
+      filters: taskListFilterOptions(),
       generatedAt: new Date().toISOString(),
+      pagination: {
+        page,
+        pageCount,
+        pageSize: body.pageSize,
+        total: filteredTasksCount,
+      },
       tasks: visibleTasks.map((task) => {
         const reviewClaim = reviewClaims.get(adminTaskClaimKey(task.taskKey)) as
           | { isActive?: boolean }

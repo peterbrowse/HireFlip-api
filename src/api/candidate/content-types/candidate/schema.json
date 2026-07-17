@@ -198,6 +198,48 @@
     },
     "accountCreatedAt": {
       "type": "datetime"
+    },
+    "profiles": {
+      "type": "relation",
+      "relation": "oneToMany",
+      "target": "api::candidate-profile.candidate-profile",
+      "mappedBy": "candidate"
+    },
+    "enrollments": {
+      "type": "relation",
+      "relation": "oneToMany",
+      "target": "api::enrollment.enrollment",
+      "mappedBy": "candidate"
+    },
+    "interviewRequests": {
+      "type": "relation",
+      "relation": "oneToMany",
+      "target": "api::interview-request.interview-request",
+      "mappedBy": "candidate"
+    },
+    "interviewSlotOffers": {
+      "type": "relation",
+      "relation": "oneToMany",
+      "target": "api::interview-slot-offer.interview-slot-offer",
+      "mappedBy": "candidate"
+    },
+    "interviews": {
+      "type": "relation",
+      "relation": "oneToMany",
+      "target": "api::interview.interview",
+      "mappedBy": "candidate"
+    },
+    "supportCases": {
+      "type": "relation",
+      "relation": "oneToMany",
+      "target": "api::support-case.support-case",
+      "mappedBy": "candidate"
+    },
+    "interviewStrikes": {
+      "type": "relation",
+      "relation": "oneToMany",
+      "target": "api::candidate-interview-strike.candidate-interview-strike",
+      "mappedBy": "candidate"
     }
   }
 }

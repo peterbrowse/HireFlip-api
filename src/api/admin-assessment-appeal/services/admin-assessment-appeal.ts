@@ -4,7 +4,7 @@ import {
   publishCandidateClassRealtimeEvent,
   publishClassRealtimeEvent,
 } from '../../../utils/class-realtime-events';
-import { workingDayWindow } from '../../../utils/working-days';
+import { subtractWorkingDays, workingDayWindow } from '../../../utils/working-days';
 
 const { ForbiddenError, ValidationError } = errors;
 
@@ -115,6 +115,7 @@ type DocumentRecord = Record<string, unknown> & {
 };
 
 type DocumentCollection = {
+  count(input: Record<string, unknown>): Promise<number>;
   create(input: Record<string, unknown>): Promise<DocumentRecord>;
   findMany(input: Record<string, unknown>): Promise<DocumentRecord[]>;
   update(input: Record<string, unknown>): Promise<DocumentRecord>;
@@ -128,8 +129,21 @@ type StrapiDocumentService = {
   service(uid: string): unknown;
 };
 
+const activeAppealStates = ['submitted', 'under_review'] as const;
+const appealStateFilters = ['all', ...activeAppealStates] as const;
+const priorityFilters = ['all', 'low', 'normal', 'high', 'urgent'] as const;
+type ActiveAppealState = typeof activeAppealStates[number];
+
+const isActiveAppealState = (value: unknown): value is ActiveAppealState =>
+  activeAppealStates.includes(String(value || '') as ActiveAppealState);
+
 const listSchema = z
   .object({
+    appealState: z.enum(appealStateFilters).default('all'),
+    page: z.coerce.number().int().min(1).default(1),
+    pageSize: z.coerce.number().int().min(10).max(100).default(25),
+    priority: z.enum(priorityFilters).default('all'),
+    search: z.string().trim().max(120).optional().transform((value) => value || undefined),
     sessionToken: z.string().trim().min(32).max(512),
   })
   .strict();
@@ -162,6 +176,29 @@ const validateReject = validateZodSchema(rejectSchema);
 const documents = (strapi: StrapiDocumentService, uid: string) =>
   strapi.documents(uid) as unknown as DocumentCollection;
 
+const findAllDocuments = async (
+  strapi: StrapiDocumentService,
+  uid: string,
+  input: Record<string, unknown>,
+  pageSize = 100
+) => {
+  const collection = documents(strapi, uid);
+  const total = await collection.count({ filters: input.filters || {} });
+  const records: DocumentRecord[] = [];
+
+  for (let start = 0; start < total; start += pageSize) {
+    records.push(
+      ...(await collection.findMany({
+        ...input,
+        limit: pageSize,
+        start,
+      }))
+    );
+  }
+
+  return records;
+};
+
 const adminAuthService = (strapi: StrapiDocumentService) =>
   strapi.service('api::admin-auth.admin-auth') as unknown as AdminAuthService;
 
@@ -171,7 +208,6 @@ const reviewClaimService = (strapi: StrapiDocumentService) =>
 const auditEvents = (strapi: StrapiDocumentService) =>
   strapi.service('api::audit-event.audit-event') as unknown as AuditEventService;
 
-const activeAppealStates = ['submitted', 'under_review'];
 const assessmentAppealResponseWorkingDays = 14;
 
 const getDocumentId = (record?: DocumentRecord | null) => {
@@ -671,7 +707,7 @@ const publicReview = (context: AppealContext) => {
   const appealDocumentId = getDocumentId(context.appeal) || '';
   const taskKey = assessmentAppealTaskKey(appealDocumentId);
   const title = 'Assessment appeal review';
-  const canAction = activeAppealStates.includes(String(context.appeal.appealState || ''));
+  const canAction = isActiveAppealState(context.appeal.appealState);
   const responseSla = workingDayWindow({
     days: assessmentAppealResponseWorkingDays,
     from: context.appeal.submittedAt || context.appeal.createdAt,
@@ -704,17 +740,9 @@ const publicReview = (context: AppealContext) => {
   };
 };
 
-const collectReviews = async (strapi: StrapiDocumentService) => {
-  const appeals = await documents(strapi, 'api::assessment-appeal.assessment-appeal').findMany({
-    filters: {
-      appealState: {
-        $in: activeAppealStates,
-      },
-    },
-    limit: 100,
-    populate: ['candidate', 'courseTestAttempt', 'enrollment'],
-    sort: ['submittedAt:desc', 'createdAt:desc'],
-  });
+type ListBody = ReturnType<typeof validateList>;
+
+const hydrateReviews = async (strapi: StrapiDocumentService, appeals: DocumentRecord[]) => {
   const contexts = await Promise.all(appeals.map((appeal) => hydrateAppealContext(strapi, appeal)));
 
   return contexts
@@ -724,6 +752,120 @@ const collectReviews = async (strapi: StrapiDocumentService) => {
         new Date(right.appeal.submittedAt || right.createdAt || 0).getTime() -
         new Date(left.appeal.submittedAt || left.createdAt || 0).getTime()
     );
+};
+
+const activeAppealFilter = () => ({
+  appealState: {
+    $in: activeAppealStates,
+  },
+});
+
+const containsFilter = (value: string) => ({
+  $containsi: value,
+});
+
+const appendAndFilter = (filters: Record<string, unknown>, nextFilter: Record<string, unknown>) => {
+  filters.$and = [...((filters.$and as Record<string, unknown>[] | undefined) || []), nextFilter];
+};
+
+const appealSlaThreshold = (workingDays: number) =>
+  subtractWorkingDays(new Date(), workingDays)?.toISOString();
+
+const applyPriorityFilter = (filters: Record<string, unknown>, priority: ListBody['priority']) => {
+  if (priority === 'all') {
+    return;
+  }
+
+  const overdueThreshold = appealSlaThreshold(assessmentAppealResponseWorkingDays);
+
+  if (!overdueThreshold) {
+    return;
+  }
+
+  if (priority === 'urgent') {
+    appendAndFilter(filters, { submittedAt: { $lt: overdueThreshold } });
+    return;
+  }
+
+  if (priority === 'high') {
+    appendAndFilter(filters, { submittedAt: { $gte: overdueThreshold } });
+    return;
+  }
+
+  appendAndFilter(filters, { documentId: { $eq: '__hireflip_no_assessment_appeal_priority_match__' } });
+};
+
+const applySearchFilter = (filters: Record<string, unknown>, search?: string) => {
+  if (!search) {
+    return;
+  }
+
+  appendAndFilter(filters, {
+    $or: [
+      { documentId: containsFilter(search) },
+      { reason: containsFilter(search) },
+      { candidate: { email: containsFilter(search) } },
+      { candidate: { firstName: containsFilter(search) } },
+      { candidate: { lastName: containsFilter(search) } },
+      { courseTestAttempt: { documentId: containsFilter(search) } },
+      { enrollment: { documentId: containsFilter(search) } },
+    ],
+  });
+};
+
+const listAppealFilters = (body: ListBody) => {
+  const filters: Record<string, unknown> =
+    body.appealState === 'all'
+      ? activeAppealFilter()
+      : {
+          appealState: body.appealState,
+        };
+
+  applyPriorityFilter(filters, body.priority);
+  applySearchFilter(filters, body.search);
+
+  return filters;
+};
+
+const collectReviewCounts = async (appealDocuments: DocumentCollection) => {
+  const baseFilters = activeAppealFilter();
+  const overdueThreshold = appealSlaThreshold(assessmentAppealResponseWorkingDays);
+  const dueSoonThreshold = appealSlaThreshold(assessmentAppealResponseWorkingDays - 2);
+
+  const [total, waiting, underReview, dueSoon, overdue] = await Promise.all([
+    appealDocuments.count({ filters: baseFilters }),
+    appealDocuments.count({ filters: { appealState: 'submitted' } }),
+    appealDocuments.count({ filters: { appealState: 'under_review' } }),
+    dueSoonThreshold && overdueThreshold
+      ? appealDocuments.count({
+          filters: {
+            ...baseFilters,
+            submittedAt: {
+              $gte: overdueThreshold,
+              $lt: dueSoonThreshold,
+            },
+          },
+        })
+      : Promise.resolve(0),
+    overdueThreshold
+      ? appealDocuments.count({
+          filters: {
+            ...baseFilters,
+            submittedAt: {
+              $lt: overdueThreshold,
+            },
+          },
+        })
+      : Promise.resolve(0),
+  ]);
+
+  return {
+    dueSoon,
+    overdue,
+    total,
+    underReview,
+    waiting,
+  };
 };
 
 const contextByTaskKey = async (strapi: StrapiDocumentService, taskKey: string) => {
@@ -741,13 +883,12 @@ const answerSubmissionsForAttempt = async (strapi: StrapiDocumentService, attemp
     return [];
   }
 
-  const answers = await documents(strapi, 'api::course-answer-submission.course-answer-submission').findMany({
+  const answers = await findAllDocuments(strapi, 'api::course-answer-submission.course-answer-submission', {
     filters: {
       courseTestAttempt: {
         documentId: attemptDocumentId,
       },
     },
-    limit: 200,
     populate: ['courseQuestion', 'courseTestAttempt'],
     sort: ['createdAt:asc'],
   });
@@ -764,7 +905,7 @@ const attemptsForTest = async (
     return [];
   }
 
-  const attempts = await documents(strapi, 'api::course-test-attempt.course-test-attempt').findMany({
+  const attempts = await findAllDocuments(strapi, 'api::course-test-attempt.course-test-attempt', {
     filters: {
       courseTest: {
         documentId: testDocumentId,
@@ -773,7 +914,6 @@ const attemptsForTest = async (
         documentId: enrollmentDocumentId,
       },
     },
-    limit: 50,
     populate: ['courseTest'],
     sort: ['attemptNumber:asc', 'createdAt:asc'],
   });
@@ -795,13 +935,12 @@ const auditEventsForReview = async (strapi: StrapiDocumentService, context: Appe
     return [];
   }
 
-  const events = await documents(strapi, 'api::audit-event.audit-event').findMany({
+  const events = await findAllDocuments(strapi, 'api::audit-event.audit-event', {
     filters: {
       subjectId: {
         $in: subjectIds,
       },
     },
-    limit: 20,
     sort: ['occurredAt:desc', 'createdAt:desc'],
   });
 
@@ -898,20 +1037,36 @@ export default ({ strapi }) => ({
   async listReviews(input: unknown, requestContext: RequestContext = {}) {
     const body = validateList(input);
     const session = await assertAssessmentAppealSession(strapi, body.sessionToken, requestContext);
-    const reviews = await collectReviews(strapi);
+    const appealDocuments = documents(strapi, 'api::assessment-appeal.assessment-appeal');
+    const filters = listAppealFilters(body);
+    const [counts, filteredTotal] = await Promise.all([
+      collectReviewCounts(appealDocuments),
+      appealDocuments.count({ filters }),
+    ]);
+    const pageCount = Math.max(1, Math.ceil(filteredTotal / body.pageSize));
+    const page = Math.min(body.page, pageCount);
+    const pageStart = (page - 1) * body.pageSize;
+    const appeals = await appealDocuments.findMany({
+      filters,
+      limit: body.pageSize,
+      populate: ['candidate', 'courseTestAttempt', 'enrollment'],
+      sort: ['submittedAt:desc', 'createdAt:desc'],
+      start: pageStart,
+    });
+    const reviews = await hydrateReviews(strapi, appeals);
 
     return {
-      counts: {
-        dueSoon: reviews.filter((review) =>
-          !review.responseSla.isOverdue && review.responseSla.workingDaysRemaining <= 2
-        ).length,
-        overdue: reviews.filter((review) => review.responseSla.isOverdue).length,
-        total: reviews.length,
-        underReview: reviews.filter((review) => review.appeal.appealState === 'under_review').length,
-        waiting: reviews.filter((review) => review.appeal.appealState === 'submitted').length,
-      },
+      counts,
+      filteredReviews: filteredTotal,
       generatedAt: new Date().toISOString(),
+      pagination: {
+        page,
+        pageCount,
+        pageSize: body.pageSize,
+        total: filteredTotal,
+      },
       reviews,
+      totalReviews: counts.total,
       user: session.user,
     };
   },
@@ -983,7 +1138,7 @@ export default ({ strapi }) => ({
       throw new ValidationError('Assessment appeal is missing the linked attempt or enrollment.');
     }
 
-    if (!activeAppealStates.includes(String(context.appeal.appealState || ''))) {
+    if (!isActiveAppealState(context.appeal.appealState)) {
       throw new ValidationError('Only submitted or under-review appeals can be approved.');
     }
 
@@ -1194,7 +1349,7 @@ export default ({ strapi }) => ({
       throw new ValidationError('Assessment appeal is missing the linked attempt.');
     }
 
-    if (!activeAppealStates.includes(String(context.appeal.appealState || ''))) {
+    if (!isActiveAppealState(context.appeal.appealState)) {
       throw new ValidationError('Only submitted or under-review appeals can be rejected.');
     }
 

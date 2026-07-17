@@ -217,6 +217,27 @@ const validateInviteAction = validateZodSchema(inviteActionSchema);
 const documents = (strapi: StrapiDocumentService, uid: string) =>
   strapi.documents(uid) as DocumentCollection;
 
+const findAllDocuments = async (
+  collection: DocumentCollection,
+  input: Record<string, unknown>,
+  pageSize = 100
+) => {
+  const total = await collection.count({ filters: input.filters || {} });
+  const records: DocumentRecord[] = [];
+
+  for (let start = 0; start < total; start += pageSize) {
+    const page = await collection.findMany({
+      ...input,
+      limit: pageSize,
+      start,
+    });
+
+    records.push(...page);
+  }
+
+  return records;
+};
+
 const adminAuthService = (strapi: StrapiDocumentService): AdminAuthService =>
   strapi.service('api::admin-auth.admin-auth') as unknown as AdminAuthService;
 
@@ -477,117 +498,121 @@ const publicEmployer = (employer: DocumentRecord, invites: DocumentRecord[] = []
   };
 };
 
-type PublicEmployerSummary = ReturnType<typeof publicEmployer>;
+type EmployerListInput = z.infer<typeof listEmployersSchema>;
 
-const employerMatchesSearch = (employer: PublicEmployerSummary, search?: string) => {
-  if (!search) {
-    return true;
-  }
+const employerListFilters = (body: EmployerListInput) => {
+  const filters: Record<string, unknown> = {};
+  const andFilters: Record<string, unknown>[] = [];
 
-  const value = search.toLowerCase();
-
-  return [
-    employer.assignmentModeLabel,
-	    employer.commitmentLabel,
-	    employer.companyName,
-	    employer.dashboardOnboardingStateLabel,
-	    employer.employerStateLabel,
-	    employer.employerTermsAcceptedByEmail,
-	    employer.employerTermsPolicyVersion,
-    employer.leadContact?.email,
-    employer.leadContact?.name,
-    employer.leadContact?.phone,
-    employer.leadContact?.roleTitle,
-    employer.region,
-    ...(employer.regionNames || []),
-  ].some((item) => String(item || '').toLowerCase().includes(value));
-};
-
-const employerMatchesRegion = (employer: PublicEmployerSummary, region?: string) => {
-  if (!region) {
-    return true;
-  }
-
-  const normalizedRegion = region.toLowerCase();
-
-  return (
-    employer.regionNames.some((name) => name.toLowerCase() === normalizedRegion) ||
-    String(employer.region || '').toLowerCase() === normalizedRegion
-  );
-};
-
-const employerMatchesCommitment = (
-  employer: PublicEmployerSummary,
-  commitment: z.infer<typeof employerCommitmentFilterSchema>
-) => {
-  if (commitment === 'committed') {
-    return Boolean(employer.commitmentLabel);
-  }
-
-  if (commitment === 'not_set') {
-    return !employer.commitmentLabel;
-  }
-
-  return true;
-};
-
-const employerSortValue = (
-  employer: PublicEmployerSummary,
-  sortBy: z.infer<typeof employerSortKeySchema>
-) => {
-  if (sortBy === 'inviteCount') {
-    return employer.inviteCount;
-  }
-
-  if (sortBy === 'updatedAt') {
-    return employer.updatedAt ? Date.parse(employer.updatedAt) : 0;
-  }
-
-  if (sortBy === 'leadContact') {
-    return String(employer.leadContact?.name || employer.leadContact?.email || '').toLowerCase();
-  }
-
-  if (sortBy === 'employerState') {
-    return String(employer.employerStateLabel || employer.employerState).toLowerCase();
-  }
-
-  if (sortBy === 'commitment') {
-    return String(employer.commitmentLabel || '').toLowerCase();
-  }
-
-  return String(employer[sortBy] || '').toLowerCase();
-};
-
-const compareEmployers = (
-  sortBy: z.infer<typeof employerSortKeySchema>,
-  sortDirection: z.infer<typeof employerSortDirectionSchema>
-) => (left: PublicEmployerSummary, right: PublicEmployerSummary) => {
-  const leftValue = employerSortValue(left, sortBy);
-  const rightValue = employerSortValue(right, sortBy);
-  let result = 0;
-
-  if (typeof leftValue === 'number' && typeof rightValue === 'number') {
-    result = leftValue - rightValue;
+  if (body.state !== 'all') {
+    filters.employerState = body.state;
   } else {
-    result = String(leftValue).localeCompare(String(rightValue), 'en-GB', {
-      numeric: true,
-      sensitivity: 'base',
+    filters.employerState = {
+      $ne: 'archived',
+    };
+  }
+
+  if (body.region) {
+    andFilters.push({
+      $or: [
+        { region: { $containsi: body.region } },
+        { operatingRegions: { name: { $containsi: body.region } } },
+      ],
     });
   }
 
-  if (result === 0 && sortBy !== 'companyName') {
-    result = String(left.companyName).localeCompare(String(right.companyName), 'en-GB', {
-      numeric: true,
-      sensitivity: 'base',
+  if (body.commitment === 'committed') {
+    andFilters.push({
+      interviewCommitmentVolume: {
+        $gt: 0,
+      },
+    });
+  } else if (body.commitment === 'not_set') {
+    andFilters.push({
+      $or: [
+        {
+          interviewCommitmentVolume: {
+            $null: true,
+          },
+        },
+        {
+          interviewCommitmentVolume: {
+            $lte: 0,
+          },
+        },
+      ],
     });
   }
 
-  return sortDirection === 'asc' ? result : -result;
+  if (body.search) {
+    andFilters.push({
+      $or: [
+        { companyName: { $containsi: body.search } },
+        { documentId: { $containsi: body.search } },
+        { employerTermsAcceptedByEmail: { $containsi: body.search } },
+        { employerTermsPolicyVersion: { $containsi: body.search } },
+        { region: { $containsi: body.search } },
+        { salesOwnerStaffDisplayName: { $containsi: body.search } },
+        { salesOwnerStaffEmail: { $containsi: body.search } },
+        { contacts: { email: { $containsi: body.search } } },
+        { contacts: { firstName: { $containsi: body.search } } },
+        { contacts: { lastName: { $containsi: body.search } } },
+        { contacts: { phone: { $containsi: body.search } } },
+        { contacts: { roleTitle: { $containsi: body.search } } },
+        { operatingRegions: { name: { $containsi: body.search } } },
+      ],
+    });
+  }
+
+  return andFilters.length ? { ...filters, $and: andFilters } : filters;
+};
+
+const employerListSort = (
+  sortBy: EmployerListInput['sortBy'],
+  sortDirection: EmployerListInput['sortDirection']
+) => {
+  if (sortBy === 'commitment') {
+    return [`interviewCommitmentVolume:${sortDirection}`, `companyName:asc`];
+  }
+
+  if (sortBy === 'leadContact' || sortBy === 'inviteCount') {
+    return [`companyName:${sortDirection}`];
+  }
+
+  return [`${sortBy}:${sortDirection}`];
+};
+
+const employerInviteCounts = async (strapi: StrapiDocumentService, employerDocumentIds: string[]) => {
+  const inviteDocuments = documents(strapi, 'api::employer-invite.employer-invite');
+  const entries = await Promise.all(
+    employerDocumentIds.map(async (employerDocumentId) => {
+      const [total, pending] = await Promise.all([
+        inviteDocuments.count({
+          filters: {
+            employer: {
+              documentId: employerDocumentId,
+            },
+          },
+        }),
+        inviteDocuments.count({
+          filters: {
+            employer: {
+              documentId: employerDocumentId,
+            },
+            inviteState: 'pending',
+          },
+        }),
+      ]);
+
+      return [employerDocumentId, { pending, total }] as const;
+    })
+  );
+
+  return new Map(entries);
 };
 
 const getOperationalClassAreas = async (strapi: StrapiDocumentService) => {
-  const classAreas = await documents(strapi, 'api::class-area.class-area').findMany({
-    limit: 500,
+  const classAreas = await findAllDocuments(documents(strapi, 'api::class-area.class-area'), {
     sort: ['sortOrder:asc', 'name:asc'],
   });
 
@@ -974,14 +999,13 @@ const revokePendingInvitesForContact = async (
   strapi: StrapiDocumentService,
   employerContactDocumentId: string
 ) => {
-  const invites = await documents(strapi, 'api::employer-invite.employer-invite').findMany({
+  const invites = await findAllDocuments(documents(strapi, 'api::employer-invite.employer-invite'), {
     filters: {
       employerContact: {
         documentId: employerContactDocumentId,
       },
       inviteState: 'pending',
     },
-    limit: 100,
   });
 
   await Promise.all(
@@ -1009,14 +1033,13 @@ const revokePendingInvitesForEmployer = async (
   session: AdminSession,
   requestContext: RequestContext
 ) => {
-  const invites = await documents(strapi, 'api::employer-invite.employer-invite').findMany({
+  const invites = await findAllDocuments(documents(strapi, 'api::employer-invite.employer-invite'), {
     filters: {
       employer: {
         documentId: employerDocumentId,
       },
       inviteState: 'pending',
     },
-    limit: 200,
   });
 
   await Promise.all(
@@ -1050,60 +1073,43 @@ export default ({ strapi }) => ({
   async listEmployers(input: unknown, requestContext: RequestContext = {}) {
     const body = validateListEmployers(input);
     const session = await assertEmployerManageSession(strapi, body.sessionToken, requestContext);
-    const [employers, invites] = await Promise.all([
-      documents(strapi, 'api::employer.employer').findMany({
-        limit: 1000,
-        populate: {
-          contacts: {
-            populate: ['coverageRegions'],
-          },
-          operatingRegions: true,
-          regionCommitments: {
-            populate: ['region'],
-          },
-        },
-        sort: ['companyName:asc'],
-      }),
-      documents(strapi, 'api::employer-invite.employer-invite').findMany({
-        limit: 1000,
-        populate: invitePopulate,
-        sort: ['createdAt:desc'],
-      }),
+    const employerDocuments = documents(strapi, 'api::employer.employer');
+    const filters = employerListFilters(body);
+    const [filteredTotal, totalEmployers] = await Promise.all([
+      employerDocuments.count({ filters }),
+      employerDocuments.count({ filters: {} }),
     ]);
-    const invitesByEmployer = new Map<string, DocumentRecord[]>();
-
-    for (const invite of invites) {
-      const employerDocumentId = getDocumentId(invite.employer);
-
-      if (!employerDocumentId) {
-        continue;
-      }
-
-      invitesByEmployer.set(employerDocumentId, [
-        ...(invitesByEmployer.get(employerDocumentId) || []),
-        invite,
-      ]);
-    }
-    const employerSummaries = employers.map((employer) =>
-      publicEmployer(employer, invitesByEmployer.get(getDocumentId(employer) || '') || [])
-    );
-    const stateFilteredEmployers = employerSummaries.filter((employer) =>
-      body.state === 'all'
-        ? employer.employerState !== 'archived'
-        : employer.employerState === body.state
-    );
-    const filteredEmployers = stateFilteredEmployers
-      .filter((employer) => employerMatchesRegion(employer, body.region))
-      .filter((employer) => employerMatchesCommitment(employer, body.commitment))
-      .filter((employer) => employerMatchesSearch(employer, body.search))
-      .sort(compareEmployers(body.sortBy, body.sortDirection));
-    const filteredTotal = filteredEmployers.length;
     const pageCount = Math.max(1, Math.ceil(filteredTotal / body.pageSize));
     const page = Math.min(body.page, pageCount);
-    const pageStart = (page - 1) * body.pageSize;
+    const employers = await employerDocuments.findMany({
+      filters,
+      limit: body.pageSize,
+      populate: {
+        contacts: {
+          populate: ['coverageRegions'],
+        },
+        operatingRegions: true,
+        regionCommitments: {
+          populate: ['region'],
+        },
+      },
+      sort: employerListSort(body.sortBy, body.sortDirection),
+      start: (page - 1) * body.pageSize,
+    });
+    const employerDocumentIds = employers.map(getDocumentId).filter((documentId): documentId is string => Boolean(documentId));
+    const inviteCounts = await employerInviteCounts(strapi, employerDocumentIds);
 
     return {
-      employers: filteredEmployers.slice(pageStart, pageStart + body.pageSize),
+      employers: employers.map((employer) => {
+        const employerDocumentId = getDocumentId(employer) || '';
+        const counts = inviteCounts.get(employerDocumentId) || { pending: 0, total: 0 };
+
+        return {
+          ...publicEmployer(employer, []),
+          inviteCount: counts.total,
+          pendingInvitesCount: counts.pending,
+        };
+      }),
       filteredEmployers: filteredTotal,
       generatedAt: new Date().toISOString(),
       pagination: {
@@ -1112,7 +1118,7 @@ export default ({ strapi }) => ({
         pageSize: body.pageSize,
         total: filteredTotal,
       },
-      totalEmployers: employerSummaries.length,
+      totalEmployers,
       user: session.user,
     };
   },
@@ -1141,13 +1147,12 @@ export default ({ strapi }) => ({
       throw new ValidationError('Employer could not be found.');
     }
 
-    const invites = await documents(strapi, 'api::employer-invite.employer-invite').findMany({
+    const invites = await findAllDocuments(documents(strapi, 'api::employer-invite.employer-invite'), {
       filters: {
         employer: {
           documentId: body.employerDocumentId,
         },
       },
-      limit: 200,
       populate: invitePopulate,
       sort: ['createdAt:desc'],
     });

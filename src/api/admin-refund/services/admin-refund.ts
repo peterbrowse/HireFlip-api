@@ -33,6 +33,10 @@ type AdminReviewClaimService = {
   ): Promise<{ reviewClaim: unknown }>;
 };
 
+type AdminTaskService = {
+  listTasks(input: unknown, context?: RequestContext): Promise<unknown>;
+};
+
 type AuditEventService = {
   record(input: Record<string, unknown>): Promise<unknown>;
 };
@@ -169,6 +173,7 @@ type DocumentRecord = Record<string, unknown> & {
 };
 
 type DocumentCollection = {
+  count(input: Record<string, unknown>): Promise<number>;
   create(input: Record<string, unknown>): Promise<DocumentRecord>;
   findMany(input: Record<string, unknown>): Promise<DocumentRecord[]>;
   update(input: Record<string, unknown>): Promise<DocumentRecord>;
@@ -181,6 +186,8 @@ type StrapiDocumentService = {
 
 const reviewListSchema = z
   .object({
+    page: z.coerce.number().int().min(1).default(1),
+    pageSize: z.coerce.number().int().min(10).max(100).default(25),
     sessionToken: z.string().trim().min(32).max(512),
   })
   .strict();
@@ -251,11 +258,37 @@ const validateProviderRefundUpdate = validateZodSchema(providerRefundUpdateSchem
 const documents = (strapi: StrapiDocumentService, uid: string) =>
   strapi.documents(uid) as unknown as DocumentCollection;
 
+const findAllDocuments = async (
+  strapi: StrapiDocumentService,
+  uid: string,
+  input: Record<string, unknown>,
+  pageSize = 100
+) => {
+  const collection = documents(strapi, uid);
+  const total = await collection.count({ filters: input.filters || {} });
+  const records: DocumentRecord[] = [];
+
+  for (let start = 0; start < total; start += pageSize) {
+    records.push(
+      ...(await collection.findMany({
+        ...input,
+        limit: pageSize,
+        start,
+      }))
+    );
+  }
+
+  return records;
+};
+
 const adminAuthService = (strapi: StrapiDocumentService) =>
   strapi.service('api::admin-auth.admin-auth') as unknown as AdminAuthService;
 
 const reviewClaimService = (strapi: StrapiDocumentService) =>
   strapi.service('api::admin-review-claim.admin-review-claim') as unknown as AdminReviewClaimService;
+
+const adminTaskService = (strapi: StrapiDocumentService) =>
+  strapi.service('api::admin-task.admin-task') as unknown as AdminTaskService;
 
 const auditEvents = (strapi: StrapiDocumentService) =>
   strapi.service('api::audit-event.audit-event') as unknown as AuditEventService;
@@ -948,37 +981,33 @@ const refundReviewItem = async (strapi: StrapiDocumentService, refund: DocumentR
 
 const collectReviews = async (strapi: StrapiDocumentService) => {
   const [payments, reservations, enrollments, refunds] = await Promise.all([
-    documents(strapi, 'api::payment.payment').findMany({
+    findAllDocuments(strapi, 'api::payment.payment', {
       filters: {
         paymentState: 'requires_review',
       },
-      limit: 100,
       populate: ['candidate', 'enrollment', 'reservation'],
       sort: ['createdAt:desc'],
     }),
-    documents(strapi, 'api::reservation.reservation').findMany({
+    findAllDocuments(strapi, 'api::reservation.reservation', {
       filters: {
         reservationState: 'payment_exception',
       },
-      limit: 100,
       populate: ['candidate', 'class', 'enrollment'],
       sort: ['createdAt:desc'],
     }),
-    documents(strapi, 'api::enrollment.enrollment').findMany({
+    findAllDocuments(strapi, 'api::enrollment.enrollment', {
       filters: {
         $or: [{ enrollmentState: 'payment_exception' }, { paymentStatus: 'requires_review' }],
       },
-      limit: 100,
       populate: ['candidate', 'class'],
       sort: ['createdAt:desc'],
     }),
-    documents(strapi, 'api::refund.refund').findMany({
+    findAllDocuments(strapi, 'api::refund.refund', {
       filters: {
         refundState: {
           $in: ['requested', 'approved', 'failed'],
         },
       },
-      limit: 100,
       populate: ['candidate', 'enrollment', 'payment'],
       sort: ['requestedAt:desc', 'createdAt:desc'],
     }),
@@ -1137,17 +1166,15 @@ const publicFeedback = (feedback: DocumentRecord) => ({
 const refundEvidenceForReview = async (strapi: StrapiDocumentService, review: RefundReviewItem) => {
   const filters = reviewRelationFilters(review);
   const interviews = filters
-    ? await documents(strapi, 'api::interview.interview').findMany({
+    ? await findAllDocuments(strapi, 'api::interview.interview', {
         filters,
-        limit: 100,
         populate: ['candidate', 'employer', 'employerContact', 'enrollment', 'interviewSlot'],
         sort: ['scheduledStartTime:asc', 'createdAt:asc'],
       })
     : [];
   const strikes = filters
-    ? await documents(strapi, 'api::candidate-interview-strike.candidate-interview-strike').findMany({
+    ? await findAllDocuments(strapi, 'api::candidate-interview-strike.candidate-interview-strike', {
         filters,
-        limit: 50,
         populate: ['candidate', 'enrollment', 'interview'],
         sort: ['appliedAt:asc', 'createdAt:asc'],
       })
@@ -1156,7 +1183,7 @@ const refundEvidenceForReview = async (strapi: StrapiDocumentService, review: Re
     .map((interview) => getDocumentId(interview))
     .filter((documentId): documentId is string => Boolean(documentId));
   const feedbackRecords = interviewIds.length
-    ? await documents(strapi, 'api::interview-feedback.interview-feedback').findMany({
+    ? await findAllDocuments(strapi, 'api::interview-feedback.interview-feedback', {
         filters: {
           interview: {
             documentId: {
@@ -1164,7 +1191,6 @@ const refundEvidenceForReview = async (strapi: StrapiDocumentService, review: Re
             },
           },
         },
-        limit: 100,
         populate: ['interview'],
         sort: ['submittedAt:asc', 'createdAt:asc'],
       })
@@ -1367,8 +1393,37 @@ const refundEvidenceForReview = async (strapi: StrapiDocumentService, review: Re
 };
 
 const reviewByTaskKey = async (strapi: StrapiDocumentService, taskKey: string) => {
-  const reviews = await collectReviews(strapi);
-  const review = reviews.find((candidateReview) => candidateReview.taskKey === taskKey);
+  const [sourceType, sourceDocumentId] = taskKey.split(':');
+  let review: RefundReviewItem | null = null;
+
+  if (sourceType === 'payment' && sourceDocumentId) {
+    const payment = await byDocumentId(strapi, 'api::payment.payment', sourceDocumentId, [
+      'candidate',
+      'enrollment',
+      'reservation',
+    ]);
+    review = payment ? await paymentReviewItem(strapi, payment) : null;
+  } else if (sourceType === 'reservation' && sourceDocumentId) {
+    const reservation = await byDocumentId(strapi, 'api::reservation.reservation', sourceDocumentId, [
+      'candidate',
+      'class',
+      'enrollment',
+    ]);
+    review = reservation ? await reservationReviewItem(strapi, reservation) : null;
+  } else if (sourceType === 'enrollment' && sourceDocumentId) {
+    const enrollment = await byDocumentId(strapi, 'api::enrollment.enrollment', sourceDocumentId, [
+      'candidate',
+      'class',
+    ]);
+    review = enrollment ? await enrollmentReviewItem(strapi, enrollment) : null;
+  } else if (sourceType === 'refund' && sourceDocumentId) {
+    const refund = await byDocumentId(strapi, 'api::refund.refund', sourceDocumentId, [
+      'candidate',
+      'enrollment',
+      'payment',
+    ]);
+    review = refund ? await refundReviewItem(strapi, refund) : null;
+  }
 
   if (!review) {
     throw new ValidationError('Refund review could not be found.');
@@ -2430,16 +2485,65 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
   async listReviews(input: unknown, requestContext: RequestContext = {}) {
     const body = validateReviewList(input);
     const session = await assertRefundReviewSession(strapi, body.sessionToken, requestContext);
-    const reviews = await collectReviews(strapi);
+    await adminTaskService(strapi).listTasks(
+      {
+        page: 1,
+        pageSize: 1,
+        sessionToken: body.sessionToken,
+        taskState: 'open',
+      },
+      requestContext
+    );
+    const taskDocuments = documents(strapi, 'api::admin-task.admin-task');
+    const filters = {
+      taskState: 'open',
+      taskType: {
+        $in: ['payment_review', 'refund_review'],
+      },
+    };
+    const [total, paymentExceptions, refundRequests] = await Promise.all([
+      taskDocuments.count({ filters }),
+      taskDocuments.count({
+        filters: {
+          taskState: 'open',
+          taskType: 'payment_review',
+        },
+      }),
+      taskDocuments.count({
+        filters: {
+          taskState: 'open',
+          taskType: 'refund_review',
+        },
+      }),
+    ]);
+    const pageCount = Math.max(1, Math.ceil(total / body.pageSize));
+    const page = Math.min(body.page, pageCount);
+    const taskRecords = await taskDocuments.findMany({
+      filters,
+      limit: body.pageSize,
+      sort: ['priorityRank:asc', 'lastDetectedAt:desc', 'createdAt:desc'],
+      start: (page - 1) * body.pageSize,
+    });
+    const reviews = await Promise.all(
+      taskRecords
+        .map((task) => task.taskKey)
+        .filter((taskKey): taskKey is string => typeof taskKey === 'string' && taskKey.length > 0)
+        .map((taskKey) => reviewByTaskKey(strapi, taskKey))
+    );
 
     return {
       counts: {
-        paymentExceptions: reviews.filter((review) => review.reviewType === 'payment_exception')
-          .length,
-        refundRequests: reviews.filter((review) => review.reviewType === 'refund_request').length,
-        total: reviews.length,
+        paymentExceptions,
+        refundRequests,
+        total,
       },
       generatedAt: new Date().toISOString(),
+      pagination: {
+        page,
+        pageCount,
+        pageSize: body.pageSize,
+        total,
+      },
       reviews,
       user: session.user,
     };

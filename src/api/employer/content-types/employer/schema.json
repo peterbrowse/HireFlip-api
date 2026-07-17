@@ -189,6 +189,30 @@
       "relation": "oneToMany",
       "target": "api::employer-region-commitment.employer-region-commitment",
       "mappedBy": "employer"
+    },
+    "invites": {
+      "type": "relation",
+      "relation": "oneToMany",
+      "target": "api::employer-invite.employer-invite",
+      "mappedBy": "employer"
+    },
+    "interviews": {
+      "type": "relation",
+      "relation": "oneToMany",
+      "target": "api::interview.interview",
+      "mappedBy": "employer"
+    },
+    "interviewSlotOffers": {
+      "type": "relation",
+      "relation": "oneToMany",
+      "target": "api::interview-slot-offer.interview-slot-offer",
+      "mappedBy": "employer"
+    },
+    "supportCases": {
+      "type": "relation",
+      "relation": "oneToMany",
+      "target": "api::support-case.support-case",
+      "mappedBy": "employer"
     }
   }
 }

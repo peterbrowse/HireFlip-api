@@ -818,6 +818,74 @@ const staffUserSummaryPayload = (user: AdminUser): StaffUserSummaryPayload | nul
 const staffUserCreatedAtTimestamp = (staffUser: StaffUserSummaryPayload) =>
   staffUser.createdAt ? new Date(staffUser.createdAt).getTime() : 0;
 
+const staffListRoleIds = async (roleKey?: AdminRoleKey) => {
+  const roleKeys: AdminRoleKey[] = roleKey
+    ? [roleKey]
+    : ['admin', 'sales', 'super_admin', 'support'];
+  const roles = await Promise.all(roleKeys.map(getStaffRole));
+
+  return roles
+    .map((role) => role.id)
+    .filter((id): id is string | number => typeof id === 'string' || typeof id === 'number');
+};
+
+const staffListWhere = async (roleKey?: AdminRoleKey, search?: string) => {
+  const roleIds = await staffListRoleIds(roleKey);
+  const andFilters: Record<string, unknown>[] = [
+    {
+      roles: {
+        id: {
+          $in: roleIds,
+        },
+      },
+    },
+  ];
+
+  if (search) {
+    andFilters.push({
+      $or: [
+        { email: { $containsi: search } },
+        { firstname: { $containsi: search } },
+        { lastname: { $containsi: search } },
+        { username: { $containsi: search } },
+      ],
+    });
+  }
+
+  return {
+    $and: andFilters,
+  };
+};
+
+const staffListOrderBy = (
+  sortBy: 'createdAt' | 'displayName' | 'email' | 'role' | 'status',
+  sortDirection: 'asc' | 'desc'
+) => {
+  if (sortBy === 'displayName') {
+    return [{ firstname: sortDirection }, { lastname: sortDirection }, { email: sortDirection }];
+  }
+
+  if (sortBy === 'email') {
+    return [{ email: sortDirection }, { firstname: 'asc' }, { lastname: 'asc' }];
+  }
+
+  if (sortBy === 'role') {
+    return [{ roles: { name: sortDirection } }, { firstname: 'asc' }, { lastname: 'asc' }];
+  }
+
+  if (sortBy === 'status') {
+    return [
+      { blocked: sortDirection },
+      { isActive: sortDirection },
+      { registrationToken: sortDirection },
+      { firstname: 'asc' },
+      { lastname: 'asc' },
+    ];
+  }
+
+  return [{ createdAt: sortDirection }, { firstname: 'asc' }, { lastname: 'asc' }];
+};
+
 const compareStaffUsers = (
   leftStaffUser: StaffUserSummaryPayload,
   rightStaffUser: StaffUserSummaryPayload,
@@ -1663,37 +1731,34 @@ export default () => ({
 
     await requireSuperAdminSession(store, body.sessionToken, requestContext);
 
+    const where = await staffListWhere(body.roleKey, body.search);
+    const filteredStaffUsersCount = await strapi.db.query('admin::user').count({ where });
+    const allStaffUsersCount = await strapi.db.query('admin::user').count({
+      where: await staffListWhere(),
+    });
+    const pageCount = Math.max(1, Math.ceil(filteredStaffUsersCount / body.pageSize));
+    const page = Math.min(body.page, pageCount);
     const users = (await strapi.db.query('admin::user').findMany({
-      orderBy: [
-        {
-          createdAt: 'desc',
-        },
-      ],
+      limit: body.pageSize,
+      offset: (page - 1) * body.pageSize,
+      orderBy: staffListOrderBy(body.sortBy, body.sortDirection),
       populate: ['roles'],
+      where,
     })) as AdminUser[];
-    const allStaffUsers = users
+    const staffUsers = users
       .map(staffUserSummaryPayload)
       .filter((staffUser): staffUser is StaffUserSummaryPayload => Boolean(staffUser));
-    const filteredStaffUsers = allStaffUsers
-      .filter((staffUser) => !body.roleKey || staffUser.roleKeys.includes(body.roleKey))
-      .filter((staffUser) => staffUserMatchesSearch(staffUser, body.search))
-      .sort((leftStaffUser, rightStaffUser) =>
-        compareStaffUsers(leftStaffUser, rightStaffUser, body.sortBy, body.sortDirection)
-      );
-    const pageCount = Math.max(1, Math.ceil(filteredStaffUsers.length / body.pageSize));
-    const page = Math.min(body.page, pageCount);
-    const pageStart = (page - 1) * body.pageSize;
 
     return {
-      filteredStaffUsers: filteredStaffUsers.length,
+      filteredStaffUsers: filteredStaffUsersCount,
       pagination: {
         page,
         pageCount,
         pageSize: body.pageSize,
-        total: filteredStaffUsers.length,
+        total: filteredStaffUsersCount,
       },
-      staffUsers: filteredStaffUsers.slice(pageStart, pageStart + body.pageSize),
-      totalStaffUsers: allStaffUsers.length,
+      staffUsers,
+      totalStaffUsers: allStaffUsersCount,
     };
   },
 

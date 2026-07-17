@@ -69,7 +69,7 @@ const boolEnv = (name, fallback) => {
   return fallback;
 };
 
-const documents = (strapi, uid) => strapi.documents(uid);
+const { documents } = require('./lib/strapi-documents');
 
 const createDocument = (strapi, uid, data, populate = []) =>
   documents(strapi, uid).create({ data, populate });
@@ -251,7 +251,6 @@ const main = async () => {
         },
         reservationState: 'active',
       },
-      limit: 1000,
       populate: ['candidate'],
     });
     const waitingListEnrollments = await documents(strapi, 'api::enrollment.enrollment').findMany({
@@ -261,7 +260,6 @@ const main = async () => {
         },
         enrollmentState: 'waiting_list',
       },
-      limit: 1000,
       populate: ['candidate'],
     });
     const rejected = results.filter((result) => result.status === 'rejected');
@@ -308,7 +306,6 @@ const main = async () => {
               },
             },
             fields: ['documentId'],
-            limit: 1000,
           }),
           documents(strapi, 'api::enrollment.enrollment').findMany({
             filters: {
@@ -317,7 +314,6 @@ const main = async () => {
               },
             },
             fields: ['documentId'],
-            limit: 1000,
           }),
           documents(strapi, 'api::payment.payment').findMany({
             filters: {
@@ -328,14 +324,12 @@ const main = async () => {
               },
             },
             fields: ['documentId'],
-            limit: 1000,
           }),
           documents(strapi, 'api::audit-event.audit-event').findMany({
             filters: {
               requestId: `allocation-smoke-${runId}`,
             },
             fields: ['documentId'],
-            limit: 1000,
           }),
         ]);
 

@@ -253,6 +253,7 @@ type DocumentRecord = Record<string, unknown> & {
 };
 
 type DocumentCollection = {
+  count(input: Record<string, unknown>): Promise<number>;
   create(input: Record<string, unknown>): Promise<DocumentRecord>;
   findMany(input: Record<string, unknown>): Promise<DocumentRecord[]>;
   update(input: Record<string, unknown>): Promise<DocumentRecord>;
@@ -299,6 +300,27 @@ type SupportCaseService = {
 
 const documents = (strapi: StrapiDocumentService, uid: string) =>
   strapi.documents(uid) as unknown as DocumentCollection;
+
+const findAllDocuments = async (
+  collection: DocumentCollection,
+  input: Record<string, unknown>,
+  pageSize = 100
+) => {
+  const total = await collection.count({ filters: input.filters || {} });
+  const records: DocumentRecord[] = [];
+
+  for (let start = 0; start < total; start += pageSize) {
+    const page = await collection.findMany({
+      ...input,
+      limit: pageSize,
+      start,
+    });
+
+    records.push(...page);
+  }
+
+  return records;
+};
 const auditEvents = (strapi: StrapiDocumentService) =>
   strapi.service('api::audit-event.audit-event') as unknown as AuditEventService;
 const interviewRequestService = (strapi: StrapiDocumentService) =>
@@ -1758,13 +1780,12 @@ const getVisiblePreferenceOptions = async (
   strapi: StrapiDocumentService,
   uid: string
 ) => {
-  const records = await documents(strapi, uid).findMany({
+  const records = await findAllDocuments(documents(strapi, uid), {
     filters: {
       state: {
         $in: visiblePreferenceStates,
       },
     },
-    limit: 100,
     sort: ['sortOrder:asc', 'name:asc'],
   });
 
@@ -1846,8 +1867,7 @@ const classMatchesTarget = (classRecord, candidate?) => {
 };
 
 const findMatchingClasses = async (strapi: StrapiDocumentService, candidate?: DocumentRecord) => {
-  const classes = await documents(strapi, 'api::class.class').findMany({
-    limit: 100,
+  const classes = await findAllDocuments(documents(strapi, 'api::class.class'), {
     populate: ['classArea', 'workSector'],
     sort: ['startDate:asc', 'createdAt:desc'],
   });
@@ -1887,13 +1907,12 @@ const mergeClassesByDocumentId = (...classGroups: DocumentRecord[][]) => {
 };
 
 const findCandidateEnrollments = async (strapi: StrapiDocumentService, candidate: DocumentRecord) =>
-  documents(strapi, 'api::enrollment.enrollment').findMany({
+  findAllDocuments(documents(strapi, 'api::enrollment.enrollment'), {
     filters: {
       candidate: {
         documentId: candidate.documentId,
       },
     },
-    limit: 100,
     populate: ['class'],
     sort: ['createdAt:desc'],
   });
@@ -1960,13 +1979,12 @@ const findRelationshipClasses = async (strapi: StrapiDocumentService, enrollment
     return [];
   }
 
-  const classes = await documents(strapi, 'api::class.class').findMany({
+  const classes = await findAllDocuments(documents(strapi, 'api::class.class'), {
     filters: {
       documentId: {
         $in: classDocumentIds,
       },
     },
-    limit: 100,
     populate: ['classArea', 'workSector'],
     sort: ['startDate:asc', 'createdAt:desc'],
   });
@@ -2001,30 +2019,24 @@ const findClassInterestCounts = async (strapi: StrapiDocumentService, classes: D
     return new Map<string, number>();
   }
 
-  const enrollments = await documents(strapi, 'api::enrollment.enrollment').findMany({
-    filters: {
-      class: {
-        documentId: {
-          $in: classDocumentIds,
+  const enrollmentDocuments = documents(strapi, 'api::enrollment.enrollment');
+  const entries = await Promise.all(
+    classDocumentIds.map(async (classDocumentId) => [
+      classDocumentId,
+      await enrollmentDocuments.count({
+        filters: {
+          class: {
+            documentId: classDocumentId,
+          },
+          enrollmentState: {
+            $in: interestCountEnrollmentStatuses,
+          },
         },
-      },
-      enrollmentState: {
-        $in: interestCountEnrollmentStatuses,
-      },
-    },
-    limit: 1000,
-    populate: ['class'],
-  });
+      }),
+    ] as const)
+  );
 
-  return enrollments.reduce((map, enrollment) => {
-    const classDocumentId = enrollmentClassDocumentId(enrollment);
-
-    if (classDocumentId) {
-      map.set(classDocumentId, (map.get(classDocumentId) || 0) + 1);
-    }
-
-    return map;
-  }, new Map<string, number>());
+  return new Map(entries);
 };
 
 const isPastDate = (value?: string) => Boolean(value && Date.parse(value) <= Date.now());
@@ -2782,14 +2794,13 @@ const promoteNextWaitingListOffer = async ({
       return undefined;
     }
 
-    const waitingListEnrollments = await documents(strapi, 'api::enrollment.enrollment').findMany({
+    const waitingListEnrollments = await findAllDocuments(documents(strapi, 'api::enrollment.enrollment'), {
       filters: {
         class: {
           documentId: lockedClass.documentId,
         },
         enrollmentState: 'waiting_list',
       },
-      limit: 1000,
       populate: ['candidate', 'class'],
       sort: ['waitingListPosition:asc', 'createdAt:asc'],
     });
@@ -3653,13 +3664,12 @@ const findCandidateInterviewSlotOffers = async (
   strapi: StrapiDocumentService,
   candidate: DocumentRecord
 ) =>
-  documents(strapi, 'api::interview-slot-offer.interview-slot-offer').findMany({
+  findAllDocuments(documents(strapi, 'api::interview-slot-offer.interview-slot-offer'), {
     filters: {
       candidate: {
         documentId: candidate.documentId,
       },
     },
-    limit: 50,
     populate: candidateInterviewSlotOfferPopulate,
     sort: ['candidateResponseDeadline:asc', 'createdAt:desc'],
   });
@@ -3672,7 +3682,7 @@ const findCandidateFeedbackReportsByInterviewId = async (
     return new Map<string, DocumentRecord>();
   }
 
-  const feedbackRecords = await documents(strapi, 'api::interview-feedback.interview-feedback').findMany({
+  const feedbackRecords = await findAllDocuments(documents(strapi, 'api::interview-feedback.interview-feedback'), {
     filters: {
       interview: {
         documentId: {
@@ -3681,7 +3691,6 @@ const findCandidateFeedbackReportsByInterviewId = async (
       },
       submittedByType: 'employer_contact',
     },
-    limit: 100,
     populate: ['candidateReportConcernSupportCase', 'interview'],
     sort: ['candidateReportVisibleAt:desc', 'candidateReportGeneratedAt:desc', 'submittedAt:desc'],
   });
@@ -3708,7 +3717,7 @@ const findCandidateProgressionRequestsByInterviewId = async (
     return new Map<string, DocumentRecord>();
   }
 
-  const progressionRequests = await documents(strapi, 'api::offer.offer').findMany({
+  const progressionRequests = await findAllDocuments(documents(strapi, 'api::offer.offer'), {
     filters: {
       candidate: {
         documentId: candidate.documentId,
@@ -3719,7 +3728,6 @@ const findCandidateProgressionRequestsByInterviewId = async (
         },
       },
     },
-    limit: 100,
     populate: candidateInterviewProgressionRequestPopulate,
     sort: ['requestedDetailsAt:desc', 'createdAt:desc'],
   });
@@ -3801,13 +3809,12 @@ const findCandidateInterviewRequests = async (
   strapi: StrapiDocumentService,
   candidate: DocumentRecord
 ) =>
-  documents(strapi, 'api::interview-request.interview-request').findMany({
+  findAllDocuments(documents(strapi, 'api::interview-request.interview-request'), {
     filters: {
       candidate: {
         documentId: candidate.documentId,
       },
     },
-    limit: 25,
     populate: ['candidate', 'class', 'enrollment', 'region'],
     sort: ['createdAt:desc'],
   });
@@ -4176,7 +4183,7 @@ const ensureCandidateInterviewRequestsAfterReadiness = async ({
     return;
   }
 
-  const enrollments = await documents(strapi, 'api::enrollment.enrollment').findMany({
+  const enrollments = await findAllDocuments(documents(strapi, 'api::enrollment.enrollment'), {
     filters: {
       candidate: {
         documentId: candidate.documentId,
@@ -4184,7 +4191,6 @@ const ensureCandidateInterviewRequestsAfterReadiness = async ({
       enrollmentState: 'interview_phase',
       passStatus: 'passed',
     },
-    limit: 20,
     sort: ['updatedAt:desc'],
   });
 
@@ -4211,13 +4217,12 @@ const findCandidateInterviewStrikes = async (
   strapi: StrapiDocumentService,
   candidate: DocumentRecord
 ) =>
-  documents(strapi, 'api::candidate-interview-strike.candidate-interview-strike').findMany({
+  findAllDocuments(documents(strapi, 'api::candidate-interview-strike.candidate-interview-strike'), {
     filters: {
       candidate: {
         documentId: candidate.documentId,
       },
     },
-    limit: 50,
     populate: ['candidate', 'enrollment', 'interview'],
     sort: ['appliedAt:desc', 'createdAt:desc'],
   });
@@ -4226,14 +4231,13 @@ const findCandidateInterviewDisputeSupportCases = async (
   strapi: StrapiDocumentService,
   candidate: DocumentRecord
 ) => {
-  const cases = await documents(strapi, 'api::support-case.support-case').findMany({
+  const cases = await findAllDocuments(documents(strapi, 'api::support-case.support-case'), {
     filters: {
       candidate: {
         documentId: candidate.documentId,
       },
       caseType: 'interview',
     },
-    limit: 100,
     sort: ['lastMessageAt:desc', 'createdAt:desc'],
   });
   const casesByStrikeDocumentId = new Map<string, DocumentRecord>();
@@ -4423,7 +4427,7 @@ const hasPriorCandidateSlotWarning = async (
   candidate: DocumentRecord,
   currentOfferDocumentId?: string
 ) => {
-  const offers = await documents(strapi, 'api::interview-slot-offer.interview-slot-offer').findMany({
+  const offers = await findAllDocuments(documents(strapi, 'api::interview-slot-offer.interview-slot-offer'), {
     filters: {
       candidate: {
         documentId: candidate.documentId,
@@ -4432,7 +4436,6 @@ const hasPriorCandidateSlotWarning = async (
         $in: ['warning_sent', 'strike_applied'],
       },
     },
-    limit: 25,
     sort: ['candidateWarningSentAt:desc', 'candidateRespondedAt:desc', 'createdAt:desc'],
   });
 
@@ -4443,7 +4446,7 @@ const nextCandidateInterviewStrikeNumber = async (
   strapi: StrapiDocumentService,
   candidate: DocumentRecord
 ) => {
-  const strikes = await documents(strapi, 'api::candidate-interview-strike.candidate-interview-strike').findMany({
+  const activeStrikeCount = await documents(strapi, 'api::candidate-interview-strike.candidate-interview-strike').count({
     filters: {
       candidate: {
         documentId: candidate.documentId,
@@ -4452,10 +4455,9 @@ const nextCandidateInterviewStrikeNumber = async (
         $in: ['active', 'appealed', 'upheld'],
       },
     },
-    limit: 100,
   });
 
-  return strikes.length + 1;
+  return activeStrikeCount + 1;
 };
 
 const queueCandidateSlotOutcomeNotification = async ({
@@ -5156,14 +5158,13 @@ const applyCandidateSlotOfferMissedOrDeclined = async ({
 };
 
 const getNextWaitingListPosition = async (strapi, classRecord, candidate?) => {
-  const waitingListEnrollments = await documents(strapi, 'api::enrollment.enrollment').findMany({
+  const waitingListEnrollments = await findAllDocuments(documents(strapi, 'api::enrollment.enrollment'), {
     filters: {
       class: {
         documentId: classRecord.documentId,
       },
       enrollmentState: 'waiting_list',
     },
-    limit: 1000,
     sort: ['waitingListPosition:desc', 'createdAt:asc'],
     populate: ['candidate'],
   });
@@ -5185,14 +5186,13 @@ const getNextWaitingListPosition = async (strapi, classRecord, candidate?) => {
 };
 
 const hasWaitingListAhead = async (strapi, classRecord, candidate?) => {
-  const waitingListEnrollments = await documents(strapi, 'api::enrollment.enrollment').findMany({
+  const waitingListEnrollments = await findAllDocuments(documents(strapi, 'api::enrollment.enrollment'), {
     filters: {
       class: {
         documentId: classRecord.documentId,
       },
       enrollmentState: 'waiting_list',
     },
-    limit: 1000,
     populate: ['candidate'],
     sort: ['waitingListPosition:asc', 'createdAt:asc'],
   });
@@ -5263,7 +5263,7 @@ const findReservationByDocumentId = async (
 };
 
 const countCapacityHeldPlaces = async (strapi, classRecord) => {
-  const enrollments = await documents(strapi, 'api::enrollment.enrollment').findMany({
+  const enrollments = await findAllDocuments(documents(strapi, 'api::enrollment.enrollment'), {
     filters: {
       class: {
         documentId: classRecord.documentId,
@@ -5272,7 +5272,6 @@ const countCapacityHeldPlaces = async (strapi, classRecord) => {
         $in: Array.from(capacityHoldingEnrollmentStatuses),
       },
     },
-    limit: 1000,
     populate: ['class'],
   });
 
@@ -5335,7 +5334,7 @@ const countPaidClassPlaces = async (
     return 0;
   }
 
-  const enrollments = await documents(strapi, 'api::enrollment.enrollment').findMany({
+  return documents(strapi, 'api::enrollment.enrollment').count({
     filters: {
       class: {
         documentId: classRecord.documentId,
@@ -5344,11 +5343,7 @@ const countPaidClassPlaces = async (
         $in: Array.from(paidEnrollmentStatuses),
       },
     },
-    limit: 1000,
-    populate: ['class'],
   });
-
-  return enrollments.length;
 };
 
 const findActiveClassReservationsForAllocation = async (
@@ -5357,7 +5352,7 @@ const findActiveClassReservationsForAllocation = async (
 ) => {
   const now = new Date().toISOString();
 
-  return documents(strapi, 'api::reservation.reservation').findMany({
+  return findAllDocuments(documents(strapi, 'api::reservation.reservation'), {
     filters: {
       class: {
         documentId: classRecord.documentId,
@@ -5367,7 +5362,6 @@ const findActiveClassReservationsForAllocation = async (
       },
       reservationState: 'active',
     },
-    limit: 1000,
     populate: ['candidate'],
   });
 };
@@ -5376,7 +5370,7 @@ const findPaidClassEnrollmentsForAllocation = async (
   strapi: StrapiDocumentService,
   classRecord: DocumentRecord
 ) =>
-  documents(strapi, 'api::enrollment.enrollment').findMany({
+  findAllDocuments(documents(strapi, 'api::enrollment.enrollment'), {
     filters: {
       class: {
         documentId: classRecord.documentId,
@@ -5385,7 +5379,6 @@ const findPaidClassEnrollmentsForAllocation = async (
         $in: Array.from(paidEnrollmentStatuses),
       },
     },
-    limit: 1000,
     populate: ['candidate'],
   });
 
@@ -5393,14 +5386,13 @@ const findWaitingListClassEnrollmentsForAllocation = async (
   strapi: StrapiDocumentService,
   classRecord: DocumentRecord
 ) =>
-  (await documents(strapi, 'api::enrollment.enrollment').findMany({
+  (await findAllDocuments(documents(strapi, 'api::enrollment.enrollment'), {
       filters: {
         class: {
           documentId: classRecord.documentId,
         },
         enrollmentState: 'waiting_list',
       },
-      limit: 1000,
       populate: ['candidate'],
       sort: ['waitingListPosition:asc', 'createdAt:asc'],
     })).filter(waitingListOfferEligibility);
@@ -7136,14 +7128,13 @@ const findVisibleClassAnnouncements = async (strapi: StrapiDocumentService, clas
     return [];
   }
 
-  const announcements = await documents(strapi, 'api::class-announcement.class-announcement').findMany({
+  const announcements = await findAllDocuments(documents(strapi, 'api::class-announcement.class-announcement'), {
     filters: {
       announcementState: 'published',
       class: {
         documentId: classDocumentId,
       },
     },
-    limit: 50,
     sort: ['visibleFrom:desc', 'createdAt:desc'],
   });
   const now = Date.now();
@@ -7353,7 +7344,7 @@ const findCurrentCourseEnrollment = async (strapi: StrapiDocumentService, candid
     return undefined;
   }
 
-  const enrollments = await documents(strapi, 'api::enrollment.enrollment').findMany({
+  const enrollments = await findAllDocuments(documents(strapi, 'api::enrollment.enrollment'), {
     filters: {
       candidate: {
         documentId: candidate.documentId,
@@ -7362,7 +7353,6 @@ const findCurrentCourseEnrollment = async (strapi: StrapiDocumentService, candid
         $in: [...courseAccessEnrollmentStates],
       },
     },
-    limit: 20,
     populate: ['class'],
     sort: ['beganClassAt:desc', 'enrolledAt:desc', 'createdAt:desc'],
   });
@@ -7402,18 +7392,17 @@ const findCourseBundle = async (
     return undefined;
   }
 
-  const sections = (await documents(strapi, 'api::course-section.course-section').findMany({
+  const sections = (await findAllDocuments(documents(strapi, 'api::course-section.course-section'), {
     filters: {
       course: {
         documentId: course.documentId,
       },
     },
-    limit: 200,
     sort: ['sortOrder:asc', 'createdAt:asc'],
   })).filter((section) => activeContentRecord(section, 'sectionState'));
   const sectionDocumentIds = sections.map((section) => section.documentId).filter((documentId): documentId is string => Boolean(documentId));
   const modules = sectionDocumentIds.length
-    ? (await documents(strapi, 'api::course-module.course-module').findMany({
+    ? (await findAllDocuments(documents(strapi, 'api::course-module.course-module'), {
         filters: {
           courseSection: {
             documentId: {
@@ -7421,7 +7410,6 @@ const findCourseBundle = async (
             },
           },
         },
-        limit: 1000,
         populate: ['courseSection'],
         sort: ['sortOrder:asc', 'createdAt:asc'],
       })).filter((module) => activeContentRecord(module, 'moduleState'))
@@ -7429,7 +7417,7 @@ const findCourseBundle = async (
   const moduleDocumentIds = modules.map((module) => module.documentId).filter((documentId): documentId is string => Boolean(documentId));
   const [materials, courseTests, moduleTests, progressRecords, attempts, appeals, testResults] = await Promise.all([
     moduleDocumentIds.length
-      ? documents(strapi, 'api::course-material.course-material').findMany({
+      ? findAllDocuments(documents(strapi, 'api::course-material.course-material'), {
           filters: {
             module: {
               documentId: {
@@ -7437,22 +7425,20 @@ const findCourseBundle = async (
               },
             },
           },
-          limit: 2000,
           populate: ['module'],
           sort: ['sortOrder:asc', 'createdAt:asc'],
         })
       : [],
-    documents(strapi, 'api::course-test.course-test').findMany({
+    findAllDocuments(documents(strapi, 'api::course-test.course-test'), {
       filters: {
         course: {
           documentId: course.documentId,
         },
       },
-      limit: 500,
       sort: ['createdAt:asc'],
     }),
     moduleDocumentIds.length
-      ? documents(strapi, 'api::course-test.course-test').findMany({
+      ? findAllDocuments(documents(strapi, 'api::course-test.course-test'), {
           filters: {
             courseModule: {
               documentId: {
@@ -7460,48 +7446,43 @@ const findCourseBundle = async (
               },
             },
           },
-          limit: 1000,
           populate: ['courseModule'],
           sort: ['createdAt:asc'],
         })
       : [],
-    documents(strapi, 'api::course-progress.course-progress').findMany({
+    findAllDocuments(documents(strapi, 'api::course-progress.course-progress'), {
       filters: {
         enrollment: {
           documentId: enrollment.documentId,
         },
       },
-      limit: 5000,
       populate: ['courseSection', 'courseModule', 'courseMaterial', 'courseTest', 'courseQuestion', 'enrollment'],
       sort: ['createdAt:asc'],
     }),
-    documents(strapi, 'api::course-test-attempt.course-test-attempt').findMany({
+    findAllDocuments(documents(strapi, 'api::course-test-attempt.course-test-attempt'), {
       filters: {
         enrollment: {
           documentId: enrollment.documentId,
         },
       },
-      limit: 1000,
       populate: ['courseTest'],
       sort: ['attemptNumber:desc', 'createdAt:desc'],
     }),
-    documents(strapi, 'api::assessment-appeal.assessment-appeal').findMany({
+    findAllDocuments(documents(strapi, 'api::assessment-appeal.assessment-appeal'), {
       filters: {
         enrollment: {
           documentId: enrollment.documentId,
         },
       },
-      limit: 500,
       populate: ['courseTestAttempt'],
       sort: ['createdAt:desc'],
     }),
-    documents(strapi, 'api::course-test-result.course-test-result').findMany({
+    findAllDocuments(documents(strapi, 'api::course-test-result.course-test-result'), {
       filters: {
         enrollment: {
           documentId: enrollment.documentId,
         },
       },
-      limit: 1000,
       populate: ['courseTest', 'courseTestAttempt'],
       sort: ['decidedAt:desc', 'createdAt:desc'],
     }),
@@ -7509,7 +7490,7 @@ const findCourseBundle = async (
   const tests = [...courseTests, ...moduleTests].filter((test) => activeContentRecord(test, 'testState'));
   const testDocumentIds = tests.map((test) => test.documentId).filter((documentId): documentId is string => Boolean(documentId));
   const questions = testDocumentIds.length
-    ? (await documents(strapi, 'api::course-question.course-question').findMany({
+    ? (await findAllDocuments(documents(strapi, 'api::course-question.course-question'), {
         filters: {
           courseTest: {
             documentId: {
@@ -7517,7 +7498,6 @@ const findCourseBundle = async (
             },
           },
         },
-        limit: 2000,
         populate: ['courseTest'],
         sort: ['sortOrder:asc', 'createdAt:asc'],
       })).filter((question) => activeContentRecord(question, 'questionState'))
@@ -7986,7 +7966,7 @@ const updateCourseOutcomeIfPassed = async (
     existingSectionResults,
     existingCourseResults,
   ] = await Promise.all([
-    documents(strapi, 'api::course-progress.course-progress').findMany({
+    findAllDocuments(documents(strapi, 'api::course-progress.course-progress'), {
       filters: {
         enrollment: {
           documentId: enrollment.documentId,
@@ -7996,39 +7976,35 @@ const updateCourseOutcomeIfPassed = async (
           $in: ['class', 'section', 'module'],
         },
       },
-      limit: 5000,
       populate: ['courseModule', 'courseSection', 'enrollment'],
       sort: ['createdAt:asc'],
     }),
-    documents(strapi, 'api::course-module-result.course-module-result').findMany({
+    findAllDocuments(documents(strapi, 'api::course-module-result.course-module-result'), {
       filters: {
         enrollment: {
           documentId: enrollment.documentId,
         },
         resultState: 'passed',
       },
-      limit: 1000,
       populate: ['courseModule', 'enrollment'],
       sort: ['createdAt:asc'],
     }),
-    documents(strapi, 'api::course-section-result.course-section-result').findMany({
+    findAllDocuments(documents(strapi, 'api::course-section-result.course-section-result'), {
       filters: {
         enrollment: {
           documentId: enrollment.documentId,
         },
         resultState: 'passed',
       },
-      limit: 1000,
       populate: ['courseSection', 'enrollment'],
       sort: ['createdAt:asc'],
     }),
-    documents(strapi, 'api::course-result.course-result').findMany({
+    findAllDocuments(documents(strapi, 'api::course-result.course-result'), {
       filters: {
         enrollment: {
           documentId: enrollment.documentId,
         },
       },
-      limit: 10,
       populate: ['course', 'enrollment'],
       sort: ['updatedAt:desc', 'createdAt:desc'],
     }),
@@ -9778,7 +9754,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
     }
 
     const [payments, refunds] = await Promise.all([
-      documents(strapi, 'api::payment.payment').findMany({
+      findAllDocuments(documents(strapi, 'api::payment.payment'), {
         filters: {
           candidate: {
             documentId: existingCandidate.documentId,
@@ -9788,7 +9764,6 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
             $in: Array.from(billingPaymentStates),
           },
         },
-        limit: 100,
         populate: {
           enrollment: {
             populate: ['class'],
@@ -9799,7 +9774,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
         },
         sort: ['paidAt:desc', 'updatedAt:desc', 'createdAt:desc'],
       }),
-      documents(strapi, 'api::refund.refund').findMany({
+      findAllDocuments(documents(strapi, 'api::refund.refund'), {
         filters: {
           candidate: {
             documentId: existingCandidate.documentId,
@@ -9809,7 +9784,6 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
             $in: Array.from(billingRefundStates),
           },
         },
-        limit: 100,
         populate: {
           enrollment: {
             populate: ['class'],

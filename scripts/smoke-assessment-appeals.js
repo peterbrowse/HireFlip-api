@@ -49,7 +49,7 @@ const loadEnvFile = () => {
   }
 };
 
-const documents = (strapi, uid) => strapi.documents(uid);
+const { documents } = require('./lib/strapi-documents');
 
 const assert = (condition, message) => {
   if (!condition) {
@@ -88,7 +88,6 @@ const progressRecordsForEnrollment = (strapi, enrollmentDocumentId) =>
         documentId: enrollmentDocumentId,
       },
     },
-    limit: 20,
   });
 
 const createAppealFixture = async ({

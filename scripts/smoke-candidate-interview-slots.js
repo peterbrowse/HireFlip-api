@@ -50,7 +50,7 @@ const loadEnvFile = () => {
   }
 };
 
-const documents = (strapi, uid) => strapi.documents(uid);
+const { documents } = require('./lib/strapi-documents');
 
 const assert = (condition, message) => {
   if (!condition) {
@@ -130,7 +130,6 @@ const deleteNotificationEventsForEmail = async (strapi, email) => {
       filters: {
         recipientEmail: email,
       },
-      limit: 100,
     })
     .catch(() => []);
 
@@ -662,7 +661,6 @@ const main = async () => {
           documentId: reusableTarget.request.documentId,
         },
       },
-      limit: 5,
       populate: ['slots'],
     });
     const reusableAssignedOffer = reusableAssignedOffers.find((offer) => offer.offerState === 'sent');
@@ -837,7 +835,6 @@ const main = async () => {
           documentId: topUpTarget.request.documentId,
         },
       },
-      limit: 5,
     });
     const topUpClaim = topUpClaims.find((claim) => claim.requiredSlotCount === 1);
 
@@ -883,7 +880,6 @@ const main = async () => {
         },
         offerState: 'sent',
       },
-      limit: 5,
       populate: ['slots'],
     });
 
@@ -1113,7 +1109,6 @@ const main = async () => {
               documentId: created.candidate.documentId,
             },
           },
-          limit: 100,
         })
       : [];
     const interviews = created.candidate?.documentId
@@ -1123,7 +1118,6 @@ const main = async () => {
               documentId: created.candidate.documentId,
             },
           },
-          limit: 100,
         })
       : [];
 
@@ -1150,7 +1144,6 @@ const main = async () => {
                 documentId: fixture.request.documentId,
               },
             },
-            limit: 100,
           })
         : [];
 

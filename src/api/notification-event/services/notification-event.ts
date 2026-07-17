@@ -34,6 +34,7 @@ type DocumentRecord = Record<string, unknown> & {
 };
 
 type DocumentCollection = {
+  count(input: Record<string, unknown>): Promise<number>;
   create(input: Record<string, unknown>): Promise<DocumentRecord>;
   findMany(input: Record<string, unknown>): Promise<DocumentRecord[]>;
   update(input: Record<string, unknown>): Promise<DocumentRecord>;
@@ -87,6 +88,29 @@ type ProviderStatusInput = z.infer<typeof providerStatusSchema>;
 
 const documents = (strapi: StrapiDocumentService, uid: string) =>
   strapi.documents(uid) as DocumentCollection;
+
+const findAllDocuments = async (
+  strapi: StrapiDocumentService,
+  uid: string,
+  input: Record<string, unknown>,
+  pageSize = 100
+) => {
+  const collection = documents(strapi, uid);
+  const total = await collection.count({ filters: input.filters || {} });
+  const records: DocumentRecord[] = [];
+
+  for (let start = 0; start < total; start += pageSize) {
+    records.push(
+      ...(await collection.findMany({
+        ...input,
+        limit: pageSize,
+        start,
+      }))
+    );
+  }
+
+  return records;
+};
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -153,7 +177,7 @@ const findNotificationEvent = async (
         provider: body.provider,
         providerMessageId: body.providerMessageId,
       },
-      limit: 5,
+      limit: 1,
       populate: ['candidate', 'employer'],
       sort: ['updatedAt:desc', 'createdAt:desc'],
     });
@@ -175,9 +199,8 @@ const findNotificationEvent = async (
     filters.eventType = body.notificationType;
   }
 
-  const candidates = await documents(strapi, 'api::notification-event.notification-event').findMany({
+  const candidates = await findAllDocuments(strapi, 'api::notification-event.notification-event', {
     filters,
-    limit: 100,
     populate: ['candidate', 'employer'],
     sort: ['createdAt:desc'],
   });

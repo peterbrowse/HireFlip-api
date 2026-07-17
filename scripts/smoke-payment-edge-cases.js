@@ -64,7 +64,7 @@ const boolEnv = (name, fallback) => {
   return fallback;
 };
 
-const documents = (strapi, uid) => strapi.documents(uid);
+const { documents } = require('./lib/strapi-documents');
 
 const createDocument = (strapi, uid, data, populate = []) =>
   documents(strapi, uid).create({ data, populate });
@@ -273,7 +273,6 @@ const findPaymentsForReservation = async (strapi, reservationDocumentId) =>
         documentId: reservationDocumentId,
       },
     },
-    limit: 20,
     populate: ['candidate', 'enrollment', 'reservation'],
     sort: ['createdAt:asc'],
   });
@@ -283,7 +282,6 @@ const findWebhookEventsByProviderId = async (strapi, providerEventId) =>
     filters: {
       providerEventId,
     },
-    limit: 10,
     populate: ['payment'],
   });
 
@@ -294,7 +292,6 @@ const findAuditEvents = async (strapi, requestId, eventType) =>
       requestId,
     },
     fields: ['documentId', 'eventType', 'requestId'],
-    limit: 50,
   });
 
 const reserveCandidate = async (strapi, classRecord, candidate, requestContext) => {
@@ -933,7 +930,6 @@ const main = async () => {
                   },
                 },
                 fields: ['documentId'],
-                limit: 1000,
               })
             : [],
           documents(strapi, 'api::payment.payment').findMany({
@@ -945,7 +941,6 @@ const main = async () => {
               },
             },
             fields: ['documentId'],
-            limit: 1000,
           }),
           documents(strapi, 'api::reservation.reservation').findMany({
             filters: {
@@ -954,7 +949,6 @@ const main = async () => {
               },
             },
             fields: ['documentId'],
-            limit: 1000,
           }),
           documents(strapi, 'api::enrollment.enrollment').findMany({
             filters: {
@@ -963,7 +957,6 @@ const main = async () => {
               },
             },
             fields: ['documentId'],
-            limit: 1000,
           }),
           requestIds.length > 0
             ? documents(strapi, 'api::audit-event.audit-event').findMany({
@@ -973,7 +966,6 @@ const main = async () => {
                   },
                 },
                 fields: ['documentId'],
-                limit: 1000,
               })
             : [],
         ]);

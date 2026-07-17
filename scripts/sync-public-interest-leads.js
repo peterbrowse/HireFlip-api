@@ -2,12 +2,6 @@
 
 const { compileStrapi, createStrapi } = require('@strapi/strapi');
 
-const integerEnv = (name, fallback) => {
-  const value = Number.parseInt(process.env[name] || '', 10);
-
-  return Number.isFinite(value) ? value : fallback;
-};
-
 const booleanEnv = (name, fallback = false) => {
   const value = String(process.env[name] || '').trim().toLowerCase();
 
@@ -27,7 +21,6 @@ const main = async () => {
     const result = await service.syncPendingLeads({
       documentId: process.env.PUBLIC_INTEREST_LEAD_SYNC_DOCUMENT_ID || undefined,
       includeFailed: booleanEnv('PUBLIC_INTEREST_LEAD_SYNC_INCLUDE_FAILED', false),
-      limit: integerEnv('PUBLIC_INTEREST_LEAD_SYNC_BATCH_SIZE', 50),
     });
 
     console.log(JSON.stringify(result, null, 2));

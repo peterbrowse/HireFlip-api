@@ -56,7 +56,27 @@ type SupportCaseService = {
     caseState?: string;
     caseType?: string;
     limit?: number;
-  }): Promise<unknown[]>;
+    owner?: 'all' | 'mine' | 'unassigned';
+    ownerStaffUserId?: string;
+    page?: number;
+    pageSize?: number;
+    search?: string;
+  }): Promise<{
+    cases: unknown[];
+    counts: {
+      active: number;
+      awaitingRequester: number;
+      awaitingStaff: number;
+      filtered: number;
+      total: number;
+    };
+    pagination: {
+      page: number;
+      pageCount: number;
+      pageSize: number;
+      total: number;
+    };
+  }>;
   updateCaseState(input: unknown): Promise<unknown>;
 };
 
@@ -111,6 +131,7 @@ type DocumentRecord = Record<string, unknown> & {
 };
 
 type DocumentCollection = {
+  count(input: Record<string, unknown>): Promise<number>;
   create(input: Record<string, unknown>): Promise<DocumentRecord>;
   findMany(input: Record<string, unknown>): Promise<DocumentRecord[]>;
   update(input: Record<string, unknown>): Promise<DocumentRecord>;
@@ -145,12 +166,16 @@ type NotificationTemplatePayload = {
 const listCasesSchema = z
   .object({
     caseState: z
-      .enum(['open', 'awaiting_candidate', 'awaiting_staff', 'in_progress', 'resolved', 'closed'])
+      .enum(['all', 'open', 'awaiting_candidate', 'awaiting_staff', 'in_progress', 'resolved', 'closed'])
       .optional(),
     caseType: z
-      .enum(['general', 'refund', 'payment', 'course', 'interview', 'account', 'privacy', 'other'])
+      .enum(['all', 'general', 'refund', 'payment', 'course', 'interview', 'account', 'privacy', 'other'])
       .optional(),
     limit: z.number().int().min(1).max(100).optional(),
+    owner: z.enum(['all', 'mine', 'unassigned']).default('all'),
+    page: z.coerce.number().int().min(1).max(500).default(1),
+    pageSize: z.coerce.number().int().min(1).max(100).default(25),
+    search: z.string().trim().max(180).optional().transform((value) => value || undefined),
     sessionToken: z.string().trim().min(32).max(512),
   })
   .strict();
@@ -289,6 +314,29 @@ const supportCaseService = (strapi: StrapiService) =>
 
 const documents = (strapi: StrapiService, uid: string) =>
   strapi.documents(uid) as unknown as DocumentCollection;
+
+const findAllDocuments = async (
+  strapi: StrapiService,
+  uid: string,
+  input: Record<string, unknown>,
+  pageSize = 100
+) => {
+  const collection = documents(strapi, uid);
+  const total = await collection.count({ filters: input.filters || {} });
+  const records: DocumentRecord[] = [];
+
+  for (let start = 0; start < total; start += pageSize) {
+    records.push(
+      ...(await collection.findMany({
+        ...input,
+        limit: pageSize,
+        start,
+      }))
+    );
+  }
+
+  return records;
+};
 
 const assignableRoleKeys = new Set<AdminRoleKey>(['admin', 'super_admin', 'support']);
 
@@ -774,7 +822,7 @@ const findRawFeedbackForInterview = async (strapi: StrapiService, interviewDocum
     return [];
   }
 
-  return documents(strapi, 'api::interview-feedback.interview-feedback').findMany({
+  return findAllDocuments(strapi, 'api::interview-feedback.interview-feedback', {
     filters: {
       interview: {
         documentId: interviewDocumentId,
@@ -783,7 +831,6 @@ const findRawFeedbackForInterview = async (strapi: StrapiService, interviewDocum
         $in: ['employer_contact', 'external_interviewer'],
       },
     },
-    limit: 20,
     populate: ['feedbackInvite', 'interview'],
     sort: ['submittedAt:asc', 'createdAt:asc'],
   });
@@ -1425,18 +1472,24 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
   async listCases(input: unknown, requestContext: RequestContext = {}) {
     const body = validateListCases(input);
     const session = await assertSupportSession(strapi, body.sessionToken, requestContext);
-    const cases = await supportCaseService(strapi).listCases({
-      ...(body.caseState ? { caseState: body.caseState } : {}),
-      ...(body.caseType ? { caseType: body.caseType } : {}),
+    const result = await supportCaseService(strapi).listCases({
+      ...(body.caseState && body.caseState !== 'all' ? { caseState: body.caseState } : {}),
+      ...(body.caseType && body.caseType !== 'all' ? { caseType: body.caseType } : {}),
       ...(body.limit ? { limit: body.limit } : {}),
+      owner: body.owner,
+      ownerStaffUserId: session.user.id,
+      page: body.page,
+      pageSize: body.pageSize,
+      search: body.search,
     });
 
     return {
-      cases,
+      cases: result.cases,
       counts: {
-        total: cases.length,
+        ...result.counts,
       },
       generatedAt: new Date().toISOString(),
+      pagination: result.pagination,
       user: session.user,
     };
   },

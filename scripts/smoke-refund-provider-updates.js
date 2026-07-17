@@ -49,7 +49,7 @@ const loadEnvFile = () => {
   }
 };
 
-const documents = (strapi, uid) => strapi.documents(uid);
+const { documents } = require('./lib/strapi-documents');
 
 const assert = (condition, message) => {
   if (!condition) {
@@ -91,7 +91,6 @@ const findSupportMessagesForRefund = (strapi, refundDocumentId) =>
       },
     },
     fields: ['body', 'deliveryState', 'documentId', 'messageType', 'visibility'],
-    limit: 100,
     sort: ['createdAt:asc'],
   });
 
@@ -391,7 +390,6 @@ const main = async () => {
             },
           },
           fields: ['documentId'],
-          limit: 100,
         });
 
         await deleteDocuments(strapi, 'api::audit-event.audit-event', auditEvents);

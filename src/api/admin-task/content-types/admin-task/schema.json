@@ -56,6 +56,12 @@
       "default": "normal",
       "required": true
     },
+    "priorityRank": {
+      "type": "integer",
+      "min": 0,
+      "default": 2,
+      "required": true
+    },
     "title": {
       "type": "string",
       "minLength": 1,
@@ -76,6 +82,7 @@
         "support_case",
         "interview_feedback",
         "interview",
+        "interview_request",
         "progression_request",
         "privacy_rights_request",
         "notification_event",
@@ -110,6 +117,35 @@
     },
     "lastDetectedAt": {
       "type": "datetime"
+    },
+    "dueAt": {
+      "type": "datetime"
+    },
+    "candidateLabel": {
+      "type": "string",
+      "maxLength": 240
+    },
+    "employerLabel": {
+      "type": "string",
+      "maxLength": 240
+    },
+    "classLabel": {
+      "type": "string",
+      "maxLength": 240
+    },
+    "regionLabel": {
+      "type": "string",
+      "maxLength": 160
+    },
+    "issueKey": {
+      "type": "string",
+      "maxLength": 120
+    },
+    "ownerKeyText": {
+      "type": "text"
+    },
+    "searchText": {
+      "type": "text"
     },
     "resolvedAt": {
       "type": "datetime"

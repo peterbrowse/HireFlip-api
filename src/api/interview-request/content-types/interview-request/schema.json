@@ -14,7 +14,8 @@
     "candidate": {
       "type": "relation",
       "relation": "manyToOne",
-      "target": "api::candidate.candidate"
+      "target": "api::candidate.candidate",
+      "inversedBy": "interviewRequests"
     },
     "enrollment": {
       "type": "relation",
@@ -24,7 +25,8 @@
     "class": {
       "type": "relation",
       "relation": "manyToOne",
-      "target": "api::class.class"
+      "target": "api::class.class",
+      "inversedBy": "interviewRequests"
     },
     "region": {
       "type": "relation",

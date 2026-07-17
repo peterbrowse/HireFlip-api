@@ -147,6 +147,7 @@ type DocumentRecord = Record<string, unknown> & {
 };
 
 type DocumentCollection = {
+  count(input: Record<string, unknown>): Promise<number>;
   create(input: Record<string, unknown>): Promise<DocumentRecord>;
   findMany(input: Record<string, unknown>): Promise<DocumentRecord[]>;
   update(input: Record<string, unknown>): Promise<DocumentRecord>;
@@ -383,6 +384,29 @@ const validateDeleteAnnouncement = validateZodSchema(deleteAnnouncementSchema);
 
 const documents = (strapi: StrapiService, uid: string) =>
   strapi.documents(uid) as unknown as DocumentCollection;
+
+const findAllDocuments = async (
+  strapi: StrapiService,
+  uid: string,
+  input: Record<string, unknown>,
+  pageSize = 100
+) => {
+  const collection = documents(strapi, uid);
+  const total = await collection.count({ filters: input.filters || {} });
+  const records: DocumentRecord[] = [];
+
+  for (let start = 0; start < total; start += pageSize) {
+    records.push(
+      ...(await collection.findMany({
+        ...input,
+        limit: pageSize,
+        start,
+      }))
+    );
+  }
+
+  return records;
+};
 
 const adminAuthService = (strapi: StrapiService) =>
   strapi.service('api::admin-auth.admin-auth') as unknown as AdminAuthService;
@@ -686,79 +710,65 @@ const readinessCategoryForClass = (classRecord: DocumentRecord) => {
   return status === 'ready' || status === 'opened' ? 'ready' : status === 'blocked' ? 'blocked' : 'not_checked';
 };
 
-const classMatchesReadiness = (classRecord: DocumentRecord, readiness: string) => {
+type ClassListInput = z.infer<typeof listSchema>;
+
+const classListReadinessFilter = (readiness: ClassListInput['readiness']) => {
   if (readiness === 'all') {
-    return true;
+    return null;
   }
 
-  const summary = readinessSummary(classRecord);
-  const blockerKeys = Array.isArray(summary.blockerKeys) ? summary.blockerKeys.map(String) : [];
-  const category = readinessCategoryForClass(classRecord);
-
-  if (readiness === 'needs_employer_capacity') {
-    return blockerKeys.includes('employer_capacity') || category === 'needs_employer_capacity';
+  if (readiness === 'ready') {
+    return {
+      openingReadinessStatus: {
+        $in: ['ready', 'opened'],
+      },
+    };
   }
 
-  if (readiness === 'needs_course_setup') {
-    return blockerKeys.includes('course_setup') || category === 'needs_course_setup';
-  }
-
-  return category === readiness;
+  return {
+    openingReadinessStatus: 'blocked',
+  };
 };
 
-const sortValue = (classRecord: DocumentRecord, sortBy: string) => {
-  if (sortBy === 'capacity') {
-    return Number(classRecord.capacity || 0);
+const classListFilters = (body: ClassListInput) => {
+  const filters: Record<string, unknown> = {};
+  const andFilters: Record<string, unknown>[] = [];
+
+  if (body.state !== 'all') {
+    filters.state = body.state;
   }
 
-  if (sortBy === 'readiness') {
-    return readinessCategoryForClass(classRecord);
+  const readiness = classListReadinessFilter(body.readiness);
+
+  if (readiness) {
+    andFilters.push(readiness);
   }
 
-  if (sortBy === 'createdAt' || sortBy === 'startDate') {
-    return classRecord[sortBy] ? Date.parse(String(classRecord[sortBy])) : 0;
-  }
-
-  return String(classRecord[sortBy] || classLabel(classRecord)).toLowerCase();
-};
-
-const compareClasses = (sortBy: string, sortDirection: 'asc' | 'desc') => (
-  left: DocumentRecord,
-  right: DocumentRecord
-) => {
-  const leftValue = sortValue(left, sortBy);
-  const rightValue = sortValue(right, sortBy);
-  let result = 0;
-
-  if (typeof leftValue === 'number' && typeof rightValue === 'number') {
-    result = leftValue - rightValue;
-  } else {
-    result = String(leftValue).localeCompare(String(rightValue), 'en-GB', {
-      numeric: true,
-      sensitivity: 'base',
+  if (body.search) {
+    andFilters.push({
+      $or: [
+        { documentId: { $containsi: body.search } },
+        { displayTitle: { $containsi: body.search } },
+        { name: { $containsi: body.search } },
+        { officialClassCode: { $containsi: body.search } },
+        { region: { $containsi: body.search } },
+        { sector: { $containsi: body.search } },
+        { classArea: { name: { $containsi: body.search } } },
+        { course: { name: { $containsi: body.search } } },
+        { workSector: { name: { $containsi: body.search } } },
+      ],
     });
   }
 
-  return sortDirection === 'asc' ? result : -result;
+  return andFilters.length ? { ...filters, $and: andFilters } : filters;
 };
 
-const matchesSearch = (classRecord: DocumentRecord, search?: string) => {
-  if (!search) {
-    return true;
+const classListSort = (sortBy: ClassListInput['sortBy'], sortDirection: ClassListInput['sortDirection']) => {
+  if (sortBy === 'readiness') {
+    return [`openingReadinessStatus:${sortDirection}`, `startDate:${sortDirection}`];
   }
 
-  const value = search.toLowerCase();
-
-  return [
-    classRecord.name,
-    classRecord.displayTitle,
-    classRecord.officialClassCode,
-    classRecord.region,
-    classRecord.sector,
-    classRecord.classArea?.name,
-    classRecord.workSector?.name,
-    classRecord.course?.name,
-  ].some((item) => String(item || '').toLowerCase().includes(value));
+  return [`${sortBy}:${sortDirection}`];
 };
 
 const classPermissions = (session: AdminSession) => ({
@@ -791,7 +801,7 @@ const findEnrollmentsForClasses = async (
     return [];
   }
 
-  return documents(strapi, 'api::enrollment.enrollment').findMany({
+  return findAllDocuments(strapi, 'api::enrollment.enrollment', {
     filters: {
       class: {
         documentId: {
@@ -799,7 +809,6 @@ const findEnrollmentsForClasses = async (
         },
       },
     },
-    limit: 5000,
     populate: enrollmentPopulate,
     sort: ['createdAt:asc'],
   });
@@ -847,7 +856,7 @@ const findReservationsForEnrollments = async (
     return new Map<string, DocumentRecord>();
   }
 
-  const reservations = await documents(strapi, 'api::reservation.reservation').findMany({
+  const reservations = await findAllDocuments(strapi, 'api::reservation.reservation', {
     filters: {
       enrollment: {
         documentId: {
@@ -855,7 +864,6 @@ const findReservationsForEnrollments = async (
         },
       },
     },
-    limit: 5000,
     populate: reservationPopulate,
     sort: ['createdAt:asc'],
   });
@@ -871,7 +879,7 @@ const findPaymentsForEnrollments = async (
     return new Map<string, DocumentRecord>();
   }
 
-  const payments = await documents(strapi, 'api::payment.payment').findMany({
+  const payments = await findAllDocuments(strapi, 'api::payment.payment', {
     filters: {
       enrollment: {
         documentId: {
@@ -879,7 +887,6 @@ const findPaymentsForEnrollments = async (
         },
       },
     },
-    limit: 5000,
     populate: paymentPopulate,
     sort: ['createdAt:asc'],
   });
@@ -917,7 +924,7 @@ const findCourseProgressForEnrollments = async (
     return new Map<string, DocumentRecord[]>();
   }
 
-  const progressRecords = await documents(strapi, 'api::course-progress.course-progress').findMany({
+  const progressRecords = await findAllDocuments(strapi, 'api::course-progress.course-progress', {
     filters: {
       enrollment: {
         documentId: {
@@ -925,7 +932,6 @@ const findCourseProgressForEnrollments = async (
         },
       },
     },
-    limit: 10000,
     populate: courseProgressPopulate,
     sort: ['createdAt:asc'],
   });
@@ -1256,7 +1262,7 @@ const publicClassAnnouncement = (announcement: DocumentRecord) => ({
 });
 
 const findClassAnnouncements = async (strapi: StrapiService, classDocumentId: string) =>
-  documents(strapi, 'api::class-announcement.class-announcement').findMany({
+  findAllDocuments(strapi, 'api::class-announcement.class-announcement', {
     filters: {
       announcementState: {
         $ne: 'archived',
@@ -1265,7 +1271,6 @@ const findClassAnnouncements = async (strapi: StrapiService, classDocumentId: st
         documentId: classDocumentId,
       },
     },
-    limit: 200,
     sort: ['visibleFrom:desc', 'createdAt:desc'],
   });
 
@@ -1626,14 +1631,13 @@ const openEnrollmentForClass = async ({
     },
     populate: classPopulate,
   });
-  const interestedEnrollments = await documents(strapi, 'api::enrollment.enrollment').findMany({
+  const interestedEnrollments = await findAllDocuments(strapi, 'api::enrollment.enrollment', {
     filters: {
       class: {
         documentId: getDocumentId(classRecord),
       },
       enrollmentState: 'interest_registered',
     },
-    limit: 5000,
     populate: enrollmentPopulate,
   });
   const openedEnrollments = await Promise.all(
@@ -1725,14 +1729,13 @@ const updateEnrollmentsForClassStart = async (
   session: AdminSession
 ) => {
   const now = new Date().toISOString();
-  const enrollments = await documents(strapi, 'api::enrollment.enrollment').findMany({
+  const enrollments = await findAllDocuments(strapi, 'api::enrollment.enrollment', {
     filters: {
       class: {
         documentId: getDocumentId(classRecord),
       },
       enrollmentState: 'enrolled',
     },
-    limit: 5000,
     populate: enrollmentPopulate,
   });
 
@@ -1774,28 +1777,26 @@ const courseSetupForClass = async (strapi: StrapiService, classRecord: DocumentR
       },
       limit: 1,
     }),
-    documents(strapi, 'api::course-section.course-section').findMany({
+    findAllDocuments(strapi, 'api::course-section.course-section', {
       filters: {
         course: {
           documentId: courseDocumentId,
         },
       },
-      limit: 200,
       sort: ['sortOrder:asc', 'createdAt:asc'],
     }),
-    documents(strapi, 'api::course-test.course-test').findMany({
+    findAllDocuments(strapi, 'api::course-test.course-test', {
       filters: {
         course: {
           documentId: courseDocumentId,
         },
       },
-      limit: 200,
       sort: ['createdAt:asc'],
     }),
   ]);
   const sectionDocumentIds = sections.map(getDocumentId).filter((documentId): documentId is string => Boolean(documentId));
   const modules = sectionDocumentIds.length
-    ? await documents(strapi, 'api::course-module.course-module').findMany({
+    ? await findAllDocuments(strapi, 'api::course-module.course-module', {
         filters: {
           courseSection: {
             documentId: {
@@ -1803,7 +1804,6 @@ const courseSetupForClass = async (strapi: StrapiService, classRecord: DocumentR
             },
           },
         },
-        limit: 500,
         populate: ['courseSection'],
         sort: ['sortOrder:asc', 'createdAt:asc'],
       })
@@ -1811,7 +1811,7 @@ const courseSetupForClass = async (strapi: StrapiService, classRecord: DocumentR
   const moduleDocumentIds = modules.map(getDocumentId).filter((documentId): documentId is string => Boolean(documentId));
   const [materials, moduleTests] = await Promise.all([
     moduleDocumentIds.length
-      ? documents(strapi, 'api::course-material.course-material').findMany({
+      ? findAllDocuments(strapi, 'api::course-material.course-material', {
           filters: {
             module: {
               documentId: {
@@ -1819,13 +1819,12 @@ const courseSetupForClass = async (strapi: StrapiService, classRecord: DocumentR
               },
             },
           },
-          limit: 500,
           populate: ['module'],
           sort: ['sortOrder:asc', 'createdAt:asc'],
         })
       : [],
     moduleDocumentIds.length
-      ? documents(strapi, 'api::course-test.course-test').findMany({
+      ? findAllDocuments(strapi, 'api::course-test.course-test', {
           filters: {
             courseModule: {
               documentId: {
@@ -1833,7 +1832,6 @@ const courseSetupForClass = async (strapi: StrapiService, classRecord: DocumentR
               },
             },
           },
-          limit: 500,
           populate: ['courseModule'],
           sort: ['createdAt:asc'],
         })
@@ -2143,26 +2141,27 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
     const body = validateList(input);
     const session = await assertClassViewSession(strapi, body.sessionToken, requestContext);
     const permissions = classPermissions(session);
-    const classes = await documents(strapi, 'api::class.class').findMany({
-      limit: 500,
-      populate: classPopulate,
-      sort: ['startDate:asc', 'createdAt:desc'],
-    });
-    const filteredClasses = classes
-      .filter((classRecord) => body.state === 'all' || classRecord.state === body.state)
-      .filter((classRecord) => classMatchesReadiness(classRecord, body.readiness))
-      .filter((classRecord) => matchesSearch(classRecord, body.search))
-      .sort(compareClasses(body.sortBy, body.sortDirection));
-    const filteredTotal = filteredClasses.length;
+    const classDocuments = documents(strapi, 'api::class.class');
+    const filters = classListFilters(body);
+    const [filteredTotal, openCount, totalCount] = await Promise.all([
+      classDocuments.count({ filters }),
+      classDocuments.count({ filters: { state: 'open' } }),
+      classDocuments.count({ filters: {} }),
+    ]);
     const pageCount = Math.max(1, Math.ceil(filteredTotal / body.pageSize));
     const page = Math.min(body.page, pageCount);
-    const pageStart = (page - 1) * body.pageSize;
-    const visibleClasses = filteredClasses.slice(pageStart, pageStart + body.pageSize);
-    const classDocumentIds = filteredClasses.map(getDocumentId).filter((documentId): documentId is string => Boolean(documentId));
+    const visibleClasses = await classDocuments.findMany({
+      filters,
+      limit: body.pageSize,
+      populate: classPopulate,
+      sort: classListSort(body.sortBy, body.sortDirection),
+      start: (page - 1) * body.pageSize,
+    });
+    const classDocumentIds = visibleClasses.map(getDocumentId).filter((documentId): documentId is string => Boolean(documentId));
     const enrollments = await findEnrollmentsForClasses(strapi, classDocumentIds);
     const enrollmentsByClass = groupEnrollmentsByClass(enrollments);
-    const aggregateCapacity = filteredClasses.reduce((total, classRecord) => total + integerValue(classRecord.capacity, 0), 0);
-    const aggregateCapacityHeld = filteredClasses.reduce(
+    const aggregateCapacity = visibleClasses.reduce((total, classRecord) => total + integerValue(classRecord.capacity, 0), 0);
+    const aggregateCapacityHeld = visibleClasses.reduce(
       (total, classRecord) =>
         total + classCounts(classRecord, enrollmentsByClass.get(getDocumentId(classRecord) || '') || []).capacityHeld,
       0
@@ -2180,8 +2179,8 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
         capacity: aggregateCapacity,
         capacityHeld: aggregateCapacityHeld,
         filtered: filteredTotal,
-        open: classes.filter((classRecord) => classRecord.state === 'open').length,
-        total: classes.length,
+        open: openCount,
+        total: totalCount,
       },
       generatedAt: new Date().toISOString(),
       pagination: {
@@ -2244,16 +2243,13 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
     const body = validateOptions(input);
     const session = await assertClassManageSession(strapi, body.sessionToken, requestContext);
     const [courses, classAreas, workSectors] = await Promise.all([
-      documents(strapi, 'api::course.course').findMany({
-        limit: 500,
+      findAllDocuments(strapi, 'api::course.course', {
         sort: ['name:asc'],
       }),
-      documents(strapi, 'api::class-area.class-area').findMany({
-        limit: 500,
+      findAllDocuments(strapi, 'api::class-area.class-area', {
         sort: ['name:asc'],
       }),
-      documents(strapi, 'api::work-sector.work-sector').findMany({
-        limit: 500,
+      findAllDocuments(strapi, 'api::work-sector.work-sector', {
         sort: ['name:asc'],
       }),
     ]);

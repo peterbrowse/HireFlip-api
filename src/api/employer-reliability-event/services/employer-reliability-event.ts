@@ -43,6 +43,7 @@ type AdminActor = {
 };
 
 type DocumentCollection = {
+  count(input: Record<string, unknown>): Promise<number>;
   create(input: Record<string, unknown>): Promise<DocumentRecord>;
   findMany(input: Record<string, unknown>): Promise<DocumentRecord[]>;
   update(input: Record<string, unknown>): Promise<DocumentRecord>;
@@ -115,6 +116,29 @@ type ActionReliabilityEventInput = {
 
 const documents = (strapi: StrapiDocumentService, uid: string) =>
   strapi.documents(uid) as unknown as DocumentCollection;
+
+const findAllDocuments = async (
+  strapi: StrapiDocumentService,
+  uid: string,
+  input: Record<string, unknown>,
+  pageSize = 100
+) => {
+  const collection = documents(strapi, uid);
+  const total = await collection.count({ filters: input.filters || {} });
+  const records: DocumentRecord[] = [];
+
+  for (let start = 0; start < total; start += pageSize) {
+    records.push(
+      ...(await collection.findMany({
+        ...input,
+        limit: pageSize,
+        start,
+      }))
+    );
+  }
+
+  return records;
+};
 
 const auditEvents = (strapi: StrapiDocumentService) =>
   strapi.service('api::audit-event.audit-event') as unknown as AuditEventService;
@@ -310,11 +334,19 @@ const determineOutcome = async (
   employerDocumentId: string,
   forceOutcome?: ReliabilityOutcome
 ) => {
-  const events = await documents(strapi, 'api::employer-reliability-event.employer-reliability-event').findMany({
-    filters: activeReliabilityFilters(employerDocumentId),
-    limit: 200,
-  });
-  const strikeCount = events.filter((event) => event.outcome === 'strike').length;
+  const reliabilityDocuments = documents(strapi, 'api::employer-reliability-event.employer-reliability-event');
+  const activeFilters = activeReliabilityFilters(employerDocumentId);
+  const [activeEventCount, strikeCount] = await Promise.all([
+    reliabilityDocuments.count({
+      filters: activeFilters,
+    }),
+    reliabilityDocuments.count({
+      filters: {
+        ...activeFilters,
+        outcome: 'strike',
+      },
+    }),
+  ]);
 
   if (forceOutcome) {
     return {
@@ -324,8 +356,8 @@ const determineOutcome = async (
   }
 
   return {
-    outcome: events.length > 0 ? 'strike' : 'warning',
-    strikeNumber: events.length > 0 ? strikeCount + 1 : 0,
+    outcome: activeEventCount > 0 ? 'strike' : 'warning',
+    strikeNumber: activeEventCount > 0 ? strikeCount + 1 : 0,
   };
 };
 
@@ -550,13 +582,25 @@ export default factories.createCoreService(
         };
       }
 
-      const events = await documents(strapi, 'api::employer-reliability-event.employer-reliability-event').findMany({
-        filters: activeReliabilityFilters(employerDocumentId),
-        limit: 25,
-        sort: ['eventAt:desc', 'createdAt:desc'],
-      });
-      const strikeCount = events.filter((event) => event.outcome === 'strike').length;
-      const warningCount = events.filter((event) => event.outcome === 'warning').length;
+      const filters = activeReliabilityFilters(employerDocumentId);
+      const [events, strikeCount, warningCount] = await Promise.all([
+        findAllDocuments(strapi, 'api::employer-reliability-event.employer-reliability-event', {
+          filters,
+          sort: ['eventAt:desc', 'createdAt:desc'],
+        }),
+        documents(strapi, 'api::employer-reliability-event.employer-reliability-event').count({
+          filters: {
+            ...filters,
+            outcome: 'strike',
+          },
+        }),
+        documents(strapi, 'api::employer-reliability-event.employer-reliability-event').count({
+          filters: {
+            ...filters,
+            outcome: 'warning',
+          },
+        }),
+      ]);
 
       return {
         latestEventAt: events[0]?.eventAt || null,
@@ -609,9 +653,8 @@ export default factories.createCoreService(
           throw new ValidationError('Employer ID and reset reason are required.');
         }
 
-        const events = await documents(strapi, 'api::employer-reliability-event.employer-reliability-event').findMany({
+        const events = await findAllDocuments(strapi, 'api::employer-reliability-event.employer-reliability-event', {
           filters: activeReliabilityFilters(input.employerDocumentId),
-          limit: 500,
         });
 
         for (const event of events) {

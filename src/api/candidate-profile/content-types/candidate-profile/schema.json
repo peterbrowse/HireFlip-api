@@ -14,7 +14,8 @@
     "candidate": {
       "type": "relation",
       "relation": "manyToOne",
-      "target": "api::candidate.candidate"
+      "target": "api::candidate.candidate",
+      "inversedBy": "profiles"
     },
     "profileState": {
       "type": "enumeration",

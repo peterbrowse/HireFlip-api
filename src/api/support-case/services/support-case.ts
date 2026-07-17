@@ -46,6 +46,7 @@ type DocumentRecord = Record<string, unknown> & {
 };
 
 type DocumentCollection = {
+  count(input: Record<string, unknown>): Promise<number>;
   create(input: Record<string, unknown>): Promise<DocumentRecord>;
   findMany(input: Record<string, unknown>): Promise<DocumentRecord[]>;
   update(input: Record<string, unknown>): Promise<DocumentRecord>;
@@ -59,6 +60,11 @@ type SupportCaseListInput = {
   caseState?: string;
   caseType?: string;
   limit?: number;
+  owner?: 'all' | 'mine' | 'unassigned';
+  ownerStaffUserId?: string;
+  page?: number;
+  pageSize?: number;
+  search?: string;
 };
 
 type SupportCaseDetailInput = {
@@ -67,6 +73,27 @@ type SupportCaseDetailInput = {
 
 const documents = (strapi: StrapiDocumentService, uid: string) =>
   strapi.documents(uid) as unknown as DocumentCollection;
+
+const findAllDocuments = async (
+  collection: DocumentCollection,
+  input: Record<string, unknown>,
+  pageSize = 100
+) => {
+  const total = await collection.count({ filters: input.filters || {} });
+  const records: DocumentRecord[] = [];
+
+  for (let start = 0; start < total; start += pageSize) {
+    const page = await collection.findMany({
+      ...input,
+      limit: pageSize,
+      start,
+    });
+
+    records.push(...page);
+  }
+
+  return records;
+};
 
 const objectValue = (value: unknown) =>
   value && typeof value === 'object' && !Array.isArray(value)
@@ -762,13 +789,12 @@ const messagesForCase = async (strapi: StrapiDocumentService, supportCaseDocumen
     return [];
   }
 
-  return documents(strapi, 'api::support-message.support-message').findMany({
+  return findAllDocuments(documents(strapi, 'api::support-message.support-message'), {
     filters: {
       supportCase: {
         documentId: supportCaseDocumentId,
       },
     },
-    limit: 100,
     sort: ['createdAt:asc'],
   });
 };
@@ -1322,13 +1348,12 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
   },
 
   async casesForRefund(refundDocumentId: string) {
-    const cases = await documents(strapi, 'api::support-case.support-case').findMany({
+    const cases = await findAllDocuments(documents(strapi, 'api::support-case.support-case'), {
       filters: {
         refund: {
           documentId: refundDocumentId,
         },
       },
-      limit: 20,
       populate: supportCasePopulate,
       sort: ['lastMessageAt:desc', 'createdAt:desc'],
     });
@@ -1361,13 +1386,12 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
   },
 
   async casesForCandidate(candidateDocumentId: string) {
-    const cases = await documents(strapi, 'api::support-case.support-case').findMany({
+    const cases = await findAllDocuments(documents(strapi, 'api::support-case.support-case'), {
       filters: {
         candidate: {
           documentId: candidateDocumentId,
         },
       },
-      limit: 50,
       populate: supportCasePopulate,
       sort: ['lastMessageAt:desc', 'createdAt:desc'],
     });
@@ -1438,9 +1462,8 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
             documentId: employerContactDocumentId,
           },
         };
-    const cases = await documents(strapi, 'api::support-case.support-case').findMany({
+    const cases = await findAllDocuments(documents(strapi, 'api::support-case.support-case'), {
       filters,
-      limit: 50,
       populate: supportCasePopulate,
       sort: ['lastMessageAt:desc', 'createdAt:desc'],
     });
@@ -1504,21 +1527,82 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
   },
 
   async listCases(input: SupportCaseListInput = {}) {
-    const safeLimit = Math.min(Math.max(Number(input.limit) || 50, 1), 100);
-    const cases = await documents(strapi, 'api::support-case.support-case').findMany({
-      filters: {
+    const pageSize = Math.min(Math.max(Number(input.pageSize || input.limit) || 25, 1), 100);
+    const requestedPage = Math.max(Number(input.page) || 1, 1);
+    const filters: Record<string, unknown> = {
         ...(input.caseState ? { caseState: input.caseState } : {}),
         ...(input.caseType ? { caseType: input.caseType } : {}),
-      },
-      limit: safeLimit,
+    };
+
+    if (input.owner === 'mine' && input.ownerStaffUserId) {
+      filters.ownerStaffUserId = input.ownerStaffUserId;
+    } else if (input.owner === 'unassigned') {
+      filters.ownerStaffUserId = { $null: true };
+    }
+
+    if (input.search) {
+      const search = input.search;
+
+      filters.$or = [
+        { caseKey: { $containsi: search } },
+        { documentId: { $containsi: search } },
+        { ownerStaffDisplayName: { $containsi: search } },
+        { ownerStaffEmail: { $containsi: search } },
+        { summary: { $containsi: search } },
+        { title: { $containsi: search } },
+        { candidate: { email: { $containsi: search } } },
+        { candidate: { firstName: { $containsi: search } } },
+        { candidate: { lastName: { $containsi: search } } },
+        { employer: { companyName: { $containsi: search } } },
+        { employerContact: { email: { $containsi: search } } },
+        { employerContact: { firstName: { $containsi: search } } },
+        { employerContact: { lastName: { $containsi: search } } },
+      ];
+    }
+
+    const supportCaseDocuments = documents(strapi, 'api::support-case.support-case');
+    const [total, activeCount, awaitingRequesterCount, awaitingStaffCount, allCount] = await Promise.all([
+      supportCaseDocuments.count({ filters }),
+      supportCaseDocuments.count({
+        filters: {
+          caseState: {
+            $in: ['awaiting_candidate', 'awaiting_staff', 'in_progress', 'open'],
+          },
+        },
+      }),
+      supportCaseDocuments.count({ filters: { caseState: 'awaiting_candidate' } }),
+      supportCaseDocuments.count({ filters: { caseState: 'awaiting_staff' } }),
+      supportCaseDocuments.count({ filters: {} }),
+    ]);
+    const pageCount = Math.max(1, Math.ceil(total / pageSize));
+    const page = Math.min(requestedPage, pageCount);
+    const cases = await supportCaseDocuments.findMany({
+      filters,
+      limit: pageSize,
       populate: supportCasePopulate,
       sort: ['lastMessageAt:desc', 'createdAt:desc'],
+      start: (page - 1) * pageSize,
     });
 
-    return Promise.all(
-      cases.map(async (supportCase) =>
-        publicSupportCase(supportCase, await messagesForCase(strapi, getDocumentId(supportCase)))
-      )
-    );
+    return {
+      cases: await Promise.all(
+        cases.map(async (supportCase) =>
+          publicSupportCase(supportCase, await messagesForCase(strapi, getDocumentId(supportCase)))
+        )
+      ),
+      counts: {
+        active: activeCount,
+        awaitingRequester: awaitingRequesterCount,
+        awaitingStaff: awaitingStaffCount,
+        filtered: total,
+        total: allCount,
+      },
+      pagination: {
+        page,
+        pageCount,
+        pageSize,
+        total,
+      },
+    };
   },
 });

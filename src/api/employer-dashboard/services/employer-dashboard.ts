@@ -156,6 +156,7 @@ type DocumentRecord = Record<string, unknown> & {
 };
 
 type DocumentCollection = {
+  count(input: Record<string, unknown>): Promise<number>;
   create(input: Record<string, unknown>): Promise<DocumentRecord>;
   findMany(input: Record<string, unknown>): Promise<DocumentRecord[]>;
   update(input: Record<string, unknown>): Promise<DocumentRecord>;
@@ -559,6 +560,27 @@ const validateUpdateSettings = validateZodSchema(updateSettingsSchema);
 
 const documents = (strapi: StrapiDocumentService, uid: string) =>
   strapi.documents(uid) as DocumentCollection;
+
+const findAllDocuments = async (
+  collection: DocumentCollection,
+  input: Record<string, unknown>,
+  pageSize = 100
+) => {
+  const total = await collection.count({ filters: input.filters || {} });
+  const records: DocumentRecord[] = [];
+
+  for (let start = 0; start < total; start += pageSize) {
+    const page = await collection.findMany({
+      ...input,
+      limit: pageSize,
+      start,
+    });
+
+    records.push(...page);
+  }
+
+  return records;
+};
 
 const auditEvents = (strapi: StrapiDocumentService) =>
   strapi.service('api::audit-event.audit-event') as AuditEventService;
@@ -1139,8 +1161,7 @@ const findDocumentById = async (
 };
 
 const getOperationalClassAreas = async (strapi: StrapiDocumentService) => {
-  const classAreas = await documents(strapi, 'api::class-area.class-area').findMany({
-    limit: 500,
+  const classAreas = await findAllDocuments(documents(strapi, 'api::class-area.class-area'), {
     sort: ['sortOrder:asc', 'name:asc'],
   });
 
@@ -2209,11 +2230,10 @@ const assertNoAuthIdentityContactConflict = async (
   identity: EmployerInviteAcceptanceIdentity,
   employerContactDocumentId: string
 ) => {
-  const existingContacts = await documents(strapi, 'api::employer-contact.employer-contact').findMany({
+  const existingContacts = await findAllDocuments(documents(strapi, 'api::employer-contact.employer-contact'), {
     filters: {
       authIdentityId: identity.authIdentityId,
     },
-    limit: 5,
   });
   const conflictingContact = existingContacts.find(
     (contact) => getDocumentId(contact) !== employerContactDocumentId
@@ -2334,12 +2354,11 @@ const findPendingInviteForIdentity = async (
     identity.authIdentityId ? { authIdentityId: identity.authIdentityId } : null,
     identity.authIdentityId ? { employerContact: { authIdentityId: identity.authIdentityId } } : null,
   ]);
-  const invites = await documents(strapi, 'api::employer-invite.employer-invite').findMany({
+  const invites = await findAllDocuments(documents(strapi, 'api::employer-invite.employer-invite'), {
     filters: {
       inviteState: 'pending',
       ...(filters.length > 0 ? { $or: filters } : {}),
     },
-    limit: 10,
     populate: invitePopulate,
     sort: ['createdAt:desc'],
   });
@@ -2468,11 +2487,10 @@ const acceptInviteRecord = async (
 	};
 
 const findEmployerContactByEmail = async (strapi: StrapiDocumentService, email: string) => {
-  const contacts = await documents(strapi, 'api::employer-contact.employer-contact').findMany({
+  const contacts = await findAllDocuments(documents(strapi, 'api::employer-contact.employer-contact'), {
     filters: {
       email,
     },
-    limit: 5,
     populate: {
       coverageRegions: true,
       employer: {
@@ -2488,14 +2506,13 @@ const revokePendingInvitesForContact = async (
   strapi: StrapiDocumentService,
   employerContactDocumentId: string
 ) => {
-  const invites = await documents(strapi, 'api::employer-invite.employer-invite').findMany({
+  const invites = await findAllDocuments(documents(strapi, 'api::employer-invite.employer-invite'), {
     filters: {
       employerContact: {
         documentId: employerContactDocumentId,
       },
       inviteState: 'pending',
     },
-    limit: 100,
   });
 
   await Promise.all(
@@ -2774,16 +2791,15 @@ const syncRegionCommitments = async (
     }
   }
 
-  const existingCommitments = await documents(
+  const existingCommitments = await findAllDocuments(documents(
     strapi,
     'api::employer-region-commitment.employer-region-commitment'
-  ).findMany({
+  ), {
     filters: {
       employer: {
         documentId: employerDocumentId,
       },
     },
-    limit: 500,
     populate: ['region'],
   });
   const existingByRegion = new Map(
@@ -3076,7 +3092,7 @@ const findPreviousCandidateReportTakeaways = async (
   }
 
   const currentStartTime = String(interview.scheduledStartTime || interview.completedAt || '');
-  const previousInterviews = await documents(strapi, 'api::interview.interview').findMany({
+  const previousInterviews = await findAllDocuments(documents(strapi, 'api::interview.interview'), {
     filters: {
       candidate: {
         documentId: candidateDocumentId,
@@ -3093,7 +3109,6 @@ const findPreviousCandidateReportTakeaways = async (
           }
         : {}),
     },
-    limit: 10,
     sort: ['scheduledStartTime:desc', 'completedAt:desc', 'createdAt:desc'],
   });
   const previousInterviewIds = previousInterviews
@@ -3104,7 +3119,7 @@ const findPreviousCandidateReportTakeaways = async (
     return [];
   }
 
-  const feedbackRecords = await documents(strapi, 'api::interview-feedback.interview-feedback').findMany({
+  const feedbackRecords = await findAllDocuments(documents(strapi, 'api::interview-feedback.interview-feedback'), {
     filters: {
       candidateReportState: {
         $in: Array.from(candidateReportVisibleStates),
@@ -3116,7 +3131,6 @@ const findPreviousCandidateReportTakeaways = async (
       },
       submittedByType: 'employer_contact',
     },
-    limit: 10,
     populate: ['interview'],
     sort: ['candidateReportVisibleAt:desc', 'candidateReportGeneratedAt:desc', 'submittedAt:desc'],
   });
@@ -3193,13 +3207,12 @@ const findFeedbackInvitesForInterview = async (
   strapi: StrapiDocumentService,
   interviewDocumentId: string
 ) =>
-  documents(strapi, 'api::interview-feedback-invite.interview-feedback-invite').findMany({
+  findAllDocuments(documents(strapi, 'api::interview-feedback-invite.interview-feedback-invite'), {
     filters: {
       interview: {
         documentId: interviewDocumentId,
       },
     },
-    limit: 50,
     populate: ['feedback'],
     sort: ['createdAt:asc'],
   });
@@ -3245,7 +3258,7 @@ const findSubmittedFeedbackForInterview = async (
   strapi: StrapiDocumentService,
   interviewDocumentId: string
 ) =>
-  documents(strapi, 'api::interview-feedback.interview-feedback').findMany({
+  findAllDocuments(documents(strapi, 'api::interview-feedback.interview-feedback'), {
     filters: {
       interview: {
         documentId: interviewDocumentId,
@@ -3254,7 +3267,6 @@ const findSubmittedFeedbackForInterview = async (
         $in: ['employer_contact', 'external_interviewer'],
       },
     },
-    limit: 50,
     populate: ['feedbackInvite'],
     sort: ['submittedAt:asc', 'createdAt:asc'],
   });
@@ -6278,12 +6290,12 @@ export default ({ strapi }) => ({
 
     const [
       capacityClaims,
-      availableSlots,
+      availableSlotCount,
       scheduledInterviews,
       completedInterviews,
       progressionRequests,
     ] = await Promise.all([
-      documents(strapi, 'api::employer-capacity-claim.employer-capacity-claim').findMany({
+      findAllDocuments(documents(strapi, 'api::employer-capacity-claim.employer-capacity-claim'), {
         filters: {
           employer: {
             documentId: employerDocumentId,
@@ -6293,7 +6305,6 @@ export default ({ strapi }) => ({
             $in: ['held', 'notified', 'accepted'],
           },
         },
-        limit: 50,
         populate: {
           employerContact: true,
           interviewRequest: {
@@ -6308,7 +6319,7 @@ export default ({ strapi }) => ({
         },
         sort: ['expiresAt:asc', 'createdAt:asc'],
       }),
-      documents(strapi, 'api::interview-slot.interview-slot').findMany({
+      documents(strapi, 'api::interview-slot.interview-slot').count({
         filters: {
           employer: {
             documentId: employerDocumentId,
@@ -6318,9 +6329,8 @@ export default ({ strapi }) => ({
             $in: ['available', 'offered', 'held'],
           },
         },
-        limit: 500,
       }),
-      documents(strapi, 'api::interview.interview').findMany({
+      findAllDocuments(documents(strapi, 'api::interview.interview'), {
         filters: {
           employer: {
             documentId: employerDocumentId,
@@ -6330,11 +6340,10 @@ export default ({ strapi }) => ({
             $in: ['awaiting_employer_details', 'candidate_selected', 'confirmed'],
           },
         },
-        limit: 100,
         populate: ['candidate', 'interviewSlot'],
         sort: ['scheduledStartTime:asc', 'createdAt:asc'],
       }),
-      documents(strapi, 'api::interview.interview').findMany({
+      findAllDocuments(documents(strapi, 'api::interview.interview'), {
         filters: {
           employer: {
             documentId: employerDocumentId,
@@ -6342,11 +6351,10 @@ export default ({ strapi }) => ({
           ...scopedEmployerContactFilter,
           interviewState: 'completed',
         },
-        limit: 100,
         populate: ['candidate', 'interviewSlot'],
         sort: ['completedAt:desc', 'scheduledStartTime:desc'],
       }),
-      documents(strapi, 'api::offer.offer').findMany({
+      findAllDocuments(documents(strapi, 'api::offer.offer'), {
         filters: {
           employer: {
             documentId: employerDocumentId,
@@ -6366,7 +6374,6 @@ export default ({ strapi }) => ({
             },
           ],
         },
-        limit: 100,
         populate: ['candidate', 'interview'],
         sort: ['requestedDetailsAt:desc', 'createdAt:desc'],
       }),
@@ -6375,7 +6382,7 @@ export default ({ strapi }) => ({
       .map((interview) => getDocumentId(interview))
       .filter((documentId): documentId is string => Boolean(documentId));
     const feedbackRecords = completedInterviewIds.length
-      ? await documents(strapi, 'api::interview-feedback.interview-feedback').findMany({
+      ? await findAllDocuments(documents(strapi, 'api::interview-feedback.interview-feedback'), {
           filters: {
             interview: {
               documentId: {
@@ -6383,7 +6390,6 @@ export default ({ strapi }) => ({
               },
             },
           },
-          limit: 100,
           populate: ['interview'],
         })
       : [];
@@ -6405,7 +6411,7 @@ export default ({ strapi }) => ({
       interviews: scheduledInterviews.map(interviewPayload),
       progressionRequests: progressionRequests.map(progressionPayload),
       summary: {
-        availableSlots: availableSlots.length,
+        availableSlots: availableSlotCount,
         commitmentWindow: buildCommitmentWindowSummary({
           capacityClaims,
           completedInterviews,

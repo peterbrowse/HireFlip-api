@@ -14,12 +14,14 @@
     "candidate": {
       "type": "relation",
       "relation": "manyToOne",
-      "target": "api::candidate.candidate"
+      "target": "api::candidate.candidate",
+      "inversedBy": "enrollments"
     },
     "class": {
       "type": "relation",
       "relation": "manyToOne",
-      "target": "api::class.class"
+      "target": "api::class.class",
+      "inversedBy": "enrollments"
     },
     "enrollmentState": {
       "type": "enumeration",

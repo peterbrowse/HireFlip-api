@@ -65,7 +65,7 @@ const boolEnv = (name, fallback) => {
   return fallback;
 };
 
-const documents = (strapi, uid) => strapi.documents(uid);
+const { documents } = require('./lib/strapi-documents');
 
 const createDocument = (strapi, uid, data, populate = []) =>
   documents(strapi, uid).create({ data, populate });
@@ -232,7 +232,6 @@ const countClassRecords = async (strapi, uid, classRecord, extraFilters = {}) =>
         },
       },
       fields: ['documentId'],
-      limit: 1000,
     })
   ).length;
 
@@ -340,7 +339,6 @@ const cleanupSmokeData = async (strapi, created, runId) => {
           requestId: `waiting-list-smoke-${runId}`,
         },
         fields: ['documentId'],
-        limit: 1000,
       }),
       documents(strapi, 'api::notification-event.notification-event').findMany({
         filters: {
@@ -349,7 +347,6 @@ const cleanupSmokeData = async (strapi, created, runId) => {
           },
         },
         fields: ['documentId'],
-        limit: 1000,
       }),
       documents(strapi, 'api::waiting-list-offer.waiting-list-offer').findMany({
         filters: {
@@ -358,7 +355,6 @@ const cleanupSmokeData = async (strapi, created, runId) => {
           },
         },
         fields: ['documentId'],
-        limit: 1000,
       }),
       documents(strapi, 'api::payment.payment').findMany({
         filters: {
@@ -369,7 +365,6 @@ const cleanupSmokeData = async (strapi, created, runId) => {
           },
         },
         fields: ['documentId'],
-        limit: 1000,
       }),
       documents(strapi, 'api::reservation.reservation').findMany({
         filters: {
@@ -378,7 +373,6 @@ const cleanupSmokeData = async (strapi, created, runId) => {
           },
         },
         fields: ['documentId'],
-        limit: 1000,
       }),
       documents(strapi, 'api::enrollment.enrollment').findMany({
         filters: {
@@ -387,7 +381,6 @@ const cleanupSmokeData = async (strapi, created, runId) => {
           },
         },
         fields: ['documentId'],
-        limit: 1000,
       }),
     ]);
 

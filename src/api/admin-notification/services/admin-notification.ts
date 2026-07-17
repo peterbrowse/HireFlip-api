@@ -41,6 +41,9 @@ type DocumentRecord = Record<string, unknown> & {
   failedAt?: string;
   id?: number | string;
   interview?: DocumentRecord;
+  issueClearedAt?: string;
+  issueClearedByEmail?: string;
+  issueClearReason?: string;
   metadata?: unknown;
   notificationPreferences?: unknown;
   payment?: DocumentRecord;
@@ -61,6 +64,7 @@ type DocumentRecord = Record<string, unknown> & {
 };
 
 type DocumentCollection = {
+  count(input: Record<string, unknown>): Promise<number>;
   create(input: Record<string, unknown>): Promise<DocumentRecord>;
   findMany(input: Record<string, unknown>): Promise<DocumentRecord[]>;
   update(input: Record<string, unknown>): Promise<DocumentRecord>;
@@ -195,6 +199,10 @@ const humanize = (value?: string | null) =>
     .replace(/\b\w/g, (character) => character.toUpperCase());
 
 const issueClearedAt = (event: DocumentRecord) => {
+  if (typeof event.issueClearedAt === 'string' && event.issueClearedAt.trim()) {
+    return event.issueClearedAt.trim();
+  }
+
   const metadata = objectValue(event.metadata);
   const value = metadata.issueClearedAt || metadata.recipientEmailIssueClearedAt;
 
@@ -373,7 +381,9 @@ const publicIssue = (event: DocumentRecord) => {
     canResend: resend.canResend,
     channel: event.channel || null,
     clearedAt: issueClearedAt(event),
-    clearedByEmail: stringValue(metadata.issueClearedByEmail || metadata.recipientEmailIssueClearedByEmail),
+    clearedByEmail:
+      stringValue(event.issueClearedByEmail) ||
+      stringValue(metadata.issueClearedByEmail || metadata.recipientEmailIssueClearedByEmail),
     createdAt: event.createdAt || null,
     deliveredAt: event.deliveredAt || null,
     deliveryState: event.deliveryState || null,
@@ -407,51 +417,46 @@ const publicIssue = (event: DocumentRecord) => {
   };
 };
 
-const searchableText = (event: DocumentRecord) =>
-  [
-    event.eventType,
-    event.templateKey,
-    event.deliveryState,
-    event.channel,
-    event.recipientEmail,
-    event.recipientPhone,
-    event.recipientId,
-    event.recipientType,
-    event.relatedId,
-    event.relatedType,
-    event.provider,
-    event.providerMessageId,
-    event.errorMessage,
-  ]
-    .filter(Boolean)
-    .join(' ')
-    .toLowerCase();
-
-const issueMatchesFilters = (event: DocumentRecord, body: ListIssuesInput) => {
-  if (body.channel !== 'all' && event.channel !== body.channel) {
-    return false;
-  }
+const issueListFilters = (body: ListIssuesInput) => {
+  const filters: Record<string, unknown> = {};
 
   if (body.state === 'active') {
-    if (
-      !activeIssueStates.includes(event.deliveryState as (typeof activeIssueStates)[number]) ||
-      hasIssueBeenCleared(event)
-    ) {
-      return false;
-    }
+    filters.deliveryState = { $in: activeIssueStates };
+    filters.issueClearedAt = { $null: true };
   } else if (body.state === 'cleared') {
-    if (!hasIssueBeenCleared(event)) {
-      return false;
-    }
-  } else if (body.state !== 'all' && event.deliveryState !== body.state) {
-    return false;
+    filters.deliveryState = { $in: activeIssueStates };
+    filters.issueClearedAt = { $notNull: true };
+  } else if (
+    body.state !== 'all' &&
+    notificationDeliveryStates.includes(body.state as (typeof notificationDeliveryStates)[number])
+  ) {
+    filters.deliveryState = body.state;
   }
 
-  if (body.search && !searchableText(event).includes(body.search.toLowerCase())) {
-    return false;
+  if (body.channel !== 'all') {
+    filters.channel = body.channel;
   }
 
-  return true;
+  if (body.search) {
+    const search = body.search;
+
+    filters.$or = [
+      { documentId: { $containsi: search } },
+      { errorMessage: { $containsi: search } },
+      { eventType: { $containsi: search } },
+      { provider: { $containsi: search } },
+      { providerMessageId: { $containsi: search } },
+      { recipientEmail: { $containsi: search } },
+      { recipientId: { $containsi: search } },
+      { recipientPhone: { $containsi: search } },
+      { recipientType: { $containsi: search } },
+      { relatedId: { $containsi: search } },
+      { relatedType: { $containsi: search } },
+      { templateKey: { $containsi: search } },
+    ];
+  }
+
+  return filters;
 };
 
 const fetchIssue = async (strapi: StrapiService, notificationEventDocumentId: string) => {
@@ -740,6 +745,9 @@ const markIssueCleared = async ({
   return documents(strapi, 'api::notification-event.notification-event').update({
     documentId: getDocumentId(event),
     data: {
+      issueClearedAt: now,
+      issueClearedByEmail: session.user.email,
+      issueClearReason: reason,
       metadata: {
         ...metadata,
         issueClearedAt: now,
@@ -771,43 +779,46 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
   async listIssues(input: unknown, requestContext: RequestContext = {}) {
     const body = validateListIssues(input);
     const session = await assertSuperAdminSession(strapi, body.sessionToken, requestContext);
-    const baseFilters: Record<string, unknown> = {};
-
-    if (body.state === 'active' || body.state === 'cleared') {
-      baseFilters.deliveryState = { $in: activeIssueStates };
-    } else if (
-      body.state !== 'all' &&
-      notificationDeliveryStates.includes(body.state as (typeof notificationDeliveryStates)[number])
-    ) {
-      baseFilters.deliveryState = body.state;
-    }
-
-    if (body.channel !== 'all') {
-      baseFilters.channel = body.channel;
-    }
-
-    const events = await documents(strapi, 'api::notification-event.notification-event').findMany({
-      filters: baseFilters,
-      limit: 1000,
+    const issueDocuments = documents(strapi, 'api::notification-event.notification-event');
+    const filters = issueListFilters(body);
+    const [filteredTotal, activeCount, clearedCount, totalCount] = await Promise.all([
+      issueDocuments.count({ filters }),
+      issueDocuments.count({
+        filters: {
+          ...(body.channel !== 'all' ? { channel: body.channel } : {}),
+          deliveryState: { $in: activeIssueStates },
+          issueClearedAt: { $null: true },
+        },
+      }),
+      issueDocuments.count({
+        filters: {
+          ...(body.channel !== 'all' ? { channel: body.channel } : {}),
+          deliveryState: { $in: activeIssueStates },
+          issueClearedAt: { $notNull: true },
+        },
+      }),
+      issueDocuments.count({
+        filters: {
+          ...(body.channel !== 'all' ? { channel: body.channel } : {}),
+        },
+      }),
+    ]);
+    const pageCount = Math.max(1, Math.ceil(filteredTotal / body.pageSize));
+    const page = Math.min(body.page, pageCount);
+    const events = await issueDocuments.findMany({
+      filters,
+      limit: body.pageSize,
       populate: ['candidate', 'employer', 'interview', 'payment', 'refund'],
       sort: ['failedAt:desc', 'updatedAt:desc', 'createdAt:desc'],
+      start: (page - 1) * body.pageSize,
     });
-    const filteredEvents = events.filter((event) => issueMatchesFilters(event, body));
-    const pageCount = Math.max(1, Math.ceil(filteredEvents.length / body.pageSize));
-    const page = Math.min(body.page, pageCount);
-    const start = (page - 1) * body.pageSize;
-    const pagedEvents = filteredEvents.slice(start, start + body.pageSize);
 
     return {
       counts: {
-        active: events.filter(
-          (event) =>
-            activeIssueStates.includes(event.deliveryState as (typeof activeIssueStates)[number]) &&
-            !hasIssueBeenCleared(event)
-        ).length,
-        cleared: events.filter(hasIssueBeenCleared).length,
-        filtered: filteredEvents.length,
-        total: events.length,
+        active: activeCount,
+        cleared: clearedCount,
+        filtered: filteredTotal,
+        total: totalCount,
       },
       filters: {
         channel: body.channel,
@@ -817,12 +828,12 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
         state: body.state,
       },
       generatedAt: new Date().toISOString(),
-      issues: pagedEvents.map(publicIssue),
+      issues: events.map(publicIssue),
       pagination: {
         page,
         pageCount,
         pageSize: body.pageSize,
-        total: filteredEvents.length,
+        total: filteredTotal,
       },
       user: session.user,
     };

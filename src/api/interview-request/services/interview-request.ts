@@ -104,6 +104,7 @@ type DocumentRecord = Record<string, unknown> & {
 };
 
 type DocumentCollection = {
+  count(input: Record<string, unknown>): Promise<number>;
   create(input: Record<string, unknown>): Promise<DocumentRecord>;
   findMany(input: Record<string, unknown>): Promise<DocumentRecord[]>;
   update(input: Record<string, unknown>): Promise<DocumentRecord>;
@@ -214,6 +215,29 @@ const reusableSlotAssignmentSource = 'reusable_slot_pool';
 
 const documents = (strapi: StrapiDocumentService, uid: string) =>
   strapi.documents(uid) as unknown as DocumentCollection;
+
+const findAllDocuments = async (
+  strapi: StrapiDocumentService,
+  uid: string,
+  input: Record<string, unknown>,
+  pageSize = 100
+) => {
+  const collection = documents(strapi, uid);
+  const total = await collection.count({ filters: input.filters || {} });
+  const records: DocumentRecord[] = [];
+
+  for (let start = 0; start < total; start += pageSize) {
+    records.push(
+      ...(await collection.findMany({
+        ...input,
+        limit: pageSize,
+        start,
+      }))
+    );
+  }
+
+  return records;
+};
 
 const auditEvents = (strapi: StrapiDocumentService) =>
   strapi.service('api::audit-event.audit-event') as unknown as AuditEventService;
@@ -733,7 +757,7 @@ const findActiveClaimsForRequest = async (
   strapi: StrapiDocumentService,
   requestDocumentId: string
 ) =>
-  documents(strapi, 'api::employer-capacity-claim.employer-capacity-claim').findMany({
+  findAllDocuments(strapi, 'api::employer-capacity-claim.employer-capacity-claim', {
     filters: {
       interviewRequest: {
         documentId: requestDocumentId,
@@ -742,7 +766,6 @@ const findActiveClaimsForRequest = async (
         $in: consumingClaimStates,
       },
     },
-    limit: 100,
     populate: ['employer', 'employerContact', 'region'],
     sort: ['createdAt:asc'],
   });
@@ -751,13 +774,12 @@ const findAllClaimsForRequest = async (
   strapi: StrapiDocumentService,
   requestDocumentId: string
 ) =>
-  documents(strapi, 'api::employer-capacity-claim.employer-capacity-claim').findMany({
+  findAllDocuments(strapi, 'api::employer-capacity-claim.employer-capacity-claim', {
     filters: {
       interviewRequest: {
         documentId: requestDocumentId,
       },
     },
-    limit: 100,
     populate: ['employer', 'employerContact', 'region'],
     sort: ['createdAt:asc'],
   });
@@ -766,7 +788,7 @@ const activeTopUpClaimsForRequest = async (
   strapi: StrapiDocumentService,
   requestDocumentId: string
 ) => {
-  const claims = await documents(strapi, 'api::employer-capacity-claim.employer-capacity-claim').findMany({
+  const claims = await findAllDocuments(strapi, 'api::employer-capacity-claim.employer-capacity-claim', {
     filters: {
       claimState: {
         $in: ['held', 'notified', 'accepted'],
@@ -775,7 +797,6 @@ const activeTopUpClaimsForRequest = async (
         documentId: requestDocumentId,
       },
     },
-    limit: 25,
     populate: ['employer', 'employerContact', 'region'],
     sort: ['createdAt:asc'],
   });
@@ -996,7 +1017,7 @@ const selectedEmployerIdsForRequest = async (
     return new Set<string>();
   }
 
-  const interviews = await documents(strapi, 'api::interview.interview').findMany({
+  const interviews = await findAllDocuments(strapi, 'api::interview.interview', {
     filters: {
       candidate: {
         documentId: candidateDocumentId,
@@ -1012,7 +1033,6 @@ const selectedEmployerIdsForRequest = async (
         $in: ['awaiting_employer_details', 'candidate_selected', 'confirmed', 'completed'],
       },
     },
-    limit: 100,
     populate: ['employer'],
   });
 
@@ -1044,7 +1064,6 @@ const findReusableSlots = async ({
   excludedCandidateId,
   excludedEmployerIds = new Set<string>(),
   excludedRequestId,
-  limit = 100,
   regionDocumentId,
   strapi,
   workSectorDocumentId,
@@ -1052,14 +1071,12 @@ const findReusableSlots = async ({
   excludedCandidateId?: string;
   excludedEmployerIds?: Set<string>;
   excludedRequestId?: string;
-  limit?: number;
   regionDocumentId: string;
   strapi: StrapiDocumentService;
   workSectorDocumentId?: string;
 }) => {
-  const slots = await documents(strapi, 'api::interview-slot.interview-slot').findMany({
+  const slots = await findAllDocuments(strapi, 'api::interview-slot.interview-slot', {
     filters: reusableSlotFilters(regionDocumentId, workSectorDocumentId),
-    limit,
     populate: {
       employer: true,
       employerContact: true,
@@ -1631,7 +1648,7 @@ const consumedClaimsForEmployer = async ({
   regionDocumentId: string;
   strapi: StrapiDocumentService;
 }) => {
-  const claims = await documents(strapi, 'api::employer-capacity-claim.employer-capacity-claim').findMany({
+  const claims = await findAllDocuments(strapi, 'api::employer-capacity-claim.employer-capacity-claim', {
     filters: {
       claimState: {
         $in: consumingClaimStates,
@@ -1650,7 +1667,6 @@ const consumedClaimsForEmployer = async ({
           }
         : {}),
     },
-    limit: 1000,
   });
 
   return claims.reduce((total, claim) => total + integerValue(claim.claimCount, 1), 0);
@@ -1665,11 +1681,10 @@ const reservedOpeningCapacityForEmployer = async ({
   employerDocumentId: string;
   strapi: StrapiDocumentService;
 }) => {
-  const classes = await documents(strapi, 'api::class.class').findMany({
+  const classes = await findAllDocuments(strapi, 'api::class.class', {
     filters: {
       openingCapacityReservationState: 'reserved',
     },
-    limit: 500,
   });
 
   return classes.reduce((total, classRecord) => {
@@ -1698,12 +1713,11 @@ const eligibleEmployerCapacity = async (
   now = new Date(),
   classDocumentId?: string
 ) => {
-  const employers = await documents(strapi, 'api::employer.employer').findMany({
+  const employers = await findAllDocuments(strapi, 'api::employer.employer', {
     filters: {
       dashboardOnboardingState: 'complete',
       employerState: 'active',
     },
-    limit: 1000,
     populate: {
       contacts: {
         populate: ['coverageRegions'],
@@ -2464,7 +2478,6 @@ export default factories.createCoreService('api::interview-request.interview-req
               excludedCandidateId: getDocumentId(request.candidate) || undefined,
               excludedEmployerIds,
               excludedRequestId: requestDocumentId || undefined,
-              limit: 25,
               regionDocumentId,
               strapi,
               workSectorDocumentId,

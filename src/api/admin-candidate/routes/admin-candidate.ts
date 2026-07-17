@@ -27,6 +27,15 @@ export default {
     },
     {
       method: 'POST',
+      path: '/internal/admin/candidates/activity',
+      handler: 'admin-candidate.candidateActivity',
+      config: {
+        auth: false,
+        policies: [adminDashboardServicePolicy],
+      },
+    },
+    {
+      method: 'POST',
       path: '/internal/admin/candidates/profile/update',
       handler: 'admin-candidate.updateProfile',
       config: {

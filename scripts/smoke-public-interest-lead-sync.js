@@ -70,7 +70,6 @@ const main = async () => {
       .service('api::public-interest-lead.public-interest-lead')
       .syncPendingLeads({
         documentId: lead.documentId,
-        limit: 1,
       });
 
     assert.equal(result.configured, true);

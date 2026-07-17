@@ -9,6 +9,7 @@ type DocumentRecord = Record<string, unknown> & {
 };
 
 type DocumentCollection = {
+  count(input: Record<string, unknown>): Promise<number>;
   findMany(input: Record<string, unknown>): Promise<DocumentRecord[]>;
 };
 
@@ -34,6 +35,29 @@ const lifecycleRealtimeEnabled = () => {
 const documents = (strapi: StrapiDocumentService, uid: string) =>
   strapi.documents(uid) as unknown as DocumentCollection;
 
+const findAllDocuments = async (
+  strapi: StrapiDocumentService,
+  uid: string,
+  input: Record<string, unknown>,
+  pageSize = 100
+) => {
+  const collection = documents(strapi, uid);
+  const total = await collection.count({ filters: input.filters || {} });
+  const records: DocumentRecord[] = [];
+
+  for (let start = 0; start < total; start += pageSize) {
+    records.push(
+      ...(await collection.findMany({
+        ...input,
+        limit: pageSize,
+        start,
+      }))
+    );
+  }
+
+  return records;
+};
+
 const publishClassUpdate = async (strapi: StrapiDocumentService, classRecord?: DocumentRecord) => {
   const classDocumentId = classRecord?.documentId;
 
@@ -49,13 +73,12 @@ const publishClassUpdate = async (strapi: StrapiDocumentService, classRecord?: D
     strapi.log
   );
 
-  const enrollments = await documents(strapi, 'api::enrollment.enrollment').findMany({
+  const enrollments = await findAllDocuments(strapi, 'api::enrollment.enrollment', {
     filters: {
       class: {
         documentId: classDocumentId,
       },
     },
-    limit: 1000,
     populate: ['candidate'],
   });
 

@@ -253,6 +253,24 @@
     },
     "faqs": {
       "type": "json"
+    },
+    "enrollments": {
+      "type": "relation",
+      "relation": "oneToMany",
+      "target": "api::enrollment.enrollment",
+      "mappedBy": "class"
+    },
+    "reservations": {
+      "type": "relation",
+      "relation": "oneToMany",
+      "target": "api::reservation.reservation",
+      "mappedBy": "class"
+    },
+    "interviewRequests": {
+      "type": "relation",
+      "relation": "oneToMany",
+      "target": "api::interview-request.interview-request",
+      "mappedBy": "class"
     }
   }
 }

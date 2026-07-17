@@ -51,7 +51,7 @@ const loadEnvFile = () => {
   }
 };
 
-const documents = (strapi, uid) => strapi.documents(uid);
+const { documents } = require('./lib/strapi-documents');
 
 const assert = (condition, message) => {
   if (!condition) {
@@ -81,7 +81,6 @@ const deleteNotificationEventsForEmail = async (strapi, email) => {
       filters: {
         recipientEmail: email,
       },
-      limit: 50,
     })
     .catch(() => []);
 
@@ -100,7 +99,6 @@ const deleteAuditEventsForSubject = async (strapi, subjectId) => {
       filters: {
         subjectId,
       },
-      limit: 50,
     })
     .catch(() => []);
 
@@ -121,7 +119,6 @@ const deleteSupportMessagesForCase = async (strapi, supportCaseDocumentId) => {
           documentId: supportCaseDocumentId,
         },
       },
-      limit: 50,
     })
     .catch(() => []);
 
@@ -145,7 +142,6 @@ const deleteEmployerRegionCommitments = async (strapi, employerDocumentId) => {
           documentId: employerDocumentId,
         },
       },
-      limit: 100,
     })
     .catch(() => []);
 
@@ -173,7 +169,6 @@ const deleteCapacityChangeRequestsForEmployer = async (strapi, employerDocumentI
           documentId: employerDocumentId,
         },
       },
-      limit: 100,
     })
     .catch(() => []);
 
@@ -1029,7 +1024,6 @@ const main = async () => {
 	        },
 	        requestState: 'pending',
 	      },
-	      limit: 5,
 	    });
 
 	    assert(
@@ -1436,7 +1430,6 @@ const main = async () => {
           $in: ['held', 'notified', 'accepted'],
         },
       },
-      limit: 10,
       populate: ['interviewRequest', 'employer', 'employerContact'],
       sort: ['createdAt:desc'],
     });

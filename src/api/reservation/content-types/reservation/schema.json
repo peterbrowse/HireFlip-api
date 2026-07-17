@@ -19,7 +19,8 @@
     "class": {
       "type": "relation",
       "relation": "manyToOne",
-      "target": "api::class.class"
+      "target": "api::class.class",
+      "inversedBy": "reservations"
     },
     "enrollment": {
       "type": "relation",

@@ -14,7 +14,8 @@
     "employer": {
       "type": "relation",
       "relation": "manyToOne",
-      "target": "api::employer.employer"
+      "target": "api::employer.employer",
+      "inversedBy": "invites"
     },
     "employerContact": {
       "type": "relation",

@@ -114,7 +114,7 @@ const objectValue = (value) => {
   return {};
 };
 
-const documents = (strapi, uid) => strapi.documents(uid);
+const { documents } = require('./lib/strapi-documents');
 
 const createDocument = (strapi, uid, data, populate = []) =>
   documents(strapi, uid).create({ data, populate });
@@ -301,7 +301,6 @@ const findClassReservations = async (strapi, classDocumentId, reservationState) 
       },
       ...(reservationState ? { reservationState } : {}),
     },
-    limit: 1000,
     populate: ['candidate', 'class', 'enrollment'],
     sort: ['reservationStartedAt:asc', 'createdAt:asc'],
   });
@@ -313,7 +312,6 @@ const findClassEnrollments = async (strapi, classDocumentId) =>
         documentId: classDocumentId,
       },
     },
-    limit: 1000,
     populate: ['candidate', 'class'],
     sort: ['waitingListPosition:asc', 'createdAt:asc'],
   });
@@ -327,7 +325,6 @@ const findClassPayments = async (strapi, classDocumentId) =>
         },
       },
     },
-    limit: 1000,
     populate: ['candidate', 'enrollment', 'reservation'],
     sort: ['createdAt:asc'],
   });
@@ -340,7 +337,6 @@ const findClassOffers = async (strapi, classDocumentId, offerState) =>
       },
       ...(offerState ? { offerState } : {}),
     },
-    limit: 1000,
     populate: ['candidate', 'class', 'enrollment', 'reservation'],
     sort: ['offeredAt:asc', 'createdAt:asc'],
   });
@@ -852,7 +848,6 @@ const cleanupLoadData = async (strapi, created, { providerEventIds, requestIdPre
               },
             },
             fields: ['documentId'],
-            limit: 1000,
           })
         : [],
     ]);
