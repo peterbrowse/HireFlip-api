@@ -559,9 +559,26 @@ export interface ApiAdminTaskAdminTask extends Struct.CollectionTypeSchema {
         maxLength: 500;
         minLength: 1;
       }>;
+    candidateLabel: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 240;
+      }>;
+    classLabel: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 240;
+      }>;
     createdAt: Schema.Attribute.DateTime;
     createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
+    dueAt: Schema.Attribute.DateTime;
+    employerLabel: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 240;
+      }>;
+    issueKey: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 120;
+      }>;
     lastDetectedAt: Schema.Attribute.DateTime;
     locale: Schema.Attribute.String & Schema.Attribute.Private;
     localizations: Schema.Attribute.Relation<
@@ -570,12 +587,26 @@ export interface ApiAdminTaskAdminTask extends Struct.CollectionTypeSchema {
     > &
       Schema.Attribute.Private;
     metadata: Schema.Attribute.JSON;
+    ownerKeyText: Schema.Attribute.Text;
     priority: Schema.Attribute.Enumeration<
       ['low', 'normal', 'high', 'urgent']
     > &
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'normal'>;
+    priorityRank: Schema.Attribute.Integer &
+      Schema.Attribute.Required &
+      Schema.Attribute.SetMinMax<
+        {
+          min: 0;
+        },
+        number
+      > &
+      Schema.Attribute.DefaultTo<2>;
     publishedAt: Schema.Attribute.DateTime;
+    regionLabel: Schema.Attribute.String &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 160;
+      }>;
     relatedDocumentId: Schema.Attribute.String &
       Schema.Attribute.SetMinMaxLength<{
         maxLength: 160;
@@ -585,6 +616,7 @@ export interface ApiAdminTaskAdminTask extends Struct.CollectionTypeSchema {
         maxLength: 120;
       }>;
     resolvedAt: Schema.Attribute.DateTime;
+    searchText: Schema.Attribute.Text;
     sourceDocumentId: Schema.Attribute.String &
       Schema.Attribute.SetMinMaxLength<{
         maxLength: 160;
@@ -599,6 +631,7 @@ export interface ApiAdminTaskAdminTask extends Struct.CollectionTypeSchema {
         'support_case',
         'interview_feedback',
         'interview',
+        'interview_request',
         'progression_request',
         'privacy_rights_request',
         'notification_event',
@@ -1065,6 +1098,10 @@ export interface ApiCandidateCandidate extends Struct.CollectionTypeSchema {
       Schema.Attribute.SetMinMaxLength<{
         maxLength: 254;
       }>;
+    enrollments: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::enrollment.enrollment'
+    >;
     firstName: Schema.Attribute.String &
       Schema.Attribute.SetMinMaxLength<{
         maxLength: 120;
@@ -1076,6 +1113,22 @@ export interface ApiCandidateCandidate extends Struct.CollectionTypeSchema {
       Schema.Attribute.SetMinMaxLength<{
         maxLength: 120;
       }>;
+    interviewRequests: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::interview-request.interview-request'
+    >;
+    interviews: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::interview.interview'
+    >;
+    interviewSlotOffers: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::interview-slot-offer.interview-slot-offer'
+    >;
+    interviewStrikes: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::candidate-interview-strike.candidate-interview-strike'
+    >;
     lastName: Schema.Attribute.String &
       Schema.Attribute.SetMinMaxLength<{
         maxLength: 120;
@@ -1107,6 +1160,10 @@ export interface ApiCandidateCandidate extends Struct.CollectionTypeSchema {
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<'not_set'>;
     profileImage: Schema.Attribute.Media<'images'>;
+    profiles: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::candidate-profile.candidate-profile'
+    >;
     profileSettings: Schema.Attribute.JSON;
     publishedAt: Schema.Attribute.DateTime;
     recruitmentPlatformVisibility: Schema.Attribute.Enumeration<
@@ -1123,6 +1180,10 @@ export interface ApiCandidateCandidate extends Struct.CollectionTypeSchema {
       Schema.Attribute.SetMinMaxLength<{
         maxLength: 120;
       }>;
+    supportCases: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::support-case.support-case'
+    >;
     updatedAt: Schema.Attribute.DateTime;
     updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
@@ -1314,6 +1375,10 @@ export interface ApiClassClass extends Struct.CollectionTypeSchema {
       Schema.Attribute.SetMinMaxLength<{
         maxLength: 160;
       }>;
+    enrollments: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::enrollment.enrollment'
+    >;
     faqs: Schema.Attribute.JSON;
     includedItems: Schema.Attribute.JSON;
     interestThresholdPercentage: Schema.Attribute.Integer &
@@ -1335,6 +1400,10 @@ export interface ApiClassClass extends Struct.CollectionTypeSchema {
       > &
       Schema.Attribute.DefaultTo<30>;
     interviewGuaranteeDeadline: Schema.Attribute.DateTime;
+    interviewRequests: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::interview-request.interview-request'
+    >;
     interviewsGuaranteed: Schema.Attribute.Integer &
       Schema.Attribute.Required &
       Schema.Attribute.SetMinMax<
@@ -1421,6 +1490,10 @@ export interface ApiClassClass extends Struct.CollectionTypeSchema {
       Schema.Attribute.Required &
       Schema.Attribute.DefaultTo<false>;
     requirements: Schema.Attribute.Text;
+    reservations: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::reservation.reservation'
+    >;
     scheduledEnrollmentOpenAt: Schema.Attribute.DateTime;
     scheduleNotes: Schema.Attribute.Text;
     sector: Schema.Attribute.String &
@@ -2958,6 +3031,18 @@ export interface ApiEmployerEmployer extends Struct.CollectionTypeSchema {
         maxLength: 180;
       }>;
     interviewCoverageOverrideReason: Schema.Attribute.Text;
+    interviews: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::interview.interview'
+    >;
+    interviewSlotOffers: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::interview-slot-offer.interview-slot-offer'
+    >;
+    invites: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::employer-invite.employer-invite'
+    >;
     locale: Schema.Attribute.String & Schema.Attribute.Private;
     localizations: Schema.Attribute.Relation<
       'oneToMany',
@@ -2996,6 +3081,10 @@ export interface ApiEmployerEmployer extends Struct.CollectionTypeSchema {
         maxLength: 160;
       }>;
     sectorInterests: Schema.Attribute.JSON;
+    supportCases: Schema.Attribute.Relation<
+      'oneToMany',
+      'api::support-case.support-case'
+    >;
     updatedAt: Schema.Attribute.DateTime;
     updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
@@ -3818,6 +3907,12 @@ export interface ApiNotificationEventNotificationEvent
       'manyToOne',
       'api::interview.interview'
     >;
+    issueClearedAt: Schema.Attribute.DateTime;
+    issueClearedByEmail: Schema.Attribute.Email &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 254;
+      }>;
+    issueClearReason: Schema.Attribute.Text;
     locale: Schema.Attribute.String & Schema.Attribute.Private;
     localizations: Schema.Attribute.Relation<
       'oneToMany',
