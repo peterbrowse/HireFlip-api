@@ -9,6 +9,15 @@ export default {
   routes: [
     {
       method: 'POST',
+      path: '/internal/admin/audit-events/export',
+      handler: 'admin-audit.exportPdf',
+      config: {
+        auth: false,
+        policies: [adminDashboardServicePolicy],
+      },
+    },
+    {
+      method: 'POST',
       path: '/internal/admin/audit-events/search',
       handler: 'admin-audit.search',
       config: {

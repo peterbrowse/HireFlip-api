@@ -6,6 +6,7 @@ type RequestContext = {
 };
 
 type AdminAuditService = {
+  exportPdf(input: unknown, context: RequestContext): Promise<unknown>;
   search(input: unknown, context: RequestContext): Promise<unknown>;
 };
 
@@ -26,6 +27,15 @@ const getRequestContext = (ctx): RequestContext => ({
 });
 
 export default ({ strapi }) => ({
+  async exportPdf(ctx) {
+    ctx.body = {
+      data: await adminAuditService(strapi).exportPdf(
+        ctx.request.body,
+        getRequestContext(ctx)
+      ),
+    };
+  },
+
   async search(ctx) {
     ctx.body = {
       data: await adminAuditService(strapi).search(

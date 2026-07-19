@@ -1,5 +1,11 @@
 import { errors, validateZodSchema, z } from '@strapi/utils';
 
+import {
+  auditReportFileName,
+  renderAuditReportPdf,
+  type AuditReportEvent,
+} from './audit-report';
+
 const { ForbiddenError } = errors;
 
 type RequestContext = {
@@ -54,6 +60,10 @@ type DocumentCollection = {
   findMany(input: Record<string, unknown>): Promise<DocumentRecord[]>;
 };
 
+type AuditEventService = {
+  record(input: Record<string, unknown>): Promise<unknown>;
+};
+
 type StrapiDocumentService = {
   documents(uid: string): unknown;
   service(uid: string): unknown;
@@ -91,31 +101,47 @@ const sources = [
   'system',
 ] as const;
 
-const auditSearchSchema = z
-  .object({
+const auditFilterShape = {
     actor: z.string().trim().max(180).optional().transform((value) => value || undefined),
     category: z.enum(eventCategories).optional(),
     dateFrom: z.string().datetime().optional(),
     dateTo: z.string().datetime().optional(),
     eventType: z.string().trim().max(180).optional().transform((value) => value || undefined),
     ipAddress: z.string().trim().max(120).optional().transform((value) => value || undefined),
-    page: z.coerce.number().int().min(1).default(1),
-    pageSize: z.coerce.number().int().min(10).max(100).default(25),
     requestId: z.string().trim().max(160).optional().transform((value) => value || undefined),
     search: z.string().trim().max(180).optional().transform((value) => value || undefined),
-    sessionToken: z.string().trim().min(32).max(512),
     source: z.enum(sources).optional(),
     subject: z.string().trim().max(180).optional().transform((value) => value || undefined),
+};
+
+const auditSearchSchema = z
+  .object({
+    ...auditFilterShape,
+    page: z.coerce.number().int().min(1).default(1),
+    pageSize: z.coerce.number().int().min(10).max(100).default(25),
+    sessionToken: z.string().trim().min(32).max(512),
+  })
+  .strict();
+
+const auditExportSchema = z
+  .object({
+    ...auditFilterShape,
+    pageSize: z.coerce.number().int().min(10).max(100).default(25),
+    sessionToken: z.string().trim().min(32).max(512),
   })
   .strict();
 
 const validateAuditSearch = validateZodSchema(auditSearchSchema);
+const validateAuditExport = validateZodSchema(auditExportSchema);
 
 const documents = (strapi: StrapiDocumentService, uid: string) =>
   strapi.documents(uid) as unknown as DocumentCollection;
 
 const adminAuthService = (strapi: StrapiDocumentService) =>
   strapi.service('api::admin-auth.admin-auth') as unknown as AdminAuthService;
+
+const auditEventService = (strapi: StrapiDocumentService) =>
+  strapi.service('api::audit-event.audit-event') as unknown as AuditEventService;
 
 const assertAuditSession = async (
   strapi: StrapiDocumentService,
@@ -147,7 +173,7 @@ const containsFilter = (value: string) => ({
   $containsi: value,
 });
 
-const publicAuditEvent = (event: DocumentRecord) => ({
+const publicAuditEvent = (event: DocumentRecord): AuditReportEvent => ({
   actorDisplayName: event.actorDisplayName || null,
   actorEmail: event.actorEmail || null,
   actorId: event.actorId || null,
@@ -176,82 +202,124 @@ const option = (value: string) => ({
   value,
 });
 
+type AuditFilterInput = z.infer<typeof auditExportSchema>;
+
+const buildAuditFilters = (body: AuditFilterInput) => {
+  const filters: Record<string, unknown> = {};
+  const andFilters: Record<string, unknown>[] = [];
+
+  if (body.actor) {
+    andFilters.push({
+      $or: [
+        { actorDisplayName: containsFilter(body.actor) },
+        { actorEmail: containsFilter(body.actor) },
+        { actorId: containsFilter(body.actor) },
+        { actorType: containsFilter(body.actor) },
+      ],
+    });
+  }
+
+  if (body.search) {
+    andFilters.push({
+      $or: [
+        { actorDisplayName: containsFilter(body.search) },
+        { actorEmail: containsFilter(body.search) },
+        { actorId: containsFilter(body.search) },
+        { actorType: containsFilter(body.search) },
+        { eventCategory: containsFilter(body.search) },
+        { eventType: containsFilter(body.search) },
+        { ipAddress: containsFilter(body.search) },
+        { requestId: containsFilter(body.search) },
+        { serviceName: containsFilter(body.search) },
+        { source: containsFilter(body.search) },
+        { subjectDisplayName: containsFilter(body.search) },
+        { subjectId: containsFilter(body.search) },
+        { subjectType: containsFilter(body.search) },
+      ],
+    });
+  }
+
+  if (body.subject) {
+    andFilters.push({
+      $or: [
+        { subjectDisplayName: containsFilter(body.subject) },
+        { subjectId: containsFilter(body.subject) },
+        { subjectType: containsFilter(body.subject) },
+      ],
+    });
+  }
+
+  if (body.eventType) filters.eventType = containsFilter(body.eventType);
+  if (body.category) filters.eventCategory = body.category;
+  if (body.source) filters.source = body.source;
+  if (body.ipAddress) filters.ipAddress = containsFilter(body.ipAddress);
+  if (body.requestId) filters.requestId = containsFilter(body.requestId);
+
+  if (body.dateFrom || body.dateTo) {
+    filters.occurredAt = {
+      ...(body.dateFrom ? { $gte: body.dateFrom } : {}),
+      ...(body.dateTo ? { $lte: body.dateTo } : {}),
+    };
+  }
+
+  return andFilters.length > 0 ? { ...filters, $and: andFilters } : filters;
+};
+
+const auditFilterKeys = [
+  'actor',
+  'category',
+  'dateFrom',
+  'dateTo',
+  'eventType',
+  'ipAddress',
+  'requestId',
+  'search',
+  'source',
+  'subject',
+] as const;
+
+const appliedAuditFilters = (body: AuditFilterInput) =>
+  Object.fromEntries(
+    auditFilterKeys
+      .filter((key) => Boolean(body[key]))
+      .map((key) => [key, String(body[key])])
+  );
+
+const findAuditEvents = async ({
+  auditEventDocuments,
+  filters,
+  limit,
+}: {
+  auditEventDocuments: DocumentCollection;
+  filters: Record<string, unknown>;
+  limit: number;
+}) => {
+  const records: DocumentRecord[] = [];
+  const batchSize = 100;
+
+  for (let start = 0; start < limit; start += batchSize) {
+    const batch = await auditEventDocuments.findMany({
+      filters,
+      limit: Math.min(batchSize, limit - start),
+      sort: ['occurredAt:desc', 'createdAt:desc'],
+      start,
+    });
+
+    records.push(...batch);
+
+    if (batch.length < Math.min(batchSize, limit - start)) {
+      break;
+    }
+  }
+
+  return records;
+};
+
 export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
   async search(input: unknown, requestContext: RequestContext = {}) {
     const body = validateAuditSearch(input);
     const session = await assertAuditSession(strapi, body.sessionToken, requestContext);
-    const filters: Record<string, unknown> = {};
-    const andFilters: Record<string, unknown>[] = [];
-
-    if (body.actor) {
-      andFilters.push({
-        $or: [
-          { actorDisplayName: containsFilter(body.actor) },
-          { actorEmail: containsFilter(body.actor) },
-          { actorId: containsFilter(body.actor) },
-          { actorType: containsFilter(body.actor) },
-        ],
-      });
-    }
-
-    if (body.search) {
-      andFilters.push({
-        $or: [
-          { actorDisplayName: containsFilter(body.search) },
-          { actorEmail: containsFilter(body.search) },
-          { actorId: containsFilter(body.search) },
-          { actorType: containsFilter(body.search) },
-          { eventCategory: containsFilter(body.search) },
-          { eventType: containsFilter(body.search) },
-          { ipAddress: containsFilter(body.search) },
-          { requestId: containsFilter(body.search) },
-          { serviceName: containsFilter(body.search) },
-          { source: containsFilter(body.search) },
-          { subjectDisplayName: containsFilter(body.search) },
-          { subjectId: containsFilter(body.search) },
-          { subjectType: containsFilter(body.search) },
-        ],
-      });
-    }
-
-    if (body.subject) {
-      andFilters.push({
-        $or: [
-          { subjectDisplayName: containsFilter(body.subject) },
-          { subjectId: containsFilter(body.subject) },
-          { subjectType: containsFilter(body.subject) },
-        ],
-      });
-    }
-
-    if (body.eventType) {
-      filters.eventType = containsFilter(body.eventType);
-    }
-
-    if (body.category) {
-      filters.eventCategory = body.category;
-    }
-
-    if (body.source) {
-      filters.source = body.source;
-    }
-
-    if (body.ipAddress) {
-      filters.ipAddress = containsFilter(body.ipAddress);
-    }
-
-    if (body.requestId) {
-      filters.requestId = containsFilter(body.requestId);
-    }
-
-    if (body.dateFrom || body.dateTo) {
-      filters.occurredAt = {
-        ...(body.dateFrom ? { $gte: body.dateFrom } : {}),
-        ...(body.dateTo ? { $lte: body.dateTo } : {}),
-      };
-    }
-
-    const auditFilters = andFilters.length > 0 ? { ...filters, $and: andFilters } : filters;
+    const auditFilters = buildAuditFilters(body);
     const auditEventDocuments = documents(strapi, 'api::audit-event.audit-event');
     const total = await auditEventDocuments.count({
       filters: auditFilters,
@@ -279,6 +347,78 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
         total,
       },
       totalReturned: total,
+      user: session.user,
+    };
+  },
+
+  async exportPdf(input: unknown, requestContext: RequestContext = {}) {
+    const body = validateAuditExport(input);
+    const session = await assertAuditSession(strapi, body.sessionToken, requestContext);
+    const filters = buildAuditFilters(body);
+    const appliedFilters = appliedAuditFilters(body);
+    const isFiltered = Object.keys(appliedFilters).length > 0;
+    const auditEventDocuments = documents(strapi, 'api::audit-event.audit-event');
+    const totalMatchingEvents = await auditEventDocuments.count({ filters });
+    const unfilteredLimit = isFiltered ? null : Math.min(body.pageSize * 4, 100);
+    const exportLimit = isFiltered
+      ? totalMatchingEvents
+      : Math.min(totalMatchingEvents, unfilteredLimit || 100);
+    const records = await findAuditEvents({
+      auditEventDocuments,
+      filters,
+      limit: exportLimit,
+    });
+    const events = records.map(publicAuditEvent);
+    const generatedAt = new Date().toISOString();
+    const pdf = await renderAuditReportPdf({
+      appliedFilters,
+      events,
+      exportedEventCount: events.length,
+      generatedAt,
+      isFiltered,
+      totalMatchingEvents,
+      unfilteredLimit,
+    });
+
+    await auditEventService(strapi).record({
+      actorDisplayName: session.user.displayName,
+      actorEmail: session.user.email,
+      actorId: session.user.id,
+      actorType: 'admin',
+      eventCategory: 'admin',
+      eventType: 'admin.audit_log_exported',
+      ipAddress: requestContext.ipAddress,
+      metadata: {
+        appliedFilters,
+        exportedEventCount: events.length,
+        exportFormat: 'pdf',
+        isFiltered,
+        totalMatchingEvents,
+        unfilteredLimit,
+      },
+      requestId: requestContext.requestId,
+      serviceName: requestContext.serviceName,
+      severity: 'info',
+      source: 'admin_dashboard',
+      subjectType: 'audit_log_export',
+      userAgent: requestContext.userAgent,
+    });
+
+    return {
+      file: {
+        base64: pdf.toString('base64'),
+        fileName: auditReportFileName(generatedAt),
+        mimeType: 'application/pdf',
+      },
+      report: {
+        appliedFilters,
+        exportedEventCount: events.length,
+        generatedAt,
+        isFiltered,
+        totalMatchingEvents,
+        truncated: events.length < totalMatchingEvents,
+        unfilteredLimit,
+      },
       user: session.user,
     };
   },
