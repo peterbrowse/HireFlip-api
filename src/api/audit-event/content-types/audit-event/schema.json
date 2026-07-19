@@ -17,6 +17,11 @@
       "maxLength": 160,
       "required": true
     },
+    "idempotencyKey": {
+      "type": "string",
+      "maxLength": 255,
+      "unique": true
+    },
     "eventCategory": {
       "type": "enumeration",
       "enum": [

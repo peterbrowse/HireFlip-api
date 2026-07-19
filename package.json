@@ -27,6 +27,7 @@
     "smoke:employer-dashboard": "npm run build && ENV_PATH=${ENV_PATH:-.env.local} node scripts/smoke-employer-dashboard.js",
     "smoke:payment-edge-cases": "ENV_PATH=${ENV_PATH:-.env.local} node scripts/smoke-payment-edge-cases.js",
     "smoke:payment-exception-refund": "npm run build && ENV_PATH=${ENV_PATH:-.env.local} node scripts/smoke-payment-exception-refund.js",
+    "smoke:guarantee-refund-reconciliation": "npm run build && ENV_PATH=${ENV_PATH:-.env.local} node scripts/smoke-guarantee-refund-reconciliation.js",
     "smoke:notification-provider-template": "node scripts/smoke-notification-provider-template.js",
     "smoke:assessment-appeals": "npm run build && ENV_PATH=${ENV_PATH:-.env.local} node scripts/smoke-assessment-appeals.js",
     "smoke:refund-provider-updates": "npm run build && ENV_PATH=${ENV_PATH:-.env.local} node scripts/smoke-refund-provider-updates.js",

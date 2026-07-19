@@ -2101,6 +2101,104 @@ const ensureRefundReviewFixture = async (strapi, content, employerContext, optio
   };
 };
 
+const ensureAutomaticGuaranteeRefundReviewFixture = async (strapi, content, options) => {
+  const nowDate = new Date();
+  const candidate = await ensureReviewCandidate(strapi, content, {
+    candidateState: 'interview_phase',
+    email: options.email,
+    firstName: 'E2E',
+    lastName: options.lastName,
+    phone: options.phone,
+  });
+  const enrollment = await createReviewEnrollment(strapi, candidate, content, {
+    completedAt: isoDaysFrom(nowDate, -35),
+    completionStatus: 'completed',
+    enrollmentState: 'interview_phase',
+    interviewGuaranteeDeadline: isoDaysFrom(nowDate, -1),
+    interviewGuaranteeWindowStartsAt: isoDaysFrom(nowDate, -35),
+    passStatus: 'passed',
+    passedAt: isoDaysFrom(nowDate, -35),
+    qualifyingInterviewsDeliveredCount: 0,
+    refundEligibilityState: 'not_assessed',
+  });
+  const reservation = await documents(strapi, 'api::reservation.reservation').create({
+    data: {
+      amountPence: options.originalAmountPence,
+      candidate: connect(candidate),
+      class: connect(content.classRecord),
+      currency: 'GBP',
+      enrollment: connect(enrollment),
+      expiresAt: isoDaysFrom(nowDate, -40),
+      paidAt: isoDaysFrom(nowDate, -41),
+      reservationStartedAt: isoDaysFrom(nowDate, -42),
+      reservationState: 'paid',
+      source: 'candidate_dashboard',
+      termsAcceptedAt: isoDaysFrom(nowDate, -41),
+      termsVersion: 'e2e-checkout-terms-v1',
+      metadata: {
+        scenario: options.scenario,
+        source: 'e2e_fixture',
+      },
+    },
+  });
+  const payment = await documents(strapi, 'api::payment.payment').create({
+    data: {
+      amountPence: options.originalAmountPence,
+      candidate: connect(candidate),
+      createdByService: 'e2e-fixture',
+      currency: 'GBP',
+      enrollment: connect(enrollment),
+      metadata: {
+        scenario: options.scenario,
+        source: 'e2e_fixture',
+      },
+      paidAt: isoDaysFrom(nowDate, -41),
+      paymentProvider: 'stripe',
+      paymentState: 'paid',
+      paymentType: 'course_payment',
+      providerCheckoutSessionId: `cs_test_${options.scenario}`,
+      providerPaymentIntentId: `pi_test_${options.scenario}`,
+      reservation: connect(reservation),
+    },
+  });
+  const reconciliation = await strapi
+    .service('api::admin-refund.admin-refund')
+    .reconcileExpiredGuaranteeRefunds(1000, {
+      requestId: `e2e-fixture:${options.scenario}`,
+      serviceName: 'e2e-fixture',
+    });
+  const idempotencyKey = `interview-guarantee:${enrollment.documentId}`;
+  const refund = await findFirst(
+    strapi,
+    'api::refund.refund',
+    { idempotencyKey },
+    ['candidate', 'enrollment', 'payment']
+  );
+
+  if (reconciliation.failed > 0 || !refund?.documentId) {
+    throw new Error(
+      `Automatic guarantee refund fixture reconciliation failed: ${JSON.stringify(reconciliation)}`
+    );
+  }
+
+  if (
+    refund.eligibilitySource !== 'interview_guarantee' ||
+    refund.refundState !== 'requested' ||
+    Number(refund.refundPercentage) !== 50 ||
+    refund.amountPence !== Math.round(options.originalAmountPence * 0.5) ||
+    refund.metadata?.automaticallyCreated !== true
+  ) {
+    throw new Error(`Automatic guarantee refund fixture was created incorrectly: ${refund.documentId}`);
+  }
+
+  return {
+    candidate,
+    enrollment,
+    payment,
+    refund,
+  };
+};
+
 const ensureInterviewCandidate = async (strapi, auth0User, content, employerContext, options = {}) => {
   const email = normalizeEmail(
     options.email ||
@@ -3928,6 +4026,20 @@ const main = async () => {
         'E2E browser refund escalation fixture: candidate missed the guaranteed interview threshold.',
       scenario: 'refund_escalate',
     });
+    const automaticGuaranteeRefundReview = await ensureAutomaticGuaranteeRefundReviewFixture(
+      strapi,
+      content,
+      {
+        email: optionalEnv(
+          'HIREFLIP_E2E_AUTOMATIC_REFUND_CANDIDATE_EMAIL',
+          'e2e-automatic-refund-candidate@hireflip.work'
+        ),
+        lastName: 'Automatic Refund Candidate',
+        originalAmountPence: 32000,
+        phone: '+447911123474',
+        scenario: 'automatic_guarantee_refund',
+      }
+    );
 
     strapi.log.info(
       `E2E fixtures ready: ${JSON.stringify({
@@ -4046,6 +4158,11 @@ const main = async () => {
           email: adminActionEmployer.contact.email,
         },
         refundReviews: {
+          automaticGuarantee: {
+            candidateEmail: automaticGuaranteeRefundReview.candidate.email,
+            documentId: automaticGuaranteeRefundReview.refund.documentId,
+            enrollmentDocumentId: automaticGuaranteeRefundReview.enrollment.documentId,
+          },
           escalate: {
             candidateEmail: escalatedRefundReview.candidate.email,
             documentId: escalatedRefundReview.refund.documentId,

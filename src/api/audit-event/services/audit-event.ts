@@ -3,6 +3,7 @@ import { validateZodSchema, z } from '@strapi/utils';
 
 const auditEventSchema = z.object({
   eventType: z.string().trim().min(1).max(160),
+  idempotencyKey: z.string().trim().min(1).max(255).optional(),
   eventCategory: z.enum([
     'admin',
     'assessment',

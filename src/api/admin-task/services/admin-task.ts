@@ -881,13 +881,18 @@ const refundTask = (refund: DocumentRecord): AdminTaskDraft | null => {
   const isFailed = refund.refundState === 'failed';
   const isApproved = refund.refundState === 'approved';
   const candidateName = candidateDisplayName(refund.candidate);
+  const enrollmentDocumentId = getDocumentId(refund.enrollment);
+  const paymentDocumentId = getDocumentId(refund.payment);
 
   return {
     actionLabel: 'Review refund',
     actionPath: refundTaskPath(taskKey),
     metadata: {
       amountPence: refund.amountPence,
+      candidateName: candidateName || null,
       currency: refund.currency || 'GBP',
+      enrollmentDocumentId: enrollmentDocumentId || null,
+      paymentDocumentId: paymentDocumentId || null,
       refundState: refund.refundState,
       sourceCreatedAt: refund.createdAt,
       sourceDetectedAt: sourceTimestamp(refund),

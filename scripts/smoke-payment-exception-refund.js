@@ -167,6 +167,7 @@ const main = async () => {
 
     if (uid === 'api::admin-review-claim.admin-review-claim') {
       return {
+        activeClaimsForSession: async () => new Map(),
         assertActiveClaimForSession: async (input, claimSession) => {
           claimAsserted = true;
           assert(input.claimToken === 'c'.repeat(32), 'Expected review claim token to be checked.');
@@ -352,6 +353,41 @@ const main = async () => {
     assert(
       listResult.reviews.some((review) => review.taskKey === `refund:${refund.documentId}:approved`),
       'Expected approved refund review to remain for Super Admin execution.'
+    );
+
+    const filteredListResult = await service.listReviews(
+      {
+        page: 1,
+        pageSize: 10,
+        priority: 'high',
+        reviewType: 'refund_request',
+        search: refund.documentId,
+        sessionToken: 's'.repeat(32),
+      },
+      {
+        requestId: `${requestId}:filtered-list`,
+      }
+    );
+
+    assert(
+      filteredListResult.reviews.some(
+        (review) => review.taskKey === `refund:${refund.documentId}:approved`
+      ),
+      'Expected DB-backed refund search to find the approved refund by document ID.'
+    );
+    assert(
+      filteredListResult.reviews.every(
+        (review) => review.reviewType === 'refund_request' && review.priority === 'high'
+      ),
+      'Expected refund type and priority filters to be applied before pagination.'
+    );
+    assert(
+      filteredListResult.filteredReviews === filteredListResult.pagination.total,
+      'Expected filtered refund count to match pagination total.'
+    );
+    assert(
+      filteredListResult.totalReviews === listResult.counts.total,
+      'Expected global active count to remain independent of list filters.'
     );
 
     console.log('Payment exception refund smoke passed.');

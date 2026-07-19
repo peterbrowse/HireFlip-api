@@ -1,5 +1,6 @@
 import type { Core } from '@strapi/strapi';
 import {
+  scheduleGuaranteeRefundReconciliationJob,
   scheduleInterviewWorkflowReconciliationJob,
   schedulePaymentReconciliationJob,
   startClassWorkflowWorker,
@@ -56,6 +57,10 @@ const paymentWebhookProviderEventUniqueMigrationKey =
   'payment-webhook-event-provider-event-id-unique-v1';
 const paymentWebhookProviderEventUniqueIndex =
   'payment_webhook_events_provider_event_id_uq';
+const refundIdempotencyUniqueMigrationKey = 'refund-idempotency-key-unique-v1';
+const refundIdempotencyUniqueIndex = 'refunds_idempotency_key_uq';
+const auditEventIdempotencyUniqueMigrationKey = 'audit-event-idempotency-key-unique-v1';
+const auditEventIdempotencyUniqueIndex = 'audit_events_idempotency_key_uq';
 
 const getMigrationStore = (strapi: Core.Strapi) =>
   strapi.store({
@@ -288,6 +293,96 @@ const migratePaymentWebhookProviderEventUniqueness = async (strapi: Core.Strapi)
   });
 };
 
+const migrateRefundIdempotencyUniqueness = async (strapi: Core.Strapi) => {
+  const store = getMigrationStore(strapi);
+  const migrationState = (await store.get({
+    key: refundIdempotencyUniqueMigrationKey,
+  })) as
+    | { complete?: boolean }
+    | undefined;
+
+  if (migrationState?.complete) {
+    return;
+  }
+
+  const connection = (strapi as unknown as { db?: { connection?: unknown } }).db
+    ?.connection as AdminTaskStateMigrationConnection | undefined;
+
+  if (!connection?.schema || typeof connection.raw !== 'function') {
+    return;
+  }
+
+  const [hasRefundTable, hasIdempotencyColumn] = await Promise.all([
+    connection.schema.hasTable('refunds'),
+    connection.schema.hasColumn('refunds', 'idempotency_key'),
+  ]);
+
+  if (!hasRefundTable || !hasIdempotencyColumn) {
+    return;
+  }
+
+  await connection.raw(
+    [
+      `create unique index if not exists ${refundIdempotencyUniqueIndex}`,
+      'on refunds (idempotency_key)',
+      'where idempotency_key is not null',
+    ].join(' ')
+  );
+
+  await store.set({
+    key: refundIdempotencyUniqueMigrationKey,
+    value: {
+      complete: true,
+      migratedAt: new Date().toISOString(),
+    },
+  });
+};
+
+const migrateAuditEventIdempotencyUniqueness = async (strapi: Core.Strapi) => {
+  const store = getMigrationStore(strapi);
+  const migrationState = (await store.get({
+    key: auditEventIdempotencyUniqueMigrationKey,
+  })) as
+    | { complete?: boolean }
+    | undefined;
+
+  if (migrationState?.complete) {
+    return;
+  }
+
+  const connection = (strapi as unknown as { db?: { connection?: unknown } }).db
+    ?.connection as AdminTaskStateMigrationConnection | undefined;
+
+  if (!connection?.schema || typeof connection.raw !== 'function') {
+    return;
+  }
+
+  const [hasAuditEventTable, hasIdempotencyColumn] = await Promise.all([
+    connection.schema.hasTable('audit_events'),
+    connection.schema.hasColumn('audit_events', 'idempotency_key'),
+  ]);
+
+  if (!hasAuditEventTable || !hasIdempotencyColumn) {
+    return;
+  }
+
+  await connection.raw(
+    [
+      `create unique index if not exists ${auditEventIdempotencyUniqueIndex}`,
+      'on audit_events (idempotency_key)',
+      'where idempotency_key is not null',
+    ].join(' ')
+  );
+
+  await store.set({
+    key: auditEventIdempotencyUniqueMigrationKey,
+    value: {
+      complete: true,
+      migratedAt: new Date().toISOString(),
+    },
+  });
+};
+
 export default {
   /**
    * An asynchronous register function that runs before
@@ -311,6 +406,12 @@ export default {
     await migratePaymentWebhookProviderEventUniqueness(strapi).catch((error) => {
       strapi.log.error('Payment webhook provider event uniqueness migration failed.', error);
     });
+    await migrateRefundIdempotencyUniqueness(strapi).catch((error) => {
+      strapi.log.error('Refund idempotency-key uniqueness migration failed.', error);
+    });
+    await migrateAuditEventIdempotencyUniqueness(strapi).catch((error) => {
+      strapi.log.error('Audit-event idempotency-key uniqueness migration failed.', error);
+    });
 
     if (!backgroundBootstrapEnabled()) {
       return;
@@ -322,6 +423,9 @@ export default {
     });
     void schedulePaymentReconciliationJob().catch((error) => {
       strapi.log.error('Payment reconciliation job scheduling failed.', error);
+    });
+    void scheduleGuaranteeRefundReconciliationJob().catch((error) => {
+      strapi.log.error('Guarantee refund reconciliation job scheduling failed.', error);
     });
     void scheduleInterviewWorkflowReconciliationJob().catch((error) => {
       strapi.log.error('Interview workflow reconciliation job scheduling failed.', error);

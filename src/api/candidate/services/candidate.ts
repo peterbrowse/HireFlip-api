@@ -4298,12 +4298,33 @@ const buildCandidateInterviewJourneySummary = async ({
   requests: DocumentRecord[];
   strapi: StrapiDocumentService;
 }) => {
-  const [profile, strikes, disputeCasesByStrikeDocumentId] = await Promise.all([
+  const [profile, strikes, disputeCasesByStrikeDocumentId, enrollments] = await Promise.all([
     findCandidateCompletedProfile(strapi, candidate),
     findCandidateInterviewStrikes(strapi, candidate),
     findCandidateInterviewDisputeSupportCases(strapi, candidate),
+    findCandidateEnrollments(strapi, candidate),
   ]);
-  const classRecord = firstClassRecordFromInterviewData(requests, offers);
+  const guaranteeEnrollment = enrollments.find(
+    (enrollment) =>
+      enrollment.passStatus === 'passed' &&
+      Boolean(enrollment.interviewGuaranteeDeadline)
+  );
+  const guaranteeRefunds = guaranteeEnrollment?.documentId
+    ? await documents(strapi, 'api::refund.refund').findMany({
+        filters: {
+          eligibilitySource: 'interview_guarantee',
+          enrollment: {
+            documentId: guaranteeEnrollment.documentId,
+          },
+        },
+        limit: 1,
+        sort: ['requestedAt:desc', 'createdAt:desc'],
+      })
+    : [];
+  const guaranteeRefund = guaranteeRefunds[0];
+  const classRecord =
+    firstClassRecordFromInterviewData(requests, offers) ||
+    documentRecordValue(guaranteeEnrollment?.class);
   const requestedFromRequests = Math.max(
     0,
     ...requests.map((request) => positiveNumber(request.requestedInterviewCount, 0))
@@ -4335,6 +4356,10 @@ const buildCandidateInterviewJourneySummary = async ({
     (interview) =>
       interview.interviewState === 'completed' && Boolean(interview.countsTowardGuarantee)
   ).length;
+  const guaranteeCompletedCount = Math.max(
+    completedCount,
+    positiveNumber(guaranteeEnrollment?.qualifyingInterviewsDeliveredCount, 0)
+  );
   const confirmedCount = interviews.filter((interview) =>
     ['confirmed', 'completed'].includes(String(interview.interviewState || ''))
   ).length;
@@ -4364,12 +4389,18 @@ const buildCandidateInterviewJourneySummary = async ({
     currentState = 'reviewing_options';
   } else if (pendingDetailsCount > 0) {
     currentState = 'awaiting_employer_details';
-  } else if (confirmedCount > completedCount) {
+  } else if (confirmedCount > guaranteeCompletedCount) {
     currentState = 'confirmed';
-  } else if (completedCount < guaranteedCount) {
+  } else if (guaranteeCompletedCount < guaranteedCount) {
     currentState = requestVisibleStates.includes('blocked') ? 'blocked' : 'arranging_interviews';
   } else {
     currentState = 'complete';
+  }
+
+  if (guaranteeEnrollment?.refundEligibilityState === 'refund_requested') {
+    currentState = 'guarantee_review';
+  } else if (guaranteeEnrollment?.refundEligibilityState === 'refund_processed') {
+    currentState = 'refund_processed';
   }
 
   return {
@@ -4377,14 +4408,28 @@ const buildCandidateInterviewJourneySummary = async ({
     generatedAt: new Date().toISOString(),
     guarantee: {
       acceptedCount: selectedOffers.length,
-      completedCount,
+      completedCount: guaranteeCompletedCount,
       confirmedCount,
+      deadline: guaranteeEnrollment?.interviewGuaranteeDeadline || null,
       guaranteedCount,
       offeredCount: offers.filter((offer) =>
         ['sent', 'submitted', 'candidate_selected', 'completed'].includes(String(offer.offerState || ''))
       ).length,
       pendingDetailsCount,
-      remainingCount: Math.max(0, guaranteedCount - completedCount),
+      refund: guaranteeRefund
+        ? {
+            amountPence:
+              typeof guaranteeRefund.amountPence === 'number'
+                ? guaranteeRefund.amountPence
+                : null,
+            currency: guaranteeRefund.currency || null,
+            documentId: guaranteeRefund.documentId || null,
+            percentage: guaranteeRefund.refundPercentage ?? null,
+            state: guaranteeRefund.refundState || null,
+          }
+        : null,
+      refundEligibilityState: guaranteeEnrollment?.refundEligibilityState || 'not_assessed',
+      remainingCount: Math.max(0, guaranteedCount - guaranteeCompletedCount),
     },
     onboarding: {
       availabilitySubmitted,
@@ -6931,10 +6976,13 @@ const sanitizeEnrollment = (enrollment) => {
     documentId: enrollment.documentId,
     enrolledAt: enrollment.enrolledAt,
     hasProviderCheckoutSession,
+    interviewGuaranteeDeadline: enrollment.interviewGuaranteeDeadline || null,
     interestRegisteredAt: enrollment.interestRegisteredAt || enrollment.metadata?.registeredInterestAt,
     invitedToJoinAt: enrollment.invitedToJoinAt,
     passStatus: enrollment.passStatus,
     paymentStatus: enrollment.paymentStatus,
+    qualifyingInterviewsDeliveredCount: enrollment.qualifyingInterviewsDeliveredCount || 0,
+    refundEligibilityState: enrollment.refundEligibilityState || 'not_assessed',
     status: enrollmentState(enrollment),
     reservationExpiresAt: enrollment.reservationExpiresAt,
     reservationDocumentId,

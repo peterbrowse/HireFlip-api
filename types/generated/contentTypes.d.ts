@@ -807,6 +807,11 @@ export interface ApiAuditEventAuditEvent extends Struct.CollectionTypeSchema {
         maxLength: 160;
         minLength: 1;
       }>;
+    idempotencyKey: Schema.Attribute.String &
+      Schema.Attribute.Unique &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 255;
+      }>;
     ipAddress: Schema.Attribute.String &
       Schema.Attribute.SetMinMaxLength<{
         maxLength: 120;
@@ -4660,6 +4665,11 @@ export interface ApiRefundRefund extends Struct.CollectionTypeSchema {
       'manyToOne',
       'api::enrollment.enrollment'
     >;
+    idempotencyKey: Schema.Attribute.String &
+      Schema.Attribute.Unique &
+      Schema.Attribute.SetMinMaxLength<{
+        maxLength: 255;
+      }>;
     locale: Schema.Attribute.String & Schema.Attribute.Private;
     localizations: Schema.Attribute.Relation<
       'oneToMany',

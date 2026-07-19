@@ -29,6 +29,7 @@ type PaymentWebhookEventService = {
 };
 
 type AdminRefundService = {
+  reconcileExpiredGuaranteeRefunds(limit?: number, context?: RequestContext): Promise<unknown>;
   reconcileProviderRefunds(limit?: number, context?: RequestContext): Promise<unknown>;
 };
 
@@ -38,6 +39,7 @@ type AdminClassService = {
 
 type ClassWorkflowJobName =
   | 'expire-waiting-list-offer'
+  | 'reconcile-guarantee-refunds'
   | 'reconcile-interview-workflows'
   | 'reconcile-payments';
 
@@ -129,6 +131,12 @@ const getInterviewReconciliationRepeatEveryMs = () =>
 
 const getInterviewReconciliationLimit = () =>
   envInt('CLASS_WORKFLOW_INTERVIEW_RECONCILIATION_LIMIT', 100);
+
+const getGuaranteeRefundReconciliationRepeatEveryMs = () =>
+  envInt('CLASS_WORKFLOW_GUARANTEE_REFUND_RECONCILIATION_INTERVAL_MS', 5 * 60 * 1000);
+
+const getGuaranteeRefundReconciliationLimit = () =>
+  envInt('CLASS_WORKFLOW_GUARANTEE_REFUND_RECONCILIATION_LIMIT', 100);
 
 const getWaitingListOfferSyncLimit = () =>
   envInt('CLASS_WORKFLOW_WAITING_LIST_OFFER_SYNC_LIMIT', 1000);
@@ -230,6 +238,35 @@ export const scheduleInterviewWorkflowReconciliationJob = async () => {
   );
 };
 
+export const scheduleGuaranteeRefundReconciliationJob = async () => {
+  if (
+    !queueEnabled() ||
+    !envBool('CLASS_WORKFLOW_GUARANTEE_REFUND_RECONCILIATION_ENABLED', true)
+  ) {
+    return undefined;
+  }
+
+  return getWorkflowQueue().add(
+    'reconcile-guarantee-refunds',
+    {
+      limit: getGuaranteeRefundReconciliationLimit(),
+    },
+    {
+      attempts: envInt('CLASS_WORKFLOW_QUEUE_JOB_ATTEMPTS', 5),
+      backoff: {
+        delay: envInt('CLASS_WORKFLOW_QUEUE_JOB_BACKOFF_MS', 5000),
+        type: 'exponential',
+      },
+      jobId: 'guarantee-refund-reconciliation',
+      repeat: {
+        every: getGuaranteeRefundReconciliationRepeatEveryMs(),
+      },
+      removeOnComplete: envInt('CLASS_WORKFLOW_QUEUE_REMOVE_ON_COMPLETE', 1000),
+      removeOnFail: envInt('CLASS_WORKFLOW_QUEUE_REMOVE_ON_FAIL', 5000),
+    }
+  );
+};
+
 export const syncWaitingListOfferExpiryJobs = async (strapi: Core.Strapi) => {
   if (!queueEnabled()) {
     return undefined;
@@ -290,6 +327,21 @@ export const startClassWorkflowWorker = (strapi: Core.Strapi) => {
           });
         } catch (error) {
           throw new Error(`Scheduled class opening reconciliation failed: ${formatJobError(error)}`);
+        }
+
+        return;
+      }
+
+      if (job.name === 'reconcile-guarantee-refunds') {
+        const limit =
+          'limit' in job.data ? job.data.limit : getGuaranteeRefundReconciliationLimit();
+
+        try {
+          await adminRefundService(strapi).reconcileExpiredGuaranteeRefunds(limit, {
+            serviceName: 'class-workflow-worker',
+          });
+        } catch (error) {
+          throw new Error(`Guarantee refund reconciliation failed: ${formatJobError(error)}`);
         }
 
         return;

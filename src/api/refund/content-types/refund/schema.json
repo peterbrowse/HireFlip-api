@@ -80,6 +80,11 @@
         "other"
       ]
     },
+    "idempotencyKey": {
+      "type": "string",
+      "maxLength": 255,
+      "unique": true
+    },
     "qualifyingInterviewsDeliveredCount": {
       "type": "integer",
       "min": 0,

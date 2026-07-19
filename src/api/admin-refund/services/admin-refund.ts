@@ -118,6 +118,7 @@ type DocumentRecord = Record<string, unknown> & {
   interviewSlot?: DocumentRecord;
   interviewState?: string;
   interviewsGuaranteed?: number;
+  idempotencyKey?: string;
   lastName?: string;
   metadata?: unknown;
   name?: string;
@@ -137,6 +138,7 @@ type DocumentRecord = Record<string, unknown> & {
   providerCheckoutSessionId?: string;
   providerPaymentIntentId?: string;
   providerRefundId?: string;
+  priority?: string;
   qualifyingInterviewsDeliveredCount?: number;
   rating?: number;
   reason?: string;
@@ -170,6 +172,10 @@ type DocumentRecord = Record<string, unknown> & {
   termsAcceptedAt?: string;
   title?: string;
   updatedAt?: string;
+  availabilityConfirmedAt?: string;
+  availabilityExpiresAt?: string;
+  profileState?: string;
+  readinessOverviewAcknowledgedAt?: string;
 };
 
 type DocumentCollection = {
@@ -188,6 +194,9 @@ const reviewListSchema = z
   .object({
     page: z.coerce.number().int().min(1).default(1),
     pageSize: z.coerce.number().int().min(10).max(100).default(25),
+    priority: z.enum(['all', 'low', 'normal', 'high', 'urgent']).default('all'),
+    reviewType: z.enum(['all', 'payment_exception', 'refund_request']).default('all'),
+    search: z.string().trim().max(200).default(''),
     sessionToken: z.string().trim().min(32).max(512),
   })
   .strict();
@@ -843,13 +852,31 @@ const buildReviewItem = async ({
   const candidate = source.candidate || refund?.candidate || payment?.candidate || enrollment?.candidate || reservation?.candidate;
   const classRecord = enrollment?.class || reservation?.class;
   const originalPayment = payment || refund?.payment;
+  const refundMetadata = objectValue(refund?.metadata);
+  const metadataOriginalAmountPence =
+    typeof refundMetadata.originalAmountPence === 'number'
+      ? refundMetadata.originalAmountPence
+      : undefined;
+  const refundPaymentEvidenceMissing = refundMetadata.paymentEvidenceMissing === true;
   const originalAmountPence =
-    originalPayment?.amountPence ?? refund?.amountPence ?? reservation?.amountPence;
+    originalPayment?.amountPence ??
+    metadataOriginalAmountPence ??
+    (refundPaymentEvidenceMissing ? undefined : refund?.amountPence) ??
+    reservation?.amountPence;
   const currency = originalPayment?.currency || refund?.currency || reservation?.currency || 'GBP';
   const title = type === 'refund_request' ? 'Refund request review' : 'Payment exception review';
   const refundState = String(refund?.refundState || '');
   const refundHasProviderId =
     typeof refund?.providerRefundId === 'string' && refund.providerRefundId.trim().length > 0;
+  const availableRefundOptions = refundOptions(originalAmountPence, currency);
+  const proposedGuaranteePercentage = Number(refund?.refundPercentage);
+  const availableReviewRefundOptions =
+    refund?.eligibilitySource === 'interview_guarantee' &&
+    [25, 50].includes(proposedGuaranteePercentage)
+      ? availableRefundOptions.filter(
+          (option) => option.percentage === proposedGuaranteePercentage
+        )
+      : availableRefundOptions;
 
   return {
     actionPath: refundTaskPath(taskKey),
@@ -873,9 +900,9 @@ const buildReviewItem = async ({
     originalAmountPence: originalAmountPence ?? null,
     originalFormattedAmount: formatMoney(originalAmountPence, currency) || null,
     payment: publicPayment(originalPayment),
-    priority: refund?.refundState === 'failed' || payment?.paymentState === 'requires_review' ? 'high' : 'normal',
+    priority: refund?.refundState === 'failed' ? 'urgent' : 'high',
     refund: publicRefund(refund),
-    refundOptions: refundOptions(originalAmountPence, currency),
+    refundOptions: availableReviewRefundOptions,
     reservation: publicReservation(reservation),
     reviewType: type,
     reviewTypeLabel: type === 'refund_request' ? 'Refund request' : 'Payment exception',
@@ -1165,20 +1192,35 @@ const publicFeedback = (feedback: DocumentRecord) => ({
 
 const refundEvidenceForReview = async (strapi: StrapiDocumentService, review: RefundReviewItem) => {
   const filters = reviewRelationFilters(review);
-  const interviews = filters
-    ? await findAllDocuments(strapi, 'api::interview.interview', {
-        filters,
-        populate: ['candidate', 'employer', 'employerContact', 'enrollment', 'interviewSlot'],
-        sort: ['scheduledStartTime:asc', 'createdAt:asc'],
-      })
-    : [];
-  const strikes = filters
-    ? await findAllDocuments(strapi, 'api::candidate-interview-strike.candidate-interview-strike', {
-        filters,
-        populate: ['candidate', 'enrollment', 'interview'],
-        sort: ['appliedAt:asc', 'createdAt:asc'],
-      })
-    : [];
+  const candidateDocumentId = review.candidate?.documentId;
+  const [interviews, strikes, profiles] = await Promise.all([
+    filters
+      ? findAllDocuments(strapi, 'api::interview.interview', {
+          filters,
+          populate: ['candidate', 'employer', 'employerContact', 'enrollment', 'interviewSlot'],
+          sort: ['scheduledStartTime:asc', 'createdAt:asc'],
+        })
+      : Promise.resolve([]),
+    filters
+      ? findAllDocuments(strapi, 'api::candidate-interview-strike.candidate-interview-strike', {
+          filters,
+          populate: ['candidate', 'enrollment', 'interview'],
+          sort: ['appliedAt:asc', 'createdAt:asc'],
+        })
+      : Promise.resolve([]),
+    candidateDocumentId
+      ? documents(strapi, 'api::candidate-profile.candidate-profile').findMany({
+          filters: {
+            candidate: {
+              documentId: candidateDocumentId,
+            },
+          },
+          limit: 1,
+          sort: ['completedAt:desc', 'updatedAt:desc', 'createdAt:desc'],
+        })
+      : Promise.resolve([]),
+  ]);
+  const profile = profiles[0];
   const interviewIds = interviews
     .map((interview) => getDocumentId(interview))
     .filter((documentId): documentId is string => Boolean(documentId));
@@ -1241,6 +1283,10 @@ const refundEvidenceForReview = async (strapi: StrapiDocumentService, review: Re
   const passStatus = String(review.enrollment?.passStatus || '');
   const completionStatus = String(review.enrollment?.completionStatus || '');
   const paymentState = String(review.payment?.paymentState || review.enrollment?.paymentStatus || '');
+  const profileState = String(profile?.profileState || '');
+  const readinessOverviewAcknowledged = Boolean(profile?.readinessOverviewAcknowledgedAt);
+  const availabilityConfirmedAt = profile?.availabilityConfirmedAt;
+  const availabilityExpiresAt = profile?.availabilityExpiresAt;
   const decisionTree = [
     decisionTreeItem({
       detail:
@@ -1304,6 +1350,35 @@ const refundEvidenceForReview = async (strapi: StrapiDocumentService, review: Re
           : qualifyingInterviews >= guaranteedInterviews
             ? 'not_met'
             : 'met',
+    }),
+    decisionTreeItem({
+      detail:
+        profileState === 'completed' && readinessOverviewAcknowledged
+          ? 'The candidate completed their structured profile and acknowledged the interview-readiness journey.'
+          : profile
+            ? 'The candidate profile or interview-readiness acknowledgement is incomplete.'
+            : 'No candidate interview-readiness profile is recorded.',
+      key: 'interview_readiness',
+      label: 'Interview readiness',
+      source: 'Candidate profile and readiness acknowledgement',
+      state:
+        !profile
+          ? 'not_recorded'
+          : profileState === 'completed' && readinessOverviewAcknowledged
+            ? 'met'
+            : 'not_met',
+    }),
+    decisionTreeItem({
+      detail:
+        availabilityConfirmedAt
+          ? `The latest availability confirmation was recorded at ${availabilityConfirmedAt}${
+              availabilityExpiresAt ? ` and expired at ${availabilityExpiresAt}` : ''
+            }. Review the activity timeline for continuity across the guarantee window.`
+          : 'No candidate availability confirmation is recorded.',
+      key: 'candidate_availability',
+      label: 'Candidate availability',
+      source: 'Candidate profile and activity timeline',
+      state: availabilityConfirmedAt ? 'needs_review' : 'not_recorded',
     }),
     decisionTreeItem({
       detail:
@@ -1371,11 +1446,15 @@ const refundEvidenceForReview = async (strapi: StrapiDocumentService, review: Re
       };
     }),
     readiness: {
+      availabilityConfirmedAt: availabilityConfirmedAt || null,
+      availabilityExpiresAt: availabilityExpiresAt || null,
       completedAt: review.enrollment?.completedAt || null,
       completionStatus: review.enrollment?.completionStatus || null,
       guaranteeDeadline: review.enrollment?.interviewGuaranteeDeadline || null,
       passStatus: review.enrollment?.passStatus || null,
       paymentStatus: review.enrollment?.paymentStatus || null,
+      profileState: profile?.profileState || null,
+      readinessOverviewAcknowledged,
       refundEligibilityState: review.enrollment?.refundEligibilityState || null,
     },
     strikes: strikes.map((strike) => ({
@@ -2240,11 +2319,473 @@ const updatePaymentAfterProviderRefund = async ({
           lastRefundProcessedAt: refund.processedAt,
         },
         paymentStatus: paymentState,
+        ...(refund.eligibilitySource === 'interview_guarantee'
+          ? { refundEligibilityState: 'refund_processed' }
+          : {}),
       },
     });
   }
 
   return updatedPayment;
+};
+
+const updateEnrollmentRefundDecision = async ({
+  refund,
+  refundEligibilityState,
+  strapi,
+}: {
+  refund: DocumentRecord;
+  refundEligibilityState: 'not_eligible' | 'refund_processed' | 'refund_requested';
+  strapi: StrapiDocumentService;
+}) => {
+  const enrollment = refund.enrollment;
+
+  if (refund.eligibilitySource !== 'interview_guarantee' || !enrollment?.documentId) {
+    return undefined;
+  }
+
+  return documents(strapi, 'api::enrollment.enrollment').update({
+    documentId: enrollment.documentId,
+    data: {
+      metadata: {
+        ...objectValue(enrollment.metadata),
+        guaranteeRefundDecisionUpdatedAt: new Date().toISOString(),
+        guaranteeRefundDocumentId: getDocumentId(refund) || null,
+        guaranteeRefundState: refund.refundState || null,
+      },
+      refundEligibilityState,
+    },
+  });
+};
+
+const guaranteeRefundKey = (enrollmentDocumentId: string) =>
+  `interview-guarantee:${enrollmentDocumentId}`;
+
+const uniqueConstraintError = (error: unknown) => {
+  if (!error || typeof error !== 'object') {
+    return false;
+  }
+
+  const record = error as Record<string, unknown>;
+  const code = String(record.code || objectValue(record.details).code || '').toLowerCase();
+  const message = String(record.message || '').toLowerCase();
+
+  return (
+    ['23505', 'sqlite_constraint', 'sqlite_constraint_unique'].includes(code) ||
+    message.includes('duplicate') ||
+    message.includes('must be unique') ||
+    message.includes('unique constraint')
+  );
+};
+
+const guaranteeRefundEligibilityState = (refundState?: string) => {
+  if (refundState === 'completed') {
+    return 'refund_processed';
+  }
+
+  if (['cancelled', 'rejected'].includes(String(refundState || ''))) {
+    return 'not_eligible';
+  }
+
+  return 'refund_requested';
+};
+
+const findGuaranteeRefund = async (
+  strapi: StrapiDocumentService,
+  enrollmentDocumentId: string
+) => {
+  const idempotencyKey = guaranteeRefundKey(enrollmentDocumentId);
+  const refunds = await documents(strapi, 'api::refund.refund').findMany({
+    filters: {
+      $or: [
+        { idempotencyKey },
+        {
+          eligibilitySource: 'interview_guarantee',
+          enrollment: {
+            documentId: enrollmentDocumentId,
+          },
+        },
+      ],
+    },
+    limit: 1,
+    populate: ['candidate', 'enrollment', 'payment'],
+    sort: ['createdAt:asc'],
+  });
+  const refund = refunds[0];
+
+  if (refund?.documentId && refund.idempotencyKey !== idempotencyKey) {
+    return documents(strapi, 'api::refund.refund').update({
+      documentId: refund.documentId,
+      data: {
+        idempotencyKey,
+      },
+      populate: ['candidate', 'enrollment', 'payment'],
+    });
+  }
+
+  return refund;
+};
+
+const coursePaymentForGuarantee = async (
+  strapi: StrapiDocumentService,
+  enrollmentDocumentId: string
+) => {
+  const payments = await documents(strapi, 'api::payment.payment').findMany({
+    filters: {
+      enrollment: {
+        documentId: enrollmentDocumentId,
+      },
+      paymentState: {
+        $in: ['paid', 'partially_refunded', 'refunded'],
+      },
+      paymentType: 'course_payment',
+    },
+    limit: 1,
+    populate: ['candidate', 'enrollment', 'reservation'],
+    sort: ['paidAt:desc', 'createdAt:desc'],
+  });
+
+  return payments[0];
+};
+
+const qualifyingGuaranteeInterviews = async (
+  strapi: StrapiDocumentService,
+  enrollmentDocumentId: string,
+  deadline: string
+) => {
+  const interviews = await findAllDocuments(strapi, 'api::interview.interview', {
+    filters: {
+      countsTowardGuarantee: true,
+      enrollment: {
+        documentId: enrollmentDocumentId,
+      },
+      interviewState: 'completed',
+    },
+    sort: ['completedAt:asc', 'scheduledEndTime:asc', 'createdAt:asc'],
+  });
+  const deadlineTimestamp = Date.parse(deadline);
+
+  return interviews.filter((interview) => {
+    const deliveredAt = interview.completedAt || interview.scheduledEndTime;
+    const deliveredTimestamp = Date.parse(String(deliveredAt || ''));
+
+    return Number.isFinite(deliveredTimestamp) && deliveredTimestamp <= deadlineTimestamp;
+  });
+};
+
+const completedRefundTotalForPayment = async (
+  strapi: StrapiDocumentService,
+  paymentDocumentId?: string
+) => {
+  if (!paymentDocumentId) {
+    return 0;
+  }
+
+  const refunds = await findAllDocuments(strapi, 'api::refund.refund', {
+    filters: {
+      payment: {
+        documentId: paymentDocumentId,
+      },
+      refundState: 'completed',
+    },
+  });
+
+  return refunds.reduce(
+    (total, refund) => total + (typeof refund.amountPence === 'number' ? refund.amountPence : 0),
+    0
+  );
+};
+
+const updateGuaranteeEnrollment = async ({
+  enrollment,
+  metadata,
+  qualifyingCount,
+  refundEligibilityState,
+  strapi,
+}: {
+  enrollment: DocumentRecord;
+  metadata: Record<string, unknown>;
+  qualifyingCount: number;
+  refundEligibilityState: string;
+  strapi: StrapiDocumentService;
+}) => {
+  if (!enrollment.documentId) {
+    return enrollment;
+  }
+
+  return documents(strapi, 'api::enrollment.enrollment').update({
+    documentId: enrollment.documentId,
+    data: {
+      metadata: {
+        ...objectValue(enrollment.metadata),
+        ...metadata,
+      },
+      qualifyingInterviewsDeliveredCount: qualifyingCount,
+      refundEligibilityState,
+    },
+    populate: ['candidate', 'class'],
+  });
+};
+
+const auditGuaranteeOutcome = async ({
+  enrollment,
+  eventType,
+  metadata,
+  refund,
+  requestContext,
+  strapi,
+}: {
+  enrollment: DocumentRecord;
+  eventType: string;
+  metadata: Record<string, unknown>;
+  refund?: DocumentRecord;
+  requestContext: RequestContext;
+  strapi: StrapiDocumentService;
+}) => {
+  try {
+    return await auditEvents(strapi).record({
+    actorDisplayName: 'Guarantee refund reconciliation',
+    actorId: requestContext.serviceName || 'guarantee-refund-reconciliation',
+    actorType: 'service',
+    correlationId: guaranteeRefundKey(String(enrollment.documentId || 'unknown')),
+    eventCategory: 'refund',
+    eventType,
+    idempotencyKey: `${guaranteeRefundKey(String(enrollment.documentId || 'unknown'))}:${eventType}`,
+    metadata,
+    newState: {
+      enrollment: enrollmentSnapshot(enrollment),
+      refund: refundSnapshot(refund),
+    },
+    occurredAt: new Date().toISOString(),
+    requestId: requestContext.requestId,
+    serviceName: requestContext.serviceName || 'guarantee-refund-reconciliation',
+    severity: metadata.paymentEvidenceMissing ? 'warning' : 'info',
+    source: 'system',
+    subjectDisplayName: candidateDisplayName(enrollment.candidate),
+    subjectId: getDocumentId(refund) || getDocumentId(enrollment),
+    subjectType: refund ? 'refund' : 'enrollment',
+    });
+  } catch (error) {
+    if (uniqueConstraintError(error)) {
+      return undefined;
+    }
+
+    throw error;
+  }
+};
+
+const reconcileGuaranteeEnrollment = async ({
+  enrollment,
+  now,
+  requestContext,
+  strapi,
+}: {
+  enrollment: DocumentRecord;
+  now: string;
+  requestContext: RequestContext;
+  strapi: StrapiDocumentService;
+}) => {
+  const enrollmentDocumentId = getDocumentId(enrollment);
+  const deadline = enrollment.interviewGuaranteeDeadline;
+
+  if (!enrollmentDocumentId || !deadline) {
+    return { outcome: 'skipped' as const };
+  }
+
+  const [existingRefund, payment, qualifyingInterviews] = await Promise.all([
+    findGuaranteeRefund(strapi, enrollmentDocumentId),
+    coursePaymentForGuarantee(strapi, enrollmentDocumentId),
+    qualifyingGuaranteeInterviews(strapi, enrollmentDocumentId, deadline),
+  ]);
+  const qualifyingCount = qualifyingInterviews.length;
+  const configuredGuarantee =
+    typeof enrollment.class?.interviewsGuaranteed === 'number'
+      ? enrollment.class.interviewsGuaranteed
+      : 2;
+  const guaranteedCount = Math.max(0, configuredGuarantee);
+  const commonMetadata = {
+    guaranteeDeadline: deadline,
+    guaranteeRefundLastReconciledAt: now,
+    guaranteedInterviewCount: guaranteedCount,
+    qualifyingInterviewDocumentIds: qualifyingInterviews.map(getDocumentId).filter(Boolean),
+    qualifyingInterviewsDeliveredCount: qualifyingCount,
+  };
+
+  if (existingRefund) {
+    if (existingRefund.eligibilitySource === 'interview_guarantee') {
+      await auditGuaranteeOutcome({
+        enrollment,
+        eventType: 'refund.guarantee_review_created',
+        metadata: objectValue(existingRefund.metadata),
+        refund: existingRefund,
+        requestContext,
+        strapi,
+      });
+    }
+
+    await updateGuaranteeEnrollment({
+      enrollment,
+      metadata: {
+        ...commonMetadata,
+        guaranteeRefundDocumentId: getDocumentId(existingRefund) || null,
+      },
+      qualifyingCount,
+      refundEligibilityState: guaranteeRefundEligibilityState(
+        String(existingRefund.refundState || '')
+      ),
+      strapi,
+    });
+
+    return { outcome: 'existing' as const, refund: existingRefund };
+  }
+
+  if (payment?.paymentState === 'refunded') {
+    const updatedEnrollment = await updateGuaranteeEnrollment({
+      enrollment,
+      metadata: {
+        ...commonMetadata,
+        guaranteeRefundOutcome: 'payment_already_refunded',
+      },
+      qualifyingCount,
+      refundEligibilityState: 'refund_processed',
+      strapi,
+    });
+
+    await auditGuaranteeOutcome({
+      enrollment: updatedEnrollment,
+      eventType: 'refund.guarantee_payment_already_refunded',
+      metadata: commonMetadata,
+      requestContext,
+      strapi,
+    });
+
+    return { outcome: 'not_eligible' as const };
+  }
+
+  if (guaranteedCount === 0 || qualifyingCount >= guaranteedCount || qualifyingCount >= 2) {
+    const updatedEnrollment = await updateGuaranteeEnrollment({
+      enrollment,
+      metadata: {
+        ...commonMetadata,
+        guaranteeRefundOutcome:
+          guaranteedCount === 0 ? 'no_guarantee_configured' : 'guarantee_fulfilled',
+      },
+      qualifyingCount,
+      refundEligibilityState: 'not_eligible',
+      strapi,
+    });
+
+    await auditGuaranteeOutcome({
+      enrollment: updatedEnrollment,
+      eventType:
+        guaranteedCount === 0
+          ? 'refund.guarantee_not_configured'
+          : 'refund.guarantee_fulfilled',
+      metadata: commonMetadata,
+      requestContext,
+      strapi,
+    });
+
+    return { outcome: 'not_eligible' as const };
+  }
+
+  const refundPercentage = qualifyingCount === 0 ? 50 : 25;
+  const originalAmountPence =
+    typeof payment?.amountPence === 'number' ? payment.amountPence : 0;
+  const previouslyRefundedPence = await completedRefundTotalForPayment(
+    strapi,
+    getDocumentId(payment)
+  );
+  const remainingPaidAmountPence = Math.max(0, originalAmountPence - previouslyRefundedPence);
+  const calculatedAmountPence = Math.round((originalAmountPence * refundPercentage) / 100);
+  const amountPence = Math.min(calculatedAmountPence, remainingPaidAmountPence);
+  const idempotencyKey = guaranteeRefundKey(enrollmentDocumentId);
+  const paymentEvidenceMissing = !payment?.documentId || originalAmountPence <= 0;
+  const refundData = {
+    amountPence,
+    candidate: relationConnect(enrollment.candidate),
+    currency: payment?.currency || enrollment.class?.currency || 'GBP',
+    eligibilitySource: 'interview_guarantee',
+    enrollment: relationConnect(enrollment),
+    idempotencyKey,
+    metadata: {
+      ...commonMetadata,
+      automaticallyCreated: true,
+      calculatedAmountPence,
+      originalAmountPence: paymentEvidenceMissing ? null : originalAmountPence,
+      paymentEvidenceMissing,
+      previouslyRefundedPence,
+      proposedRefundAmountPence: amountPence,
+      proposedRefundPercentage: refundPercentage,
+      reconciliationRequestId: requestContext.requestId || null,
+      reconciliationServiceName:
+        requestContext.serviceName || 'guarantee-refund-reconciliation',
+    },
+    payment: relationConnect(payment),
+    paymentProvider: 'stripe',
+    qualifyingInterviewsDeliveredCount: qualifyingCount,
+    reason:
+      'Automatically created for admin review after the interview guarantee window expired below the guaranteed interview threshold.',
+    refundPercentage,
+    refundState: 'requested',
+    requestedAt: now,
+  };
+  let refund: DocumentRecord;
+  let created = false;
+
+  try {
+    refund = await documents(strapi, 'api::refund.refund').create({
+      data: refundData,
+      populate: ['candidate', 'enrollment', 'payment'],
+    });
+    created = true;
+  } catch (error) {
+    if (!uniqueConstraintError(error)) {
+      throw error;
+    }
+
+    const concurrentRefund = await findGuaranteeRefund(strapi, enrollmentDocumentId);
+
+    if (!concurrentRefund) {
+      throw error;
+    }
+
+    refund = concurrentRefund;
+  }
+
+  if (created) {
+    await auditGuaranteeOutcome({
+      enrollment,
+      eventType: 'refund.guarantee_review_created',
+      metadata: refundData.metadata,
+      refund,
+      requestContext,
+      strapi,
+    });
+  }
+
+  const updatedEnrollment = await updateGuaranteeEnrollment({
+    enrollment,
+    metadata: {
+      ...commonMetadata,
+      guaranteeRefundDocumentId: getDocumentId(refund) || null,
+      guaranteeRefundOutcome: 'admin_review_requested',
+      proposedRefundAmountPence: amountPence,
+      proposedRefundPercentage: refundPercentage,
+    },
+    qualifyingCount,
+    refundEligibilityState: 'refund_requested',
+    strapi,
+  });
+
+  if (created) {
+    await publishRefundReviewChange(
+      strapi,
+      `refund:${getDocumentId(refund)}:${refund.refundState || 'requested'}`
+    );
+  }
+
+  return { created, outcome: created ? ('created' as const) : ('existing' as const), refund };
 };
 
 export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
@@ -2482,6 +3023,80 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
     return summary;
   },
 
+  async reconcileExpiredGuaranteeRefunds(
+    limit = 100,
+    requestContext: RequestContext = {}
+  ) {
+    const safeLimit = Math.min(Math.max(Number(limit) || 100, 1), 1000);
+    const now = new Date().toISOString();
+    const enrollments = await documents(strapi, 'api::enrollment.enrollment').findMany({
+      filters: {
+        completionStatus: 'completed',
+        enrollmentState: {
+          $in: ['interview_phase', 'completed'],
+        },
+        interviewGuaranteeDeadline: {
+          $lte: now,
+        },
+        passStatus: 'passed',
+        paymentStatus: {
+          $in: ['paid', 'partially_refunded', 'refunded'],
+        },
+        refundEligibilityState: {
+          $in: ['not_assessed', 'potentially_eligible', 'eligible_25', 'eligible_50'],
+        },
+      },
+      limit: safeLimit,
+      populate: ['candidate', 'class'],
+      sort: ['interviewGuaranteeDeadline:asc', 'createdAt:asc'],
+    });
+    const summary = {
+      created: 0,
+      errors: [] as Array<{ enrollmentDocumentId: string | null; message: string }>,
+      existing: 0,
+      failed: 0,
+      notEligible: 0,
+      processed: 0,
+      skipped: 0,
+      total: enrollments.length,
+    };
+
+    for (const enrollment of enrollments) {
+      try {
+        const result = await reconcileGuaranteeEnrollment({
+          enrollment,
+          now,
+          requestContext: {
+            ...requestContext,
+            serviceName:
+              requestContext.serviceName || 'guarantee-refund-reconciliation',
+          },
+          strapi,
+        });
+
+        summary.processed += 1;
+
+        if (result.outcome === 'created') {
+          summary.created += 1;
+        } else if (result.outcome === 'existing') {
+          summary.existing += 1;
+        } else if (result.outcome === 'not_eligible') {
+          summary.notEligible += 1;
+        } else {
+          summary.skipped += 1;
+        }
+      } catch (error) {
+        summary.failed += 1;
+        summary.errors.push({
+          enrollmentDocumentId: getDocumentId(enrollment) || null,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    return summary;
+  },
+
   async listReviews(input: unknown, requestContext: RequestContext = {}) {
     const body = validateReviewList(input);
     const session = await assertRefundReviewSession(strapi, body.sessionToken, requestContext);
@@ -2495,13 +3110,35 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
       requestContext
     );
     const taskDocuments = documents(strapi, 'api::admin-task.admin-task');
-    const filters = {
+    const baseFilters = {
       taskState: 'open',
       taskType: {
         $in: ['payment_review', 'refund_review'],
       },
     };
-    const [total, paymentExceptions, refundRequests] = await Promise.all([
+    const filters: Record<string, unknown> = {
+      ...baseFilters,
+      ...(body.priority !== 'all' ? { priority: body.priority } : {}),
+      ...(body.reviewType !== 'all'
+        ? {
+            taskType: body.reviewType === 'payment_exception' ? 'payment_review' : 'refund_review',
+          }
+        : {}),
+    };
+
+    if (body.search) {
+      filters.$or = [
+        { searchText: { $containsi: body.search } },
+        { taskKey: { $containsi: body.search } },
+        { sourceDocumentId: { $containsi: body.search } },
+        { relatedDocumentId: { $containsi: body.search } },
+        { title: { $containsi: body.search } },
+        { summary: { $containsi: body.search } },
+      ];
+    }
+
+    const [total, filteredTotal, paymentExceptions, refundRequests] = await Promise.all([
+      taskDocuments.count({ filters: baseFilters }),
       taskDocuments.count({ filters }),
       taskDocuments.count({
         filters: {
@@ -2516,7 +3153,7 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
         },
       }),
     ]);
-    const pageCount = Math.max(1, Math.ceil(total / body.pageSize));
+    const pageCount = Math.max(1, Math.ceil(filteredTotal / body.pageSize));
     const page = Math.min(body.page, pageCount);
     const taskRecords = await taskDocuments.findMany({
       filters,
@@ -2526,9 +3163,23 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
     });
     const reviews = await Promise.all(
       taskRecords
-        .map((task) => task.taskKey)
-        .filter((taskKey): taskKey is string => typeof taskKey === 'string' && taskKey.length > 0)
-        .map((taskKey) => reviewByTaskKey(strapi, taskKey))
+        .filter(
+          (task): task is DocumentRecord & { taskKey: string } =>
+            typeof task.taskKey === 'string' && task.taskKey.length > 0
+        )
+        .map(async (task) => {
+          const review = await reviewByTaskKey(strapi, task.taskKey);
+          const persistedPriority = ['low', 'normal', 'high', 'urgent'].includes(
+            String(task.priority)
+          )
+            ? task.priority
+            : review.priority;
+
+          return {
+            ...review,
+            priority: persistedPriority,
+          };
+        })
     );
 
     return {
@@ -2538,13 +3189,15 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
         total,
       },
       generatedAt: new Date().toISOString(),
+      filteredReviews: filteredTotal,
       pagination: {
         page,
         pageCount,
         pageSize: body.pageSize,
-        total,
+        total: filteredTotal,
       },
       reviews,
+      totalReviews: total,
       user: session.user,
     };
   },
@@ -2817,6 +3470,16 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
       },
     });
 
+    await updateEnrollmentRefundDecision({
+      refund: {
+        ...updatedRefund,
+        eligibilitySource: updatedRefund.eligibilitySource || refund.eligibilitySource,
+        enrollment: updatedRefund.enrollment || refund.enrollment,
+      },
+      refundEligibilityState: 'not_eligible',
+      strapi,
+    });
+
     await updateRefundSupportCaseState({
       caseState: 'awaiting_candidate',
       strapi,
@@ -2876,6 +3539,18 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
 
     if (typeof review.originalAmountPence !== 'number') {
       throw new ValidationError('The original payment amount is required before a refund can be accepted.');
+    }
+
+    const proposedGuaranteePercentage = Number(refund.refundPercentage);
+
+    if (
+      refund.eligibilitySource === 'interview_guarantee' &&
+      [25, 50].includes(proposedGuaranteePercentage) &&
+      body.refundPercentage !== proposedGuaranteePercentage
+    ) {
+      throw new ValidationError(
+        `This guarantee review is calculated at ${proposedGuaranteePercentage}%. Correct the underlying interview evidence and rerun reconciliation instead of overriding the refund band.`
+      );
     }
 
     await reviewClaimService(strapi).assertActiveClaimForSession(
