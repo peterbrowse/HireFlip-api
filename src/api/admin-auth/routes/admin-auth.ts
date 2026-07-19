@@ -52,6 +52,15 @@ export default {
     },
     {
       method: 'POST',
+      path: '/internal/admin/auth/session-preference',
+      handler: 'admin-auth.updateSessionPreference',
+      config: {
+        auth: false,
+        policies: [adminDashboardServicePolicy],
+      },
+    },
+    {
+      method: 'POST',
       path: '/internal/admin/auth/logout',
       handler: 'admin-auth.logout',
       config: {

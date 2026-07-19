@@ -21,6 +21,7 @@ type AdminAuthService = {
   resendTwoFactorChallenge(input: unknown, context: RequestContext): Promise<unknown>;
   updateCurrentStaffProfile(input: unknown, context: RequestContext): Promise<unknown>;
   updateCurrentStaffProfileImage(input: unknown, file: unknown, context: RequestContext): Promise<unknown>;
+  updateSessionPreference(input: unknown, context: RequestContext): Promise<unknown>;
   updateStaffUserRole(input: unknown, context: RequestContext): Promise<unknown>;
   updateStaffUserStatus(input: unknown, context: RequestContext): Promise<unknown>;
   verifyTwoFactorChallenge(input: unknown, context: RequestContext): Promise<unknown>;
@@ -84,6 +85,17 @@ export default ({ strapi }) => ({
 
   async session(ctx) {
     const result = await adminAuthService(strapi).getSession(
+      ctx.request.body,
+      getRequestContext(ctx)
+    );
+
+    ctx.body = {
+      data: result,
+    };
+  },
+
+  async updateSessionPreference(ctx) {
+    const result = await adminAuthService(strapi).updateSessionPreference(
       ctx.request.body,
       getRequestContext(ctx)
     );

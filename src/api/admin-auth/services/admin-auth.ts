@@ -192,6 +192,12 @@ const sessionTokenSchema = z
   })
   .strict();
 
+const sessionPreferenceSchema = sessionTokenSchema
+  .extend({
+    rememberMe: z.boolean(),
+  })
+  .strict();
+
 const staffPasswordResetSchema = z
   .object({
     email: z.string().trim().email().max(254).optional().transform((value) => value?.toLowerCase()),
@@ -295,6 +301,7 @@ const validateLogin = validateZodSchema(loginSchema);
 const validateVerifyTwoFactor = validateZodSchema(verifyTwoFactorSchema);
 const validateResendTwoFactor = validateZodSchema(resendTwoFactorSchema);
 const validateSessionToken = validateZodSchema(sessionTokenSchema);
+const validateSessionPreference = validateZodSchema(sessionPreferenceSchema);
 const validateStaffList = validateZodSchema(staffListSchema);
 const validateStaffProfileUpdate = validateZodSchema(staffProfileUpdateSchema);
 const validateStaffPasswordReset = validateZodSchema(staffPasswordResetSchema);
@@ -1477,6 +1484,53 @@ export default () => ({
     const body = validateSessionToken(input);
 
     return getStoredSession(getStore(), body.sessionToken, requestContext);
+  },
+
+  async updateSessionPreference(input: unknown, requestContext: RequestContext = {}) {
+    const body = validateSessionPreference(input);
+    const store = getStore();
+    const sessionHash = hashValue(body.sessionToken);
+    const session = await getStoredSession(store, body.sessionToken, requestContext);
+    const storedSession = (await store.get({
+      key: sessionKey(sessionHash),
+    })) as AdminSession | undefined;
+
+    if (!storedSession) {
+      throw new UnauthorizedError('Admin session not found.');
+    }
+
+    const ttlSeconds = body.rememberMe
+      ? config().rememberMeSessionTtlSeconds
+      : config().sessionTtlSeconds;
+    const expiresAt = addSeconds(ttlSeconds);
+    const nextSession: AdminSession = {
+      ...storedSession,
+      expiresAt,
+      lastSeenAt: new Date().toISOString(),
+      rememberMe: body.rememberMe,
+      user: session.user,
+    };
+
+    await store.set({
+      key: sessionKey(sessionHash),
+      value: nextSession,
+    });
+    await recordAuditEvent('admin.auth.session_preference_updated', requestContext, {
+      actorEmail: session.user.email,
+      actorId: session.user.id,
+      actorDisplayName: session.user.displayName,
+      metadata: {
+        expiresAt,
+        previousRememberMe: storedSession.rememberMe,
+        rememberMe: body.rememberMe,
+      },
+    });
+
+    return {
+      expiresAt,
+      rememberMe: body.rememberMe,
+      user: session.user,
+    };
   },
 
 	  async logout(input: unknown, requestContext: RequestContext = {}) {
