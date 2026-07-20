@@ -356,8 +356,14 @@ const candidateDisplayName = (candidate?: DocumentRecord | null) => {
   return fullName || (typeof candidate.email === 'string' ? candidate.email : undefined);
 };
 
-const taskRouteSegment = (taskKey: string) => encodeURIComponent(taskKey);
-const refundTaskPath = (taskKey: string) => `/refunds/${taskRouteSegment(taskKey)}`;
+const refundTaskPath = (taskKey: string) => {
+  const [sourceType, sourceDocumentId] = taskKey.split(':');
+  const query = ['enrollment', 'payment', 'reservation'].includes(sourceType)
+    ? `?source=${encodeURIComponent(sourceType)}`
+    : '';
+
+  return `/refunds/${encodeURIComponent(sourceDocumentId || taskKey)}${query}`;
+};
 const supportCaseUrl = (supportCaseDocumentId: string) =>
   `${trimTrailingSlash(process.env.CANDIDATE_DASHBOARD_BASE_URL || 'http://localhost:3001')}/support/${encodeURIComponent(supportCaseDocumentId)}`;
 

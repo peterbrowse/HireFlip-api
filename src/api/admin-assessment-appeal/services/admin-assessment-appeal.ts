@@ -276,9 +276,12 @@ const candidateFirstName = (candidate?: DocumentRecord | null) =>
     ? candidate.firstName.trim()
     : 'there';
 
-const taskRouteSegment = (taskKey: string) => encodeURIComponent(taskKey);
 const assessmentAppealTaskKey = (appealDocumentId: string) => `assessment-appeal:${appealDocumentId}`;
-const assessmentAppealTaskPath = (taskKey: string) => `/classes/appeals/${taskRouteSegment(taskKey)}`;
+const assessmentAppealTaskPath = (taskKey: string) => {
+  const [, appealDocumentId] = taskKey.split(':');
+
+  return `/classes/appeals/${encodeURIComponent(appealDocumentId || taskKey)}`;
+};
 const candidateCourseUrl = () =>
   `${trimTrailingSlash(process.env.CANDIDATE_DASHBOARD_BASE_URL || 'http://localhost:3001')}/course`;
 

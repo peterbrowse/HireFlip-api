@@ -81,11 +81,41 @@ const main = async () => {
   const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const appContext = await compileStrapi();
   const strapi = await createStrapi(appContext).load();
+  const originalService = strapi.service.bind(strapi);
+  const session = {
+    user: {
+      displayName: 'Support Smoke Admin',
+      email: 'support-smoke-admin@example.test',
+      id: `support-smoke-admin-${runId}`,
+      roleKeys: ['admin'],
+      roles: ['Admin'],
+    },
+  };
   const created = {
     candidate: null,
     refund: null,
     supportCase: null,
     messages: [],
+  };
+
+  strapi.service = (uid) => {
+    if (uid === 'api::admin-auth.admin-auth') {
+      return {
+        getSession: async () => session,
+      };
+    }
+
+    if (uid === 'api::admin-review-claim.admin-review-claim') {
+      return {
+        claimForSession: async () => ({
+          reviewClaim: {
+            claimToken: 'c'.repeat(32),
+          },
+        }),
+      };
+    }
+
+    return originalService(uid);
   };
 
   try {
@@ -220,6 +250,20 @@ const main = async () => {
 
     assert(detailedCase, 'Expected support case detail to be returned.');
     assert(detailedCase.messages.length === 2, 'Expected support case detail to include messages.');
+
+    const adminCase = await strapi.service('api::admin-support.admin-support').getCase({
+      sessionToken: 's'.repeat(32),
+      supportCaseDocumentId: ensured.supportCase.documentId,
+    });
+    assert(adminCase.relatedRecord?.type === 'refund', 'Expected refund related-record type.');
+    assert(
+      adminCase.relatedRecord?.documentId === refund.documentId,
+      'Expected related refund document ID.'
+    );
+    assert(
+      adminCase.relatedRecord?.path === `/refunds/${encodeURIComponent(refund.documentId)}`,
+      'Expected support case to link to the canonical refund review.'
+    );
 
     const candidateCase = await supportCaseService.getCaseForCandidate({
       candidateDocumentId: candidate.documentId,

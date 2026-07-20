@@ -771,6 +771,105 @@ const findSupportCaseRecord = async (strapi: StrapiService, supportCaseDocumentI
 
 const stringValue = (value: unknown) => (typeof value === 'string' && value.trim() ? value.trim() : null);
 
+const supportCaseRelatedRecord = (supportCase: DocumentRecord) => {
+  const metadata = objectValue(supportCase.metadata);
+  const kind = stringValue(metadata.kind);
+  const candidateDocumentId = getDocumentId(supportCase.candidate as DocumentRecord | undefined);
+  const supportCaseDocumentId = getDocumentId(supportCase);
+  const refund = supportCase.refund as DocumentRecord | undefined;
+  const refundDocumentId = getDocumentId(refund) || stringValue(metadata.refundDocumentId);
+
+  if (refundDocumentId) {
+    return {
+      documentId: refundDocumentId,
+      label: 'View refund review',
+      path: `/refunds/${encodeURIComponent(refundDocumentId)}`,
+      type: 'refund',
+    };
+  }
+
+  const assessmentAppealDocumentId = stringValue(metadata.assessmentAppealDocumentId);
+
+  if (assessmentAppealDocumentId) {
+    return {
+      documentId: assessmentAppealDocumentId,
+      label: 'View class appeal',
+      path: `/classes/appeals/${encodeURIComponent(assessmentAppealDocumentId)}`,
+      type: 'assessment_appeal',
+    };
+  }
+
+  if (
+    kind === 'ai_feedback_report_concern' &&
+    candidateDocumentId &&
+    supportCaseDocumentId
+  ) {
+    return {
+      documentId: stringValue(metadata.feedbackDocumentId),
+      label: 'View candidate feedback',
+      path: `/candidates/${encodeURIComponent(candidateDocumentId)}/feedback/${encodeURIComponent(supportCaseDocumentId)}`,
+      type: 'candidate_feedback',
+    };
+  }
+
+  if (kind === 'candidate_interview_strike_dispute' && candidateDocumentId) {
+    return {
+      documentId: stringValue(metadata.strikeDocumentId),
+      label: 'View candidate strikes',
+      path: `/candidates/${encodeURIComponent(candidateDocumentId)}?tab=strikes`,
+      type: 'candidate_strike',
+    };
+  }
+
+  if (kind === 'candidate_account_restriction_appeal' && candidateDocumentId) {
+    return {
+      documentId: candidateDocumentId,
+      label: 'View candidate actions',
+      path: `/candidates/${encodeURIComponent(candidateDocumentId)}?tab=actions`,
+      type: 'candidate_account',
+    };
+  }
+
+  if (kind === 'interview_progression_outcome_concern' && candidateDocumentId) {
+    return {
+      documentId: stringValue(metadata.progressionRequestDocumentId),
+      label: 'View candidate interviews',
+      path: `/candidates/${encodeURIComponent(candidateDocumentId)}?tab=interviews`,
+      type: 'interview_progression',
+    };
+  }
+
+  const paymentExceptionSources = [
+    ['reservation', stringValue(metadata.reservationDocumentId)],
+    [
+      'enrollment',
+      stringValue(metadata.enrollmentDocumentId) ||
+        getDocumentId(supportCase.enrollment as DocumentRecord | undefined),
+    ],
+    [
+      'payment',
+      stringValue(metadata.paymentDocumentId) ||
+        getDocumentId(supportCase.payment as DocumentRecord | undefined),
+    ],
+  ] as const;
+  const paymentExceptionSource = kind?.includes('payment_exception')
+    ? paymentExceptionSources.find(([, documentId]) => Boolean(documentId))
+    : undefined;
+
+  if (paymentExceptionSource?.[1]) {
+    const [sourceType, sourceDocumentId] = paymentExceptionSource;
+
+    return {
+      documentId: sourceDocumentId,
+      label: 'View payment exception',
+      path: `/refunds/${encodeURIComponent(sourceDocumentId)}?source=${encodeURIComponent(sourceType)}`,
+      type: 'payment_exception',
+    };
+  }
+
+  return null;
+};
+
 const normalizeCandidateReportTakeaways = (value: unknown) =>
   (Array.isArray(value) ? value : [])
     .map((item) => (typeof item === 'string' ? item.trim() : ''))
@@ -1523,6 +1622,7 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
     return {
       generatedAt: new Date().toISOString(),
       feedbackReportReview,
+      relatedRecord: supportCaseRecord ? supportCaseRelatedRecord(supportCaseRecord) : null,
       reviewClaim: claimResult.reviewClaim,
       supportCase,
       user: session.user,

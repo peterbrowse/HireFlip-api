@@ -1222,46 +1222,59 @@ const progressionTypeLabel = (value?: string | null) => {
   return labels[String(value || '')] || null;
 };
 
-const interviewPayload = (interview: DocumentRecord, progressionRequest?: DocumentRecord | null) => ({
-  actionPath: `/interviews?search=${encodeURIComponent(displayName(interview.candidate as DocumentRecord | undefined) || '')}`,
-  completedAt: interview.completedAt || null,
-  documentId: getDocumentId(interview),
-  employer: (interview.employer as DocumentRecord | undefined)?.companyName || null,
-  employerContact: displayName(interview.employerContact as DocumentRecord | undefined),
-  interviewState: interview.interviewState || null,
-  locationType: interview.locationType || null,
-  progressionRequest: progressionRequest
-    ? {
-        candidateResponse: progressionRequest.candidateResponse || null,
-        documentId: getDocumentId(progressionRequest),
-        followUp: {
-          candidate: {
-            completedAt: progressionRequest.candidateFollowUpCompletedAt || null,
-            outcome: progressionRequest.candidateFollowUpOutcome || null,
-            outcomeLabel: progressionRequest.candidateFollowUpOutcome
-              ? humanize(String(progressionRequest.candidateFollowUpOutcome))
-              : null,
-            state: progressionRequest.candidateFollowUpState || progressionRequest.followUpState || 'not_due',
+const interviewPayload = (
+  interview: DocumentRecord,
+  progressionRequest?: DocumentRecord | null,
+  feedbackConcernCase?: DocumentRecord | null
+) => {
+  const candidateDocumentId = getDocumentId(interview.candidate as DocumentRecord | undefined);
+  const feedbackConcernCaseDocumentId = getDocumentId(feedbackConcernCase);
+
+  return {
+    actionPath: `/interviews?search=${encodeURIComponent(displayName(interview.candidate as DocumentRecord | undefined) || '')}`,
+    completedAt: interview.completedAt || null,
+    documentId: getDocumentId(interview),
+    employer: (interview.employer as DocumentRecord | undefined)?.companyName || null,
+    employerContact: displayName(interview.employerContact as DocumentRecord | undefined),
+    feedbackReviewPath:
+      candidateDocumentId && feedbackConcernCaseDocumentId
+        ? `/candidates/${encodeURIComponent(candidateDocumentId)}/feedback/${encodeURIComponent(feedbackConcernCaseDocumentId)}`
+        : null,
+    interviewState: interview.interviewState || null,
+    locationType: interview.locationType || null,
+    progressionRequest: progressionRequest
+      ? {
+          candidateResponse: progressionRequest.candidateResponse || null,
+          documentId: getDocumentId(progressionRequest),
+          followUp: {
+            candidate: {
+              completedAt: progressionRequest.candidateFollowUpCompletedAt || null,
+              outcome: progressionRequest.candidateFollowUpOutcome || null,
+              outcomeLabel: progressionRequest.candidateFollowUpOutcome
+                ? humanize(String(progressionRequest.candidateFollowUpOutcome))
+                : null,
+              state: progressionRequest.candidateFollowUpState || progressionRequest.followUpState || 'not_due',
+            },
+            employer: {
+              completedAt: progressionRequest.employerFollowUpCompletedAt || null,
+              outcome: progressionRequest.employerFollowUpOutcome || null,
+              outcomeLabel: progressionRequest.employerFollowUpOutcome
+                ? humanize(String(progressionRequest.employerFollowUpOutcome))
+                : null,
+              state: progressionRequest.employerFollowUpState || progressionRequest.followUpState || 'not_due',
+            },
           },
-          employer: {
-            completedAt: progressionRequest.employerFollowUpCompletedAt || null,
-            outcome: progressionRequest.employerFollowUpOutcome || null,
-            outcomeLabel: progressionRequest.employerFollowUpOutcome
-              ? humanize(String(progressionRequest.employerFollowUpOutcome))
-              : null,
-            state: progressionRequest.employerFollowUpState || progressionRequest.followUpState || 'not_due',
-          },
-        },
-        progressionState: progressionRequest.progressionState || null,
-        progressionType: progressionRequest.progressionType || null,
-        progressionTypeLabel: progressionTypeLabel(progressionRequest.progressionType),
-        requestedAt: progressionRequest.requestedDetailsAt || progressionRequest.createdAt || null,
-        responseDeadline: progressionRequest.candidateResponseDeadline || null,
-      }
-    : null,
-  scheduledEndTime: interview.scheduledEndTime || null,
-  scheduledStartTime: interview.scheduledStartTime || null,
-});
+          progressionState: progressionRequest.progressionState || null,
+          progressionType: progressionRequest.progressionType || null,
+          progressionTypeLabel: progressionTypeLabel(progressionRequest.progressionType),
+          requestedAt: progressionRequest.requestedDetailsAt || progressionRequest.createdAt || null,
+          responseDeadline: progressionRequest.candidateResponseDeadline || null,
+        }
+      : null,
+    scheduledEndTime: interview.scheduledEndTime || null,
+    scheduledStartTime: interview.scheduledStartTime || null,
+  };
+};
 
 const supportCasePayload = (supportCase: DocumentRecord) => ({
   caseState: supportCase.caseState || null,
@@ -2090,6 +2103,7 @@ const buildCandidateDetail = async (
       candidateAuditCount(strapi, candidate),
     ]);
   const progressionByInterviewId = new Map<string, DocumentRecord>();
+  const feedbackConcernCaseByInterviewId = new Map<string, DocumentRecord>();
 
   progressionRequests.forEach((request) => {
     const interview = request.interview as DocumentRecord | undefined;
@@ -2099,6 +2113,20 @@ const buildCandidateDetail = async (
       progressionByInterviewId.set(interviewDocumentId, request);
     }
   });
+  if (hasAnyRole(session, ['admin', 'super_admin', 'support'])) {
+    supportCases.forEach((supportCase) => {
+      const metadata = objectValue(supportCase.metadata);
+      const interviewDocumentId = stringValue(metadata.interviewDocumentId);
+
+      if (
+        metadata.kind === 'ai_feedback_report_concern' &&
+        interviewDocumentId &&
+        !feedbackConcernCaseByInterviewId.has(interviewDocumentId)
+      ) {
+        feedbackConcernCaseByInterviewId.set(interviewDocumentId, supportCase);
+      }
+    });
+  }
   const permissions = candidatePermissions(session);
   const openSupportCount = supportCases.filter((supportCase) =>
     ['awaiting_candidate', 'awaiting_staff', 'in_progress', 'open'].includes(String(supportCase.caseState || ''))
@@ -2126,7 +2154,11 @@ const buildCandidateDetail = async (
       visibleState: request.candidateVisibleState || null,
     })),
     interviews: interviews.map((interview) =>
-      interviewPayload(interview, progressionByInterviewId.get(getDocumentId(interview) || ''))
+      interviewPayload(
+        interview,
+        progressionByInterviewId.get(getDocumentId(interview) || ''),
+        feedbackConcernCaseByInterviewId.get(getDocumentId(interview) || '')
+      )
     ),
     permissions,
     profile: profilePayload(profile),

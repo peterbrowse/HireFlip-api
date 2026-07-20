@@ -308,10 +308,21 @@ const trimToLength = (value: string, maxLength: number) =>
   value.length > maxLength ? `${value.slice(0, maxLength - 1)}…` : value;
 
 const taskRouteSegment = (taskKey: string) => encodeURIComponent(taskKey);
-const assessmentAppealTaskPath = (taskKey: string) => `/classes/appeals/${taskRouteSegment(taskKey)}`;
+const assessmentAppealTaskPath = (taskKey: string) => {
+  const [, appealDocumentId] = taskKey.split(':');
+
+  return `/classes/appeals/${encodeURIComponent(appealDocumentId || taskKey)}`;
+};
 const taskDetailPath = (taskKey: string) => `/tasks/${taskRouteSegment(taskKey)}`;
 const adminTaskClaimKey = (taskKey: string) => `admin_task:${taskKey}`;
-const refundTaskPath = (taskKey: string) => `/refunds/${taskRouteSegment(taskKey)}`;
+const refundTaskPath = (taskKey: string) => {
+  const [sourceType, sourceDocumentId] = taskKey.split(':');
+  const query = ['enrollment', 'payment', 'reservation'].includes(sourceType)
+    ? `?source=${encodeURIComponent(sourceType)}`
+    : '';
+
+  return `/refunds/${encodeURIComponent(sourceDocumentId || taskKey)}${query}`;
+};
 const supportCasePath = (supportCaseDocumentId: string) =>
   `/support/${encodeURIComponent(supportCaseDocumentId)}`;
 const aiFeedbackReviewPath = (feedbackDocumentId: string) =>
