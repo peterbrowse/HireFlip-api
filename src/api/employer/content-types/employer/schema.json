@@ -45,6 +45,27 @@
       "type": "string",
       "maxLength": 240
     },
+    "adminListLeadContactSortKey": {
+      "type": "string",
+      "maxLength": 254,
+      "default": "",
+      "required": true,
+      "private": true
+    },
+    "adminListInviteCount": {
+      "type": "integer",
+      "min": 0,
+      "default": 0,
+      "required": true,
+      "private": true
+    },
+    "adminListPendingInviteCount": {
+      "type": "integer",
+      "min": 0,
+      "default": 0,
+      "required": true,
+      "private": true
+    },
     "operatingRegions": {
       "type": "relation",
       "relation": "manyToMany",

@@ -37,8 +37,13 @@ type AdminClassService = {
   reconcileScheduledClassOpenings(limit?: number, context?: RequestContext): Promise<unknown>;
 };
 
+type AdminTaskService = {
+  reconcileTasks(): Promise<unknown>;
+};
+
 type ClassWorkflowJobName =
   | 'expire-waiting-list-offer'
+  | 'reconcile-admin-tasks'
   | 'reconcile-guarantee-refunds'
   | 'reconcile-interview-workflows'
   | 'reconcile-payments';
@@ -138,6 +143,9 @@ const getGuaranteeRefundReconciliationRepeatEveryMs = () =>
 const getGuaranteeRefundReconciliationLimit = () =>
   envInt('CLASS_WORKFLOW_GUARANTEE_REFUND_RECONCILIATION_LIMIT', 100);
 
+const getAdminTaskReconciliationRepeatEveryMs = () =>
+  envInt('ADMIN_TASK_RECONCILIATION_INTERVAL_MS', 60000);
+
 const getWaitingListOfferSyncLimit = () =>
   envInt('CLASS_WORKFLOW_WAITING_LIST_OFFER_SYNC_LIMIT', 1000);
 
@@ -185,6 +193,35 @@ const adminRefundService = (strapi: Core.Strapi) =>
 
 const adminClassService = (strapi: Core.Strapi) =>
   strapi.service('api::admin-class.admin-class') as unknown as AdminClassService;
+
+const adminTaskService = (strapi: Core.Strapi) =>
+  strapi.service('api::admin-task.admin-task') as unknown as AdminTaskService;
+
+export const scheduleAdminTaskReconciliationJob = async () => {
+  if (!queueEnabled() || !envBool('ADMIN_TASK_RECONCILIATION_ENABLED', true)) {
+    return undefined;
+  }
+
+  return getWorkflowQueue().add(
+    'reconcile-admin-tasks',
+    {
+      limit: 1,
+    },
+    {
+      attempts: envInt('CLASS_WORKFLOW_QUEUE_JOB_ATTEMPTS', 5),
+      backoff: {
+        delay: envInt('CLASS_WORKFLOW_QUEUE_JOB_BACKOFF_MS', 5000),
+        type: 'exponential',
+      },
+      jobId: 'admin-task-reconciliation',
+      repeat: {
+        every: getAdminTaskReconciliationRepeatEveryMs(),
+      },
+      removeOnComplete: envInt('CLASS_WORKFLOW_QUEUE_REMOVE_ON_COMPLETE', 1000),
+      removeOnFail: envInt('CLASS_WORKFLOW_QUEUE_REMOVE_ON_FAIL', 5000),
+    }
+  );
+};
 
 export const schedulePaymentReconciliationJob = async () => {
   if (!queueEnabled() || !envBool('CLASS_WORKFLOW_PAYMENT_RECONCILIATION_ENABLED', true)) {
@@ -327,6 +364,16 @@ export const startClassWorkflowWorker = (strapi: Core.Strapi) => {
           });
         } catch (error) {
           throw new Error(`Scheduled class opening reconciliation failed: ${formatJobError(error)}`);
+        }
+
+        return;
+      }
+
+      if (job.name === 'reconcile-admin-tasks') {
+        try {
+          await adminTaskService(strapi).reconcileTasks();
+        } catch (error) {
+          throw new Error(`Admin task reconciliation failed: ${formatJobError(error)}`);
         }
 
         return;

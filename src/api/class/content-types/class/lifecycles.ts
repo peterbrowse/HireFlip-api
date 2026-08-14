@@ -2,6 +2,7 @@ import {
   publishCandidateClassRealtimeEvent,
   publishClassRealtimeEvent,
 } from '../../../../utils/class-realtime-events';
+import { rebuildCandidateAdminListSummary } from '../../../../utils/admin-list-summaries';
 
 type DocumentRecord = Record<string, unknown> & {
   documentId?: string;
@@ -58,20 +59,26 @@ const findAllDocuments = async (
   return records;
 };
 
-const publishClassUpdate = async (strapi: StrapiDocumentService, classRecord?: DocumentRecord) => {
+const publishClassUpdate = async (
+  strapi: StrapiDocumentService,
+  classRecord?: DocumentRecord,
+  publishRealtime = true
+) => {
   const classDocumentId = classRecord?.documentId;
 
   if (!classDocumentId) {
     return;
   }
 
-  await publishClassRealtimeEvent(
-    {
-      classDocumentId,
-      type: 'class_state_changed',
-    },
-    strapi.log
-  );
+  if (publishRealtime) {
+    await publishClassRealtimeEvent(
+      {
+        classDocumentId,
+        type: 'class_state_changed',
+      },
+      strapi.log
+    );
+  }
 
   const enrollments = await findAllDocuments(strapi, 'api::enrollment.enrollment', {
     filters: {
@@ -90,14 +97,19 @@ const publishClassUpdate = async (strapi: StrapiDocumentService, classRecord?: D
         return Promise.resolve();
       }
 
-      return publishCandidateClassRealtimeEvent(
-        {
-          candidateDocumentId,
-          classDocumentId,
-          type: 'class_state_changed',
-        },
-        strapi.log
-      );
+      return Promise.all([
+        rebuildCandidateAdminListSummary(strapi, candidateDocumentId),
+        publishRealtime
+          ? publishCandidateClassRealtimeEvent(
+              {
+                candidateDocumentId,
+                classDocumentId,
+                type: 'class_state_changed',
+              },
+              strapi.log
+            )
+          : Promise.resolve(),
+      ]);
     })
   );
 };
@@ -108,19 +120,19 @@ export default {
   async afterCreate(event: LifecycleEvent) {
     const strapi = runtimeStrapi();
 
-    if (!strapi || !lifecycleRealtimeEnabled()) {
+    if (!strapi) {
       return;
     }
 
-    await publishClassUpdate(strapi, event.result);
+    await publishClassUpdate(strapi, event.result, lifecycleRealtimeEnabled());
   },
   async afterUpdate(event: LifecycleEvent) {
     const strapi = runtimeStrapi();
 
-    if (!strapi || !lifecycleRealtimeEnabled()) {
+    if (!strapi) {
       return;
     }
 
-    await publishClassUpdate(strapi, event.result);
+    await publishClassUpdate(strapi, event.result, lifecycleRealtimeEnabled());
   },
 };

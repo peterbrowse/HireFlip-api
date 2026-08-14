@@ -30,6 +30,7 @@
     "smoke:guarantee-refund-reconciliation": "npm run build && ENV_PATH=${ENV_PATH:-.env.local} node scripts/smoke-guarantee-refund-reconciliation.js",
     "smoke:notification-provider-template": "node scripts/smoke-notification-provider-template.js",
     "smoke:assessment-appeals": "npm run build && ENV_PATH=${ENV_PATH:-.env.local} node scripts/smoke-assessment-appeals.js",
+    "smoke:admin-data-contracts": "npm run build && ENV_PATH=${ENV_PATH:-.env.local} node scripts/smoke-admin-data-contracts.js",
     "smoke:refund-provider-updates": "npm run build && ENV_PATH=${ENV_PATH:-.env.local} node scripts/smoke-refund-provider-updates.js",
     "smoke:support-cases": "npm run build && ENV_PATH=${ENV_PATH:-.env.local} node scripts/smoke-support-cases.js",
     "smoke:waiting-list-offers": "ENV_PATH=${ENV_PATH:-.env.local} node scripts/smoke-waiting-list-offers.js",
@@ -40,11 +41,11 @@
     "upgrade:dry": "npx @strapi/upgrade latest --dry"
   },
   "dependencies": {
-    "@strapi/plugin-cloud": "5.47.0",
-    "@strapi/plugin-users-permissions": "5.47.0",
+    "@strapi/plugin-cloud": "5.52.0",
+    "@strapi/plugin-users-permissions": "5.52.0",
     "@strapi/provider-email-notification-service": "file:providers/strapi-provider-email-notification-service",
-    "@strapi/provider-upload-aws-s3": "5.47.0",
-    "@strapi/strapi": "5.47.0",
+    "@strapi/provider-upload-aws-s3": "5.52.0",
+    "@strapi/strapi": "5.52.0",
     "better-sqlite3": "^12.10.0",
     "bullmq": "^5.77.7",
     "ioredis": "^5.11.0",
@@ -57,7 +58,7 @@
     "react": "^18.0.0",
     "react-dom": "^18.0.0",
     "react-router-dom": "^6.0.0",
-    "sharp": "^0.33.5",
+    "sharp": "0.35.3",
     "styled-components": "^6.0.0"
   },
   "devDependencies": {

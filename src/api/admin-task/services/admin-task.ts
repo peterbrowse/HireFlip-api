@@ -2388,25 +2388,6 @@ const publishTaskChange = (strapi: StrapiDocumentService, task?: DocumentRecord)
     (strapi as { log?: { error?: (message: string, error?: unknown) => void } }).log
   );
 
-const taskCounts = (tasks: ReturnType<typeof publicTask>[]) => {
-  const totalActiveTasks = tasks.length;
-
-  return {
-    assessmentAppeals: tasks.filter((task) => task.taskType === 'assessment_appeal').length,
-    classReadiness: tasks.filter((task) => task.taskType === 'class_readiness').length,
-    criticalEvents: tasks.filter((task) => task.taskType === 'system_alert').length,
-    interviewOperations: tasks.filter((task) => task.taskType === 'interview_operation').length,
-    notificationFailures: tasks.filter((task) => task.taskType === 'notification_failure').length,
-    privacyRequests: tasks.filter((task) => task.taskType === 'privacy_request').length,
-    paymentChecks: tasks.filter((task) =>
-      ['payment_review', 'refund_review'].includes(task.taskType)
-    ).length,
-    supportCases: tasks.filter((task) => task.taskType === 'support_case').length,
-    totalActiveTasks,
-    totalOpenTasks: totalActiveTasks,
-  };
-};
-
 const syncTaskRecords = async (strapi: StrapiDocumentService) => {
   const detectedAt = new Date().toISOString();
   const drafts = await collectTaskDrafts(strapi);
@@ -2414,38 +2395,101 @@ const syncTaskRecords = async (strapi: StrapiDocumentService) => {
 
   await Promise.all(drafts.map((draft) => upsertTask(strapi, draft, detectedAt)));
   await resolveStaleTasks(strapi, activeTaskKeys, detectedAt);
+
+  return {
+    detectedAt,
+    taskCount: drafts.length,
+  };
 };
 
-const syncTasks = async (strapi: StrapiDocumentService, session?: AdminSession) =>
-  {
-    await syncTaskRecords(strapi);
-    const filters: Record<string, unknown> = {
-      taskState: {
-        $in: activeTaskStates,
-      },
-      taskType: {
-        $in: monitoredTaskTypes,
-      },
-    };
-    const visibility = session ? taskVisibilityFilter(session) : null;
-    const tasks = await findAllDocuments(strapi, 'api::admin-task.admin-task', {
-      filters: visibility ? { ...filters, $and: [visibility] } : filters,
-      sort: ['priorityRank:asc', 'lastDetectedAt:desc', 'createdAt:desc'],
-    });
+let taskReconciliation: Promise<{ detectedAt: string; taskCount: number }> | undefined;
 
-    return tasks.map(publicTask);
+const reconcileTaskRecords = (strapi: StrapiDocumentService) => {
+  if (!taskReconciliation) {
+    taskReconciliation = syncTaskRecords(strapi).finally(() => {
+      taskReconciliation = undefined;
+    });
+  }
+
+  return taskReconciliation;
+};
+
+const activeTaskFilters = (session: AdminSession, taskTypes: AdminTaskType[] = monitoredTaskTypes) => {
+  const visibility = taskVisibilityFilter(session);
+  const filters: Record<string, unknown> = {
+    taskState: {
+      $in: activeTaskStates,
+    },
+    taskType: {
+      $in: taskTypes,
+    },
   };
 
+  return visibility ? { ...filters, $and: [visibility] } : filters;
+};
+
+const overviewTaskCounts = async (strapi: StrapiDocumentService, session: AdminSession) => {
+  const taskDocuments = documents(strapi, 'api::admin-task.admin-task');
+  const count = (taskTypes: AdminTaskType[]) =>
+    taskDocuments.count({ filters: activeTaskFilters(session, taskTypes) });
+  const [
+    assessmentAppeals,
+    classReadiness,
+    criticalEvents,
+    interviewOperations,
+    notificationFailures,
+    privacyRequests,
+    paymentChecks,
+    supportCases,
+    totalActiveTasks,
+  ] = await Promise.all([
+    count(['assessment_appeal']),
+    count(['class_readiness']),
+    count(['system_alert']),
+    count(['interview_operation']),
+    count(['notification_failure']),
+    count(['privacy_request']),
+    count(['payment_review', 'refund_review']),
+    count(['support_case']),
+    count(monitoredTaskTypes),
+  ]);
+
+  return {
+    assessmentAppeals,
+    classReadiness,
+    criticalEvents,
+    interviewOperations,
+    notificationFailures,
+    paymentChecks,
+    privacyRequests,
+    supportCases,
+    totalActiveTasks,
+    totalOpenTasks: totalActiveTasks,
+  };
+};
+
 export default factories.createCoreService('api::admin-task.admin-task', ({ strapi }) => ({
+  async reconcileTasks() {
+    return reconcileTaskRecords(strapi);
+  },
+
   async getOverview(input: unknown, requestContext: RequestContext = {}) {
     const body = validateOverview(input);
     const session = await assertOperationsSession(strapi, body.sessionToken, requestContext);
-    const tasks = await syncTasks(strapi, session);
+    const taskDocuments = documents(strapi, 'api::admin-task.admin-task');
+    const [counts, taskRecords] = await Promise.all([
+      overviewTaskCounts(strapi, session),
+      taskDocuments.findMany({
+        filters: activeTaskFilters(session),
+        limit: 10,
+        sort: ['priorityRank:asc', 'lastDetectedAt:desc', 'createdAt:desc'],
+      }),
+    ]);
 
     return {
-      counts: taskCounts(tasks),
+      counts,
       generatedAt: new Date().toISOString(),
-      tasks,
+      tasks: taskRecords.map(publicTask),
       user: session.user,
     };
   },
@@ -2453,7 +2497,6 @@ export default factories.createCoreService('api::admin-task.admin-task', ({ stra
   async listTasks(input: unknown, requestContext: RequestContext = {}) {
     const body = validateTaskList(input);
     const session = await assertOperationsSession(strapi, body.sessionToken, requestContext);
-    await syncTaskRecords(strapi);
     const taskDocuments = documents(strapi, 'api::admin-task.admin-task');
     const filters = taskRecordFilters(body, session);
     const baseFilters = taskRecordFilters({ sessionToken: body.sessionToken }, session);
@@ -2519,7 +2562,6 @@ export default factories.createCoreService('api::admin-task.admin-task', ({ stra
     const body = validateTaskAction(input);
 
     const session = await assertOperationsSession(strapi, body.sessionToken, requestContext);
-    await syncTasks(strapi, session);
 
     const task = await findExistingTask(strapi, body.taskKey);
 

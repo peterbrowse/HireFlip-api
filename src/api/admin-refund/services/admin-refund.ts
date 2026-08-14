@@ -33,10 +33,6 @@ type AdminReviewClaimService = {
   ): Promise<{ reviewClaim: unknown }>;
 };
 
-type AdminTaskService = {
-  listTasks(input: unknown, context?: RequestContext): Promise<unknown>;
-};
-
 type AuditEventService = {
   record(input: Record<string, unknown>): Promise<unknown>;
 };
@@ -295,9 +291,6 @@ const adminAuthService = (strapi: StrapiDocumentService) =>
 
 const reviewClaimService = (strapi: StrapiDocumentService) =>
   strapi.service('api::admin-review-claim.admin-review-claim') as unknown as AdminReviewClaimService;
-
-const adminTaskService = (strapi: StrapiDocumentService) =>
-  strapi.service('api::admin-task.admin-task') as unknown as AdminTaskService;
 
 const auditEvents = (strapi: StrapiDocumentService) =>
   strapi.service('api::audit-event.audit-event') as unknown as AuditEventService;
@@ -3106,15 +3099,6 @@ export default ({ strapi }: { strapi: StrapiDocumentService }) => ({
   async listReviews(input: unknown, requestContext: RequestContext = {}) {
     const body = validateReviewList(input);
     const session = await assertRefundReviewSession(strapi, body.sessionToken, requestContext);
-    await adminTaskService(strapi).listTasks(
-      {
-        page: 1,
-        pageSize: 1,
-        sessionToken: body.sessionToken,
-        taskState: 'open',
-      },
-      requestContext
-    );
     const taskDocuments = documents(strapi, 'api::admin-task.admin-task');
     const baseFilters = {
       taskState: 'open',

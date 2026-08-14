@@ -1,6 +1,7 @@
 import { errors, validateZodSchema, z } from '@strapi/utils';
 import PDFDocument from 'pdfkit';
 import { getAuth0ManagementClient } from '../../../utils/auth0-management';
+import { reconcileExpiredCandidateReadinessSummaries } from '../../../utils/admin-list-summaries';
 
 const { ForbiddenError, ValidationError } = errors;
 
@@ -33,6 +34,11 @@ type DocumentRecord = Record<string, unknown> & {
   accountCreatedAt?: string;
   accountOnboardingCompletedAt?: string;
   accountRestrictionStatus?: string;
+  adminListClassLabel?: string;
+  adminListClassSortKey?: string;
+  adminListReadinessExpiresAt?: string;
+  adminListReadinessRank?: number;
+  adminListReadinessState?: string;
   appliedAt?: string;
   actorDisplayName?: string;
   actorEmail?: string;
@@ -106,6 +112,9 @@ type DocumentCollection = {
 };
 
 type StrapiService = {
+  db?: {
+    connection?: (tableName: string) => any;
+  };
   documents(uid: string): unknown;
   service(uid: string): unknown;
 };
@@ -772,24 +781,73 @@ const candidateActivityOption = (value: string) => ({
   value,
 });
 
+const candidateActivityDistinctValues = async (
+  strapi: StrapiService,
+  candidate: DocumentRecord,
+  column: 'actor_type' | 'event_category' | 'severity' | 'source'
+) => {
+  const connection = strapi.db?.connection;
+
+  if (!connection) {
+    throw new Error('Database connection is unavailable for candidate activity filters.');
+  }
+
+  const candidateDocumentId = getDocumentId(candidate);
+  const authIdentityId = stringValue(candidate.authIdentityId);
+  const email = stringValue(candidate.email);
+  const rows = await connection('audit_events')
+    .where((scope: any) => {
+      let hasScope = false;
+
+      if (candidateDocumentId) {
+        scope.where({
+          subject_id: candidateDocumentId,
+          subject_type: 'candidate',
+        });
+        hasScope = true;
+      }
+
+      if (authIdentityId) {
+        const method = hasScope ? 'orWhere' : 'where';
+        scope[method]({
+          actor_id: authIdentityId,
+          actor_type: 'candidate',
+        });
+        hasScope = true;
+      }
+
+      if (email) {
+        const method = hasScope ? 'orWhere' : 'where';
+        scope[method]({
+          actor_email: email,
+          actor_type: 'candidate',
+        });
+      }
+    })
+    .whereNotNull(column)
+    .whereNot(column, '')
+    .distinct(column)
+    .orderBy(column, 'asc');
+
+  return rows
+    .map((row: Record<string, unknown>) => stringValue(row[column]))
+    .filter(Boolean)
+    .map(candidateActivityOption);
+};
+
 const candidateActivityOptions = async (strapi: StrapiService, candidate: DocumentRecord) => {
-  const records = await candidateAuditEvents(strapi, candidate);
-  const unique = (values: unknown[]) =>
-    Array.from(new Set(values.filter((value): value is string => typeof value === 'string' && Boolean(value)))).sort();
+  const [actorTypes, categories, severities, sources] = await Promise.all([
+    candidateActivityDistinctValues(strapi, candidate, 'actor_type'),
+    candidateActivityDistinctValues(strapi, candidate, 'event_category'),
+    candidateActivityDistinctValues(strapi, candidate, 'severity'),
+    candidateActivityDistinctValues(strapi, candidate, 'source'),
+  ]);
 
   return {
-    actorTypes: unique(records.map((event) => event.actorType)).map(candidateActivityOption),
-    categories: unique(
-      records.map((event) =>
-        typeof event.eventCategory === 'string' && event.eventCategory
-          ? event.eventCategory
-          : typeof event.eventType === 'string'
-            ? event.eventType.split('.')[0]
-            : null
-      )
-    ).map(candidateActivityOption),
-    severities: unique(records.map((event) => event.severity)).map(candidateActivityOption),
-    sources: unique(records.map((event) => event.source)).map(candidateActivityOption),
+    actorTypes,
+    categories,
+    severities,
+    sources,
   };
 };
 
@@ -922,60 +980,32 @@ const salesScopeFilter = (session: AdminSession) => ({
 type CandidateListInput = z.infer<typeof listCandidatesSchema>;
 
 const candidateReadinessFilter = (readiness: CandidateListInput['readiness']) => {
-  const now = new Date().toISOString();
-
   if (readiness === 'all') {
     return null;
   }
 
   if (readiness === 'ready') {
     return {
-      profiles: {
-        availabilityConfirmedAt: {
-          $notNull: true,
-        },
-        availabilityExpiresAt: {
-          $gt: now,
-        },
-        profileState: 'completed',
-      },
+      adminListReadinessState: 'ready',
     };
   }
 
   if (readiness === 'complete') {
     return {
-      profiles: {
-        profileState: 'completed',
+      adminListReadinessState: {
+        $in: ['availability_expired', 'ready'],
       },
     };
   }
 
   if (readiness === 'availability_expired') {
     return {
-      profiles: {
-        profileState: 'completed',
-        $or: [
-          {
-            availabilityExpiresAt: {
-              $null: true,
-            },
-          },
-          {
-            availabilityExpiresAt: {
-              $lte: now,
-            },
-          },
-        ],
-      },
+      adminListReadinessState: 'availability_expired',
     };
   }
 
   return {
-    profiles: {
-      profileState: {
-        $ne: 'completed',
-      },
-    },
+    adminListReadinessState: 'incomplete',
   };
 };
 
@@ -1066,6 +1096,14 @@ const candidateListSort = (sortBy: CandidateListInput['sortBy'], sortDirection: 
 
   if (sortBy === 'displayName') {
     return [`lastName:${direction}`, `firstName:${direction}`, `email:${direction}`];
+  }
+
+  if (sortBy === 'class') {
+    return [`adminListClassSortKey:${direction}`, `lastName:asc`, `firstName:asc`];
+  }
+
+  if (sortBy === 'readiness') {
+    return [`adminListReadinessRank:${direction}`, `lastName:asc`, `firstName:asc`];
   }
 
   if (['candidateState', 'email', 'region', 'sector', 'updatedAt'].includes(sortBy)) {
@@ -1159,6 +1197,7 @@ const candidatePayload = (
   context?: {
     classLabel?: string | null;
     openSupportCount?: number;
+    readinessState?: string | null;
     strikeCount?: number;
   }
 ) => ({
@@ -1177,7 +1216,7 @@ const candidatePayload = (
   lastName: candidate.lastName || null,
   openSupportCount: context?.openSupportCount || 0,
   phone: permissions.canViewSensitiveFields ? candidate.phone || null : null,
-  readinessState: readinessState(profile),
+  readinessState: context?.readinessState || readinessState(profile),
   recruitmentPlatformVisibility: candidate.recruitmentPlatformVisibility || null,
   region: candidate.region || null,
   sector: candidate.sector || null,
@@ -2181,6 +2220,7 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
     const body = validateListCandidates(input);
     const session = await assertCandidateSession(strapi, body.sessionToken, requestContext);
     const permissions = candidatePermissions(session);
+    await reconcileExpiredCandidateReadinessSummaries(strapi);
     const candidateDocuments = documents(strapi, 'api::candidate.candidate');
     const filters = candidateListFilters({ body, includeSearch: true, session });
     const baseFilters = candidateListFilters({ body, includeSearch: false, session });
@@ -2214,10 +2254,13 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
       ]);
 
       const row = candidatePayload(candidate, permissions, profile, {
-        classLabel: candidateListClassLabel(enrollments),
+        classLabel:
+          stringValue(candidate.adminListClassLabel) || candidateListClassLabel(enrollments),
         openSupportCount: supportCases.filter((supportCase) =>
           ['awaiting_candidate', 'awaiting_staff', 'in_progress', 'open'].includes(String(supportCase.caseState || ''))
         ).length,
+        readinessState:
+          stringValue(candidate.adminListReadinessState) || readinessState(profile),
         strikeCount: strikes.filter((strike) =>
           ['active', 'appealed', 'upheld'].includes(String(strike.strikeState || ''))
         ).length,

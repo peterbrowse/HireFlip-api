@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { errors, validateZodSchema, z } from '@strapi/utils';
 import { getAuth0ManagementClient } from '../../../utils/auth0-management';
+import { selectEmployerLeadContact } from '../../../utils/admin-list-summaries';
 
 const { ForbiddenError, ValidationError } = errors;
 
@@ -34,6 +35,9 @@ type DocumentRecord = Record<string, unknown> & {
   acceptedByEmail?: string;
   acceptedByAuthIdentityId?: string;
   accountCreatedAt?: string;
+  adminListInviteCount?: number;
+  adminListLeadContactSortKey?: string;
+  adminListPendingInviteCount?: number;
   authIdentityId?: string;
   authPasswordTicketCreatedAt?: string;
   authPasswordTicketExpiresAt?: string;
@@ -447,7 +451,7 @@ const publicEmployerContact = (contact: DocumentRecord) => ({
 const primaryContact = (employer: DocumentRecord) => {
   const contacts = Array.isArray(employer.contacts) ? employer.contacts : [];
 
-  return contacts.find((contact) => contact.contactState === 'active') || contacts[0] || null;
+  return selectEmployerLeadContact(contacts);
 };
 
 const publicEmployer = (employer: DocumentRecord, invites: DocumentRecord[] = []) => {
@@ -575,40 +579,15 @@ const employerListSort = (
     return [`interviewCommitmentVolume:${sortDirection}`, `companyName:asc`];
   }
 
-  if (sortBy === 'leadContact' || sortBy === 'inviteCount') {
-    return [`companyName:${sortDirection}`];
+  if (sortBy === 'leadContact') {
+    return [`adminListLeadContactSortKey:${sortDirection}`, 'companyName:asc'];
+  }
+
+  if (sortBy === 'inviteCount') {
+    return [`adminListInviteCount:${sortDirection}`, 'companyName:asc'];
   }
 
   return [`${sortBy}:${sortDirection}`];
-};
-
-const employerInviteCounts = async (strapi: StrapiDocumentService, employerDocumentIds: string[]) => {
-  const inviteDocuments = documents(strapi, 'api::employer-invite.employer-invite');
-  const entries = await Promise.all(
-    employerDocumentIds.map(async (employerDocumentId) => {
-      const [total, pending] = await Promise.all([
-        inviteDocuments.count({
-          filters: {
-            employer: {
-              documentId: employerDocumentId,
-            },
-          },
-        }),
-        inviteDocuments.count({
-          filters: {
-            employer: {
-              documentId: employerDocumentId,
-            },
-            inviteState: 'pending',
-          },
-        }),
-      ]);
-
-      return [employerDocumentId, { pending, total }] as const;
-    })
-  );
-
-  return new Map(entries);
 };
 
 const getOperationalClassAreas = async (strapi: StrapiDocumentService) => {
@@ -1096,18 +1075,12 @@ export default ({ strapi }) => ({
       sort: employerListSort(body.sortBy, body.sortDirection),
       start: (page - 1) * body.pageSize,
     });
-    const employerDocumentIds = employers.map(getDocumentId).filter((documentId): documentId is string => Boolean(documentId));
-    const inviteCounts = await employerInviteCounts(strapi, employerDocumentIds);
-
     return {
       employers: employers.map((employer) => {
-        const employerDocumentId = getDocumentId(employer) || '';
-        const counts = inviteCounts.get(employerDocumentId) || { pending: 0, total: 0 };
-
         return {
           ...publicEmployer(employer, []),
-          inviteCount: counts.total,
-          pendingInvitesCount: counts.pending,
+          inviteCount: Number(employer.adminListInviteCount || 0),
+          pendingInvitesCount: Number(employer.adminListPendingInviteCount || 0),
         };
       }),
       filteredEmployers: filteredTotal,

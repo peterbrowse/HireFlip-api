@@ -1,5 +1,6 @@
 import type { Core } from '@strapi/strapi';
 import {
+  scheduleAdminTaskReconciliationJob,
   scheduleGuaranteeRefundReconciliationJob,
   scheduleInterviewWorkflowReconciliationJob,
   schedulePaymentReconciliationJob,
@@ -8,6 +9,7 @@ import {
   syncWaitingListOfferExpiryJobs,
 } from './utils/class-workflow-queue';
 import { disconnectAdminRealtimePublisher } from './utils/admin-realtime-events';
+import { rebuildAllAdminListSummaries } from './utils/admin-list-summaries';
 
 const backgroundBootstrapEnabled = () => {
   const value = (process.env.CLASS_WORKFLOW_BOOTSTRAP_ENABLED || 'true').toLowerCase();
@@ -61,12 +63,142 @@ const refundIdempotencyUniqueMigrationKey = 'refund-idempotency-key-unique-v1';
 const refundIdempotencyUniqueIndex = 'refunds_idempotency_key_uq';
 const auditEventIdempotencyUniqueMigrationKey = 'audit-event-idempotency-key-unique-v1';
 const auditEventIdempotencyUniqueIndex = 'audit_events_idempotency_key_uq';
+const adminListSummaryMigrationKey = 'admin-list-summary-backfill-v1';
+const adminDataContractIndexMigrationKey = 'admin-data-contract-indexes-v1';
+
+const adminDataContractIndexes = [
+  {
+    columns: ['admin_list_class_sort_key'],
+    indexName: 'candidates_admin_list_class_sort_idx',
+    tableName: 'candidates',
+  },
+  {
+    columns: ['admin_list_readiness_rank'],
+    indexName: 'candidates_admin_list_readiness_rank_idx',
+    tableName: 'candidates',
+  },
+  {
+    columns: ['admin_list_readiness_state', 'admin_list_readiness_expires_at'],
+    indexName: 'candidates_admin_list_readiness_state_idx',
+    tableName: 'candidates',
+  },
+  {
+    columns: ['admin_list_lead_contact_sort_key'],
+    indexName: 'employers_admin_list_lead_contact_sort_idx',
+    tableName: 'employers',
+  },
+  {
+    columns: ['admin_list_invite_count'],
+    indexName: 'employers_admin_list_invite_count_idx',
+    tableName: 'employers',
+  },
+  {
+    columns: ['task_state', 'priority_rank', 'last_detected_at'],
+    indexName: 'admin_tasks_state_priority_detected_idx',
+    tableName: 'admin_tasks',
+  },
+  {
+    columns: ['task_type', 'task_state'],
+    indexName: 'admin_tasks_type_state_idx',
+    tableName: 'admin_tasks',
+  },
+  {
+    columns: ['source_type', 'source_document_id'],
+    indexName: 'admin_tasks_source_idx',
+    tableName: 'admin_tasks',
+  },
+  {
+    columns: ['subject_type', 'subject_id'],
+    indexName: 'audit_events_subject_idx',
+    tableName: 'audit_events',
+  },
+  {
+    columns: ['actor_type', 'actor_id'],
+    indexName: 'audit_events_actor_id_idx',
+    tableName: 'audit_events',
+  },
+  {
+    columns: ['actor_type', 'actor_email'],
+    indexName: 'audit_events_actor_email_idx',
+    tableName: 'audit_events',
+  },
+] as const;
 
 const getMigrationStore = (strapi: Core.Strapi) =>
   strapi.store({
     type: 'plugin',
     name: 'hireflip-migrations',
   }) as unknown as MigrationStore;
+
+const migrateAdminListSummaries = async (strapi: Core.Strapi) => {
+  const store = getMigrationStore(strapi);
+  const migrationState = (await store.get({ key: adminListSummaryMigrationKey })) as
+    | { complete?: boolean }
+    | undefined;
+
+  if (migrationState?.complete) {
+    return;
+  }
+
+  const summary = await rebuildAllAdminListSummaries(strapi);
+
+  await store.set({
+    key: adminListSummaryMigrationKey,
+    value: {
+      complete: true,
+      migratedAt: new Date().toISOString(),
+      summary,
+    },
+  });
+};
+
+const migrateAdminDataContractIndexes = async (strapi: Core.Strapi) => {
+  const store = getMigrationStore(strapi);
+  const migrationState = (await store.get({ key: adminDataContractIndexMigrationKey })) as
+    | { complete?: boolean }
+    | undefined;
+
+  if (migrationState?.complete) {
+    return;
+  }
+
+  const connection = (strapi as unknown as { db?: { connection?: unknown } }).db
+    ?.connection as AdminTaskStateMigrationConnection | undefined;
+
+  if (!connection?.schema || typeof connection.raw !== 'function') {
+    return;
+  }
+
+  for (const index of adminDataContractIndexes) {
+    const hasTable = await connection.schema.hasTable(index.tableName);
+
+    if (!hasTable) {
+      return;
+    }
+
+    const hasColumns = await Promise.all(
+      index.columns.map((column) => connection.schema.hasColumn(index.tableName, column))
+    );
+
+    if (hasColumns.some((present) => !present)) {
+      return;
+    }
+  }
+
+  for (const index of adminDataContractIndexes) {
+    await connection.raw(
+      `create index if not exists ${index.indexName} on ${index.tableName} (${index.columns.join(', ')})`
+    );
+  }
+
+  await store.set({
+    key: adminDataContractIndexMigrationKey,
+    value: {
+      complete: true,
+      migratedAt: new Date().toISOString(),
+    },
+  });
+};
 
 const migrateAdminTaskStateColumn = async (strapi: Core.Strapi) => {
   const store = getMigrationStore(strapi);
@@ -412,6 +544,12 @@ export default {
     await migrateAuditEventIdempotencyUniqueness(strapi).catch((error) => {
       strapi.log.error('Audit-event idempotency-key uniqueness migration failed.', error);
     });
+    await migrateAdminListSummaries(strapi).catch((error) => {
+      strapi.log.error('Admin list summary backfill failed.', error);
+    });
+    await migrateAdminDataContractIndexes(strapi).catch((error) => {
+      strapi.log.error('Admin data-contract index migration failed.', error);
+    });
 
     if (!backgroundBootstrapEnabled()) {
       return;
@@ -429,6 +567,9 @@ export default {
     });
     void scheduleInterviewWorkflowReconciliationJob().catch((error) => {
       strapi.log.error('Interview workflow reconciliation job scheduling failed.', error);
+    });
+    void scheduleAdminTaskReconciliationJob().catch((error) => {
+      strapi.log.error('Admin task reconciliation job scheduling failed.', error);
     });
   },
 

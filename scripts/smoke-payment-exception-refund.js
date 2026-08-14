@@ -337,6 +337,8 @@ const main = async () => {
       'Expected payment exception approval audit event.'
     );
 
+    await originalService('api::admin-task.admin-task').reconcileTasks();
+
     const listResult = await service.listReviews(
       {
         sessionToken: 's'.repeat(32),

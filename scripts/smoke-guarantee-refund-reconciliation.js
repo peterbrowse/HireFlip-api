@@ -225,6 +225,8 @@ const main = async () => {
     });
     assert(second.total === 0, 'Expected a repeat run to have no completed work left.');
 
+    await originalService('api::admin-task.admin-task').reconcileTasks();
+
     const listed = await service.listReviews({
       page: 1,
       pageSize: 25,

@@ -27,10 +27,6 @@ type EmployerReliabilityEventService = {
   action(input: Record<string, unknown>, context?: RequestContext): Promise<unknown>;
 };
 
-type AdminTaskService = {
-  listTasks(input: unknown, context?: RequestContext): Promise<unknown>;
-};
-
 type DocumentRecord = Record<string, unknown> & {
   actionPath?: string;
   candidate?: DocumentRecord;
@@ -194,9 +190,6 @@ const employerReliabilityEventService = (strapi: StrapiDocumentService): Employe
   strapi.service(
     'api::employer-reliability-event.employer-reliability-event'
   ) as unknown as EmployerReliabilityEventService;
-
-const adminTaskService = (strapi: StrapiDocumentService): AdminTaskService =>
-  strapi.service('api::admin-task.admin-task') as unknown as AdminTaskService;
 
 const getDocumentId = (record?: DocumentRecord | null) =>
   typeof record?.documentId === 'string'
@@ -779,16 +772,6 @@ export default ({ strapi }) => ({
   async getOperations(input: unknown, requestContext: RequestContext = {}) {
     const body = validateOperations(input);
     const session = await assertSession(strapi, body.sessionToken, requestContext);
-    await adminTaskService(strapi).listTasks(
-      {
-        page: 1,
-        pageSize: 1,
-        sessionToken: body.sessionToken,
-        taskState: 'open',
-        taskType: 'interview_operation',
-      },
-      requestContext
-    );
 
     const taskDocuments = documents(strapi, 'api::admin-task.admin-task');
     const baseFilters = operationTaskFilters({ issue: 'all', session });
