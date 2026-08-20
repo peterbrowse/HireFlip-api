@@ -194,6 +194,8 @@ const inviteActionSchema = sessionTokenSchema
 const employerDetailSchema = sessionTokenSchema
   .extend({
     employerDocumentId: z.string().trim().min(1).max(80),
+    invitePage: z.coerce.number().int().min(1).default(1),
+    invitePageSize: z.coerce.number().int().min(10).max(100).default(25),
   })
   .strict();
 
@@ -454,10 +456,15 @@ const primaryContact = (employer: DocumentRecord) => {
   return selectEmployerLeadContact(contacts);
 };
 
-const publicEmployer = (employer: DocumentRecord, invites: DocumentRecord[] = []) => {
+const publicEmployer = (
+  employer: DocumentRecord,
+  invites: DocumentRecord[] = [],
+  inviteCounts?: { pending: number; total: number },
+) => {
   const contacts = Array.isArray(employer.contacts) ? employer.contacts : [];
   const leadContact = primaryContact(employer);
-  const pendingInvites = invites.filter((invite) => invite.inviteState === 'pending').length;
+  const pendingInvites =
+    inviteCounts?.pending ?? invites.filter((invite) => invite.inviteState === 'pending').length;
   const regions = employerRegions(employer);
   const regionsLabel = regionLabel(regions);
 
@@ -483,7 +490,7 @@ const publicEmployer = (employer: DocumentRecord, invites: DocumentRecord[] = []
 	    employerTermsAcceptedByEmail: employer.employerTermsAcceptedByEmail || null,
 	    employerTermsPolicyDocumentId: employer.employerTermsPolicyDocumentId || null,
 	    employerTermsPolicyVersion: employer.employerTermsPolicyVersion || null,
-	    inviteCount: invites.length,
+	    inviteCount: inviteCounts?.total ?? invites.length,
 	    leadContact: leadContact ? publicEmployerContact(leadContact) : null,
 	    onboardingComplete:
 	      employer.dashboardOnboardingState === 'complete' &&
@@ -1120,23 +1127,53 @@ export default ({ strapi }) => ({
       throw new ValidationError('Employer could not be found.');
     }
 
-    const invites = await findAllDocuments(documents(strapi, 'api::employer-invite.employer-invite'), {
-      filters: {
-        employer: {
-          documentId: body.employerDocumentId,
-        },
+    const inviteFilters = {
+      employer: {
+        documentId: body.employerDocumentId,
       },
+    };
+    const inviteDocuments = documents(strapi, 'api::employer-invite.employer-invite');
+    const [totalInvites, pendingInvites] = await Promise.all([
+      inviteDocuments.count({ filters: inviteFilters }),
+      inviteDocuments.count({
+        filters: {
+          ...inviteFilters,
+          expiresAt: {
+            $gt: new Date().toISOString(),
+          },
+          inviteState: 'pending',
+        },
+      }),
+    ]);
+    const invitePageCount = Math.max(1, Math.ceil(totalInvites / body.invitePageSize));
+    const invitePage = Math.min(body.invitePage, invitePageCount);
+    const inviteRows = await inviteDocuments.findMany({
+      filters: inviteFilters,
+      limit: body.invitePageSize,
       populate: invitePopulate,
       sort: ['createdAt:desc'],
+      start: (invitePage - 1) * body.invitePageSize,
     });
+    const invites = compact(
+      await Promise.all(inviteRows.map((invite) => expireIfNeeded(strapi, invite)))
+    );
 
     return {
       contacts: (Array.isArray(employer.contacts) ? employer.contacts : []).map(publicEmployerContact),
-      employer: publicEmployer(employer, invites),
+      employer: publicEmployer(employer, invites, {
+        pending: pendingInvites,
+        total: totalInvites,
+      }),
       generatedAt: new Date().toISOString(),
+      invitePagination: {
+        page: invitePage,
+        pageCount: invitePageCount,
+        pageSize: body.invitePageSize,
+        total: totalInvites,
+      },
       invites: invites.map((invite) => publicInvite(invite)),
       totalContacts: Array.isArray(employer.contacts) ? employer.contacts.length : 0,
-      totalInvites: invites.length,
+      totalInvites,
       user: session.user,
     };
   },

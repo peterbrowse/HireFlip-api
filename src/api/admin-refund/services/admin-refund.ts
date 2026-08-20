@@ -1177,6 +1177,22 @@ const dateHasPassed = (value?: string | null) => {
   return timestamp <= Date.now();
 };
 
+const evidenceDateTimeFormatter = new Intl.DateTimeFormat('en-GB', {
+  dateStyle: 'medium',
+  timeStyle: 'short',
+  timeZone: 'Europe/London',
+});
+
+const formatEvidenceDateTime = (value?: string | null) => {
+  if (!value) {
+    return null;
+  }
+
+  const date = new Date(value);
+
+  return Number.isFinite(date.getTime()) ? evidenceDateTimeFormatter.format(date) : null;
+};
+
 const publicFeedback = (feedback: DocumentRecord) => ({
   concerns: feedback.concerns || null,
   documentId: getDocumentId(feedback) || null,
@@ -1286,6 +1302,11 @@ const refundEvidenceForReview = async (strapi: StrapiDocumentService, review: Re
   const readinessOverviewAcknowledged = Boolean(profile?.readinessOverviewAcknowledgedAt);
   const availabilityConfirmedAt = profile?.availabilityConfirmedAt;
   const availabilityExpiresAt = profile?.availabilityExpiresAt;
+  const guaranteeDeadlineLabel = formatEvidenceDateTime(
+    review.enrollment?.interviewGuaranteeDeadline
+  );
+  const availabilityConfirmedLabel = formatEvidenceDateTime(availabilityConfirmedAt);
+  const availabilityExpiresLabel = formatEvidenceDateTime(availabilityExpiresAt);
   const decisionTree = [
     decisionTreeItem({
       detail:
@@ -1321,8 +1342,8 @@ const refundEvidenceForReview = async (strapi: StrapiDocumentService, review: Re
         typeof guaranteeDeadlinePassed === 'undefined'
           ? 'No interview guarantee deadline is recorded.'
           : guaranteeDeadlinePassed
-            ? `Guarantee deadline passed on ${review.enrollment?.interviewGuaranteeDeadline}.`
-            : `Guarantee deadline is still open until ${review.enrollment?.interviewGuaranteeDeadline}.`,
+            ? `Guarantee deadline passed on ${guaranteeDeadlineLabel}.`
+            : `Guarantee deadline is still open until ${guaranteeDeadlineLabel}.`,
       key: 'guarantee_window',
       label: 'Guarantee window',
       source: 'Enrollment guarantee deadline',
@@ -1369,15 +1390,15 @@ const refundEvidenceForReview = async (strapi: StrapiDocumentService, review: Re
     }),
     decisionTreeItem({
       detail:
-        availabilityConfirmedAt
-          ? `The latest availability confirmation was recorded at ${availabilityConfirmedAt}${
-              availabilityExpiresAt ? ` and expired at ${availabilityExpiresAt}` : ''
+        availabilityConfirmedLabel
+          ? `The latest availability confirmation was recorded at ${availabilityConfirmedLabel}${
+              availabilityExpiresLabel ? ` and expired at ${availabilityExpiresLabel}` : ''
             }. Review the activity timeline for continuity across the guarantee window.`
           : 'No candidate availability confirmation is recorded.',
       key: 'candidate_availability',
       label: 'Candidate availability',
       source: 'Candidate profile and activity timeline',
-      state: availabilityConfirmedAt ? 'needs_review' : 'not_recorded',
+      state: availabilityConfirmedLabel ? 'needs_review' : 'not_recorded',
     }),
     decisionTreeItem({
       detail:
