@@ -408,6 +408,12 @@ const candidateVisibleClassStates = new Set([
 const paidEnrollmentStatuses = new Set(['enrolled', 'in_class', 'interview_phase', 'completed', 'active']);
 const completedEnrollmentStatuses = new Set(['completed']);
 const capacityHoldingEnrollmentStatuses = new Set(['place_reserved', 'enrolled', 'in_class', 'interview_phase', 'completed']);
+const activeClassJourneyEnrollmentStatuses = new Set([
+  'place_reserved',
+  'enrolled',
+  'in_class',
+  'interview_phase',
+]);
 const candidateRelationshipClassStates = new Set(['coming_soon', 'waitlist_open', 'open']);
 const candidateRelationshipEnrollmentStatuses = new Set([
   'interest_registered',
@@ -2040,6 +2046,23 @@ const findClassInterestCounts = async (strapi: StrapiDocumentService, classes: D
 };
 
 const isPastDate = (value?: string) => Boolean(value && Date.parse(value) <= Date.now());
+
+const enrollmentBlocksAnotherClassReservation = (
+  enrollment: DocumentRecord,
+  targetClassDocumentId: string
+) => {
+  if (enrollmentClassDocumentId(enrollment) === targetClassDocumentId) {
+    return false;
+  }
+
+  const state = normalizedEnrollmentState(enrollment);
+
+  if (!state || !activeClassJourneyEnrollmentStatuses.has(state)) {
+    return false;
+  }
+
+  return state !== 'place_reserved' || !isPastDate(enrollment.reservationExpiresAt);
+};
 
 const validDate = (value?: string | Date | null) => {
   if (!value) {
@@ -11245,8 +11268,18 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       throw new ValidationError('This account is currently restricted and cannot reserve class places.');
     }
 
-    return withClassAllocationWriteLock(payload.classDocumentId, async () => {
+    return withClassAllocationWriteLock(`candidate-${existingCandidate.documentId}`, async () => {
     const existingEnrollments = await findCandidateEnrollments(strapi, existingCandidate);
+    const conflictingEnrollment = existingEnrollments.find((enrollment) =>
+      enrollmentBlocksAnotherClassReservation(enrollment, payload.classDocumentId)
+    );
+
+    if (conflictingEnrollment) {
+      throw new ValidationError(
+        'Finish your current class journey before reserving a place on another class.'
+      );
+    }
+
     const [matchingClasses, relationshipClasses] = await Promise.all([
       findMatchingClasses(strapi, existingCandidate),
       findRelationshipClasses(strapi, existingEnrollments),
@@ -11770,7 +11803,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
 
       throw error;
     }
-    }, { scope: `candidate:${existingCandidate.documentId}` });
+    }, { scope: 'active-class-journey' });
   },
 
   async declineCurrentCandidateWaitingListOffer(
