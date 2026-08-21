@@ -107,6 +107,9 @@ const main = async () => {
 
     if (uid === 'api::admin-review-claim.admin-review-claim') {
       return {
+        assertActiveClaimForSession: async () => ({
+          claimToken: 'c'.repeat(32),
+        }),
         claimForSession: async () => ({
           reviewClaim: {
             claimToken: 'c'.repeat(32),
@@ -131,6 +134,12 @@ const main = async () => {
         firstName: 'Support',
         lastName: 'Smoke',
         marketingConsentState: 'opted_out',
+        notificationPreferences: {
+          channels: {
+            email: false,
+            sms: false,
+          },
+        },
         preferredCommunicationChannel: 'email',
       },
     });
@@ -282,17 +291,84 @@ const main = async () => {
     assert(listedCandidateCase, 'Expected candidate support case list to include the case.');
     assert(listedCandidateCase.messages.length === 1, 'Expected candidate support case list to hide internal messages.');
 
+    const lifecycleRequesterMessage = 'Your support case has been resolved after review.';
+    const lifecycleInternalNote = 'Resolved after the refund evidence was checked.';
+    const lifecycleResult = await strapi
+      .service('api::admin-support.admin-support')
+      .updateCaseState({
+        body: lifecycleInternalNote,
+        caseState: 'resolved',
+        requesterMessage: lifecycleRequesterMessage,
+        reviewClaimToken: 'c'.repeat(32),
+        sessionToken: 's'.repeat(32),
+        supportCaseDocumentId: ensured.supportCase.documentId,
+      });
+
+    assert(lifecycleResult.stateUpdated === true, 'Expected lifecycle state update to succeed.');
+    assert(
+      lifecycleResult.supportCase?.caseState === 'resolved',
+      'Expected lifecycle state update to resolve the support case.'
+    );
+
+    const candidateCaseAfterLifecycle = await supportCaseService.getCaseForCandidate({
+      candidateDocumentId: candidate.documentId,
+      supportCaseDocumentId: ensured.supportCase.documentId,
+    });
+
+    assert(
+      candidateCaseAfterLifecycle.messages.some(
+        (message) => message.body === lifecycleRequesterMessage
+      ),
+      'Expected the requester-facing lifecycle message in the candidate conversation.'
+    );
+    assert(
+      !candidateCaseAfterLifecycle.messages.some(
+        (message) => message.body === lifecycleInternalNote
+      ),
+      'Expected the internal lifecycle note to remain hidden from the candidate.'
+    );
+
     const messages = await findMessagesForCase(strapi, ensured.supportCase.documentId);
 
-    assert(messages.length === 2, 'Expected two persisted support messages.');
+    assert(messages.length === 4, 'Expected four persisted support messages after the lifecycle update.');
+    assert(
+      messages.some(
+        (message) =>
+          message.body === lifecycleRequesterMessage && message.visibility === 'public'
+      ),
+      'Expected the lifecycle requester message to be persisted publicly.'
+    );
+    assert(
+      messages.some(
+        (message) => message.body === lifecycleInternalNote && message.visibility === 'internal'
+      ),
+      'Expected the lifecycle audit note to be persisted internally.'
+    );
 
     console.log('Support case smoke passed.');
   } finally {
     if (created.supportCase?.documentId) {
       const messages = await findMessagesForCase(strapi, created.supportCase.documentId);
+      const notificationEvents = await documents(
+        strapi,
+        'api::notification-event.notification-event'
+      ).findMany({
+        filters: {
+          relatedId: created.supportCase.documentId,
+          relatedType: 'support_case',
+        },
+      });
 
       for (const message of messages) {
         await deleteDocument(strapi, 'api::support-message.support-message', message.documentId);
+      }
+
+      for (const notificationEvent of notificationEvents) {
+        await deleteDocument(
+          strapi,
+          'api::notification-event.notification-event',
+          notificationEvent.documentId
+        );
       }
     }
 

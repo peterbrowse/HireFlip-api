@@ -72,6 +72,15 @@ export default {
     },
     {
       method: 'POST',
+      path: '/internal/admin/support/cases/account-restriction-appeal/decision',
+      handler: 'admin-support.accountRestrictionAppealDecision',
+      config: {
+        auth: false,
+        policies: [adminDashboardServicePolicy],
+      },
+    },
+    {
+      method: 'POST',
       path: '/internal/admin/support/cases/feedback-report-concern',
       handler: 'admin-support.feedbackReportConcern',
       config: {

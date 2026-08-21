@@ -10373,6 +10373,19 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
         documentId: supportCaseDocumentId,
       },
     });
+    const reopenedAccountRestrictionAppeal =
+      existingCase.caseKey === accountRestrictionAppealCaseKey(existingCandidate.documentId) &&
+      existingCandidate.accountRestrictionAppealStatus === 'rejected';
+
+    if (reopenedAccountRestrictionAppeal) {
+      await documents(strapi, 'api::candidate.candidate').update({
+        documentId: existingCandidate.documentId,
+        data: {
+          accountRestrictionAppealStatus: 'under_review',
+        },
+      });
+    }
+
     const ownerNotificationResult = await queueAssignedOwnerSupportNotification({
       candidate: existingCandidate,
       requestContext,
@@ -10387,6 +10400,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       eventType: 'candidate.support_case_replied',
       ipAddress: requestContext.ipAddress,
       metadata: {
+        accountRestrictionAppealReopened: reopenedAccountRestrictionAppeal,
         assignedOwnerNotificationQueued: ownerNotificationResult.emailQueued,
         ownerStaffUserId: existingCase.ownerStaffUserId,
         messageDocumentId: message.documentId,

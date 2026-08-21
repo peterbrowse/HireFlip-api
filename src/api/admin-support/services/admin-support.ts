@@ -80,7 +80,21 @@ type SupportCaseService = {
   updateCaseState(input: unknown): Promise<unknown>;
 };
 
+type AuditEventService = {
+  record(input: unknown): Promise<unknown>;
+};
+
+type AdminCandidateService = {
+  accountAction(input: unknown, context: RequestContext): Promise<unknown>;
+};
+
 type DocumentRecord = Record<string, unknown> & {
+  accountRestrictionAppealStatus?: string;
+  accountRestrictedAt?: string;
+  accountRestrictedBy?: string;
+  accountRestrictionMessage?: string;
+  accountRestrictionReason?: string;
+  accountRestrictionStatus?: string;
   aiMetadata?: unknown;
   aiModel?: string;
   aiPromptVersion?: string;
@@ -223,11 +237,43 @@ const updateCaseStateSchema = z
   .object({
     body: z.string().trim().min(1).max(12000),
     caseState: z.enum(['awaiting_staff', 'closed', 'in_progress', 'open', 'resolved']),
+    requesterMessage: z.string().trim().min(1).max(12000),
     reviewClaimToken: z.string().trim().min(32).max(160).optional(),
     sessionToken: z.string().trim().min(32).max(512),
     supportCaseDocumentId: z.string().trim().min(1).max(120),
   })
   .strict();
+const accountRestrictionAppealDecisionSchema = z
+  .object({
+    candidateMessage: z.string().trim().max(4000).optional(),
+    decision: z.enum(['start_review', 'reject', 'uphold']),
+    reasonNote: z.string().trim().max(4000).optional(),
+    reviewClaimToken: z.string().trim().min(32).max(160).optional(),
+    sessionToken: z.string().trim().min(32).max(512),
+    supportCaseDocumentId: z.string().trim().min(1).max(120),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.decision === 'start_review') {
+      return;
+    }
+
+    if (!value.candidateMessage) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'A candidate-facing decision message is required.',
+        path: ['candidateMessage'],
+      });
+    }
+
+    if (!value.reasonNote) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'An internal decision reason is required.',
+        path: ['reasonNote'],
+      });
+    }
+  });
 const generatedReportSchema = z
   .object({
     conclusion: z.string().trim().min(1).max(5000),
@@ -297,6 +343,9 @@ const validateAssignableStaff = validateZodSchema(assignableStaffSchema);
 const validateAssignCase = validateZodSchema(assignCaseSchema);
 const validateMessageCase = validateZodSchema(messageCaseSchema);
 const validateUpdateCaseState = validateZodSchema(updateCaseStateSchema);
+const validateAccountRestrictionAppealDecision = validateZodSchema(
+  accountRestrictionAppealDecisionSchema
+);
 const validateFeedbackReportConcernAction = validateZodSchema(feedbackReportConcernActionSchema);
 const validateFeedbackReportFailureDetail = validateZodSchema(feedbackReportFailureDetailSchema);
 const validateFeedbackReportFailureAction = validateZodSchema(feedbackReportFailureActionSchema);
@@ -311,6 +360,12 @@ const reviewClaimService = (strapi: StrapiService) =>
 
 const supportCaseService = (strapi: StrapiService) =>
   strapi.service('api::support-case.support-case') as unknown as SupportCaseService;
+
+const auditEvents = (strapi: StrapiService) =>
+  strapi.service('api::audit-event.audit-event') as unknown as AuditEventService;
+
+const adminCandidateService = (strapi: StrapiService) =>
+  strapi.service('api::admin-candidate.admin-candidate') as unknown as AdminCandidateService;
 
 const documents = (strapi: StrapiService, uid: string) =>
   strapi.documents(uid) as unknown as DocumentCollection;
@@ -869,6 +924,99 @@ const supportCaseRelatedRecord = (supportCase: DocumentRecord) => {
 
   return null;
 };
+
+const isAccountRestrictionAppealCase = (supportCase: DocumentRecord) => {
+  const metadata = objectValue(supportCase.metadata);
+
+  return (
+    metadata.kind === 'candidate_account_restriction_appeal' ||
+    (typeof supportCase.caseKey === 'string' &&
+      supportCase.caseKey.endsWith(':restriction-appeal'))
+  );
+};
+
+const canDecideAccountRestrictionAppeals = (session: AdminSession) =>
+  session.user.roleKeys.some((roleKey) => ['admin', 'super_admin'].includes(roleKey));
+
+const accountRestrictionAppealPayload = (
+  supportCase: DocumentRecord,
+  session: AdminSession
+) => {
+  if (!isAccountRestrictionAppealCase(supportCase)) {
+    return null;
+  }
+
+  const candidate = documentRecordValue(supportCase.candidate);
+  const candidateDocumentId = getDocumentId(candidate);
+  const metadata = objectValue(supportCase.metadata);
+
+  if (!candidate || !candidateDocumentId) {
+    return null;
+  }
+
+  return {
+    appealedAt: stringValue(metadata.appealedAt),
+    canDecide: canDecideAccountRestrictionAppeals(session),
+    candidateDocumentId,
+    decision: stringValue(metadata.accountRestrictionAppealDecision),
+    decidedAt: stringValue(metadata.accountRestrictionAppealDecidedAt),
+    reason: stringValue(metadata.reason),
+    restrictedAt: stringValue(candidate.accountRestrictedAt),
+    restrictionMessage: stringValue(candidate.accountRestrictionMessage),
+    restrictionReason:
+      stringValue(candidate.accountRestrictionReason) ||
+      stringValue(metadata.restrictionAction),
+    restrictionStatus:
+      stringValue(candidate.accountRestrictionStatus) ||
+      stringValue(metadata.restrictionStatus),
+    status: stringValue(candidate.accountRestrictionAppealStatus) || 'submitted',
+  };
+};
+
+const recordAccountRestrictionAppealAudit = (
+  strapi: StrapiService,
+  session: AdminSession,
+  candidate: DocumentRecord,
+  supportCaseDocumentId: string,
+  decision: 'start_review' | 'reject' | 'uphold',
+  requestContext: RequestContext,
+  payload: {
+    newState: unknown;
+    previousState: unknown;
+    reasonNote?: string;
+  }
+) =>
+  auditEvents(strapi).record({
+    actorDisplayName: session.user.displayName,
+    actorEmail: session.user.email,
+    actorId: session.user.id,
+    actorType: 'admin',
+    eventCategory: 'admin',
+    eventType: {
+      reject: 'admin.candidate_account_restriction_appeal_rejected',
+      start_review: 'admin.candidate_account_restriction_appeal_review_started',
+      uphold: 'admin.candidate_account_restriction_appeal_upheld',
+    }[decision],
+    ipAddress: requestContext.ipAddress,
+    metadata: {
+      decision,
+      reasonNote: payload.reasonNote || null,
+      supportCaseDocumentId,
+    },
+    newState: payload.newState,
+    occurredAt: new Date().toISOString(),
+    previousState: payload.previousState,
+    requestId: requestContext.requestId,
+    severity: decision === 'reject' ? 'warning' : 'info',
+    source: 'admin_dashboard',
+    subjectDisplayName:
+      [candidate.firstName, candidate.lastName].filter(Boolean).join(' ').trim() ||
+      candidate.email ||
+      'Candidate',
+    subjectId: getDocumentId(candidate),
+    subjectType: 'candidate',
+    userAgent: requestContext.userAgent,
+  });
 
 const normalizeCandidateReportTakeaways = (value: unknown) =>
   (Array.isArray(value) ? value : [])
@@ -1620,11 +1768,196 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
       : { reviewClaim: null };
 
     return {
+      accountRestrictionAppeal: supportCaseRecord
+        ? accountRestrictionAppealPayload(supportCaseRecord, session)
+        : null,
       generatedAt: new Date().toISOString(),
       feedbackReportReview,
       relatedRecord: supportCaseRecord ? supportCaseRelatedRecord(supportCaseRecord) : null,
       reviewClaim: claimResult.reviewClaim,
       supportCase,
+      user: session.user,
+    };
+  },
+
+  async decideAccountRestrictionAppeal(
+    input: unknown,
+    requestContext: RequestContext = {}
+  ) {
+    const body = validateAccountRestrictionAppealDecision(input);
+    const session = await assertSupportSession(strapi, body.sessionToken, requestContext);
+
+    if (!canDecideAccountRestrictionAppeals(session)) {
+      throw new ForbiddenError(
+        'Admin or Super Admin access is required to decide account restriction appeals.'
+      );
+    }
+
+    const supportCaseRecord = await findSupportCaseRecord(
+      strapi,
+      body.supportCaseDocumentId
+    );
+
+    if (!supportCaseRecord || !isAccountRestrictionAppealCase(supportCaseRecord)) {
+      throw new ValidationError('Account restriction appeal could not be found.');
+    }
+
+    const candidate = documentRecordValue(supportCaseRecord.candidate);
+    const candidateDocumentId = getDocumentId(candidate);
+
+    if (!candidate || !candidateDocumentId) {
+      throw new ValidationError('The appeal is not linked to a candidate account.');
+    }
+
+    await reviewClaimService(strapi).assertActiveClaimForSession(
+      {
+        claimToken: body.reviewClaimToken,
+        resourceDocumentId: body.supportCaseDocumentId,
+        resourceKey: body.supportCaseDocumentId,
+        resourceLabel: supportCaseRecord.title,
+        resourceType: 'support_case',
+      },
+      session
+    );
+
+    const previousAppealStatus =
+      stringValue(candidate.accountRestrictionAppealStatus) || 'submitted';
+
+    if (body.decision === 'start_review' && previousAppealStatus !== 'submitted') {
+      throw new ValidationError('Only a submitted appeal can be moved into review.');
+    }
+
+    if (
+      body.decision !== 'start_review' &&
+      previousAppealStatus !== 'under_review'
+    ) {
+      throw new ValidationError('Start the appeal review before recording a decision.');
+    }
+
+    const now = new Date().toISOString();
+    const candidateMessage =
+      body.decision === 'start_review'
+        ? 'Your account restriction appeal is now being reviewed. We will update this case when a decision has been made.'
+        : String(body.candidateMessage);
+    const nextAppealStatus = {
+      reject: 'rejected',
+      start_review: 'under_review',
+      uphold: 'not_applicable',
+    }[body.decision];
+    const nextCaseState = body.decision === 'start_review' ? 'in_progress' : 'resolved';
+    let notificationQueued = false;
+
+    if (body.decision === 'uphold') {
+      await adminCandidateService(strapi).accountAction(
+        {
+          action: 'reactivate',
+          candidateDocumentId,
+          candidateNote: candidateMessage,
+          reasonNote: body.reasonNote,
+          sessionToken: body.sessionToken,
+        },
+        requestContext
+      );
+    } else {
+      await documents(strapi, 'api::candidate.candidate').update({
+        documentId: candidateDocumentId,
+        data: {
+          accountRestrictionAppealStatus: nextAppealStatus,
+        },
+      });
+
+      const notificationResult = await queueCandidateSupportPrompt({
+        requestContext,
+        strapi,
+        supportCase: supportCaseRecord,
+      });
+      notificationQueued = notificationResult.emailQueued || notificationResult.smsQueued;
+    }
+
+    await supportCaseService(strapi).addMessage({
+      body: candidateMessage,
+      candidate,
+      deliveryState: notificationQueued ? 'queued' : 'not_required',
+      direction: 'outbound',
+      messageType: 'staff_reply',
+      metadata: {
+        accountRestrictionAppealDecision: body.decision,
+        notificationPromptQueued: notificationQueued,
+      },
+      sender: {
+        displayName: session.user.displayName,
+        email: session.user.email,
+        id: session.user.id,
+        type: 'admin',
+      },
+      subject:
+        body.decision === 'start_review'
+          ? 'Appeal review started'
+          : body.decision === 'uphold'
+            ? 'Appeal upheld'
+            : 'Appeal decision',
+      supportCase: {
+        documentId: body.supportCaseDocumentId,
+      },
+      visibility: 'public',
+    });
+
+    await supportCaseService(strapi).updateCaseState({
+      caseState: nextCaseState,
+      metadata: {
+        accountRestrictionAppealDecidedAt:
+          body.decision === 'start_review' ? null : now,
+        accountRestrictionAppealDecision:
+          body.decision === 'start_review' ? null : body.decision,
+        accountRestrictionAppealReviewedAt: now,
+        accountRestrictionAppealReviewedByAdminEmail: session.user.email,
+        accountRestrictionAppealReviewedByAdminId: session.user.id,
+      },
+      supportCase: supportCaseRecord,
+    });
+
+    await recordAccountRestrictionAppealAudit(
+      strapi,
+      session,
+      candidate,
+      body.supportCaseDocumentId,
+      body.decision,
+      requestContext,
+      {
+        newState: {
+          appealStatus: nextAppealStatus,
+          caseState: nextCaseState,
+          restrictionStatus:
+            body.decision === 'uphold'
+              ? 'active'
+              : candidate.accountRestrictionStatus || null,
+        },
+        previousState: {
+          appealStatus: previousAppealStatus,
+          caseState: supportCaseRecord.caseState || null,
+          restrictionStatus: candidate.accountRestrictionStatus || null,
+        },
+        reasonNote: body.reasonNote,
+      }
+    );
+    await publishSupportChange(strapi, body.supportCaseDocumentId);
+
+    const refreshedSupportCaseRecord = await findSupportCaseRecord(
+      strapi,
+      body.supportCaseDocumentId
+    );
+    const supportCase = await supportCaseService(strapi).getCase({
+      supportCaseDocumentId: body.supportCaseDocumentId,
+    });
+
+    return {
+      accountRestrictionAppeal: refreshedSupportCaseRecord
+        ? accountRestrictionAppealPayload(refreshedSupportCaseRecord, session)
+        : null,
+      decision: body.decision,
+      notificationQueued,
+      supportCase,
+      updated: true,
       user: session.user,
     };
   },
@@ -1836,6 +2169,55 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
     const previousState =
       typeof supportCaseRecord.caseState === 'string' ? supportCaseRecord.caseState : 'open';
 
+    const isEmployerCase = Boolean(supportCaseRecord.employerContact && !supportCaseRecord.candidate);
+    const notificationResult = isEmployerCase
+      ? await queueEmployerSupportPrompt({
+          requestContext,
+          strapi,
+          supportCase: supportCaseRecord,
+        })
+      : await queueCandidateSupportPrompt({
+          requestContext,
+          strapi,
+          supportCase: supportCaseRecord,
+        });
+    const dashboardUrl = isEmployerCase
+      ? employerSupportCaseUrl(body.supportCaseDocumentId)
+      : supportCaseUrl(body.supportCaseDocumentId);
+
+    await supportCaseService(strapi).addMessage({
+      body: body.requesterMessage,
+      candidate: supportCaseRecord.candidate,
+      deliveryState:
+        notificationResult.emailQueued || notificationResult.smsQueued ? 'queued' : 'not_required',
+      direction: 'outbound',
+      employer: supportCaseRecord.employer,
+      employerContact: supportCaseRecord.employerContact,
+      messageType: 'staff_reply',
+      metadata: {
+        dashboardUrl,
+        lifecycleState: body.caseState,
+        notificationPromptChannels: {
+          email: notificationResult.emailQueued,
+          sms: notificationResult.smsQueued,
+        },
+        notificationPromptQueued:
+          notificationResult.emailQueued || notificationResult.smsQueued,
+      },
+      refund: supportCaseRecord.refund,
+      sender: {
+        displayName: session.user.displayName,
+        email: session.user.email,
+        id: session.user.id,
+        type: 'admin',
+      },
+      subject: 'Support case status update',
+      supportCase: {
+        documentId: body.supportCaseDocumentId,
+      },
+      visibility: 'public',
+    });
+
     await supportCaseService(strapi).addMessage({
       body: body.body,
       candidate: supportCaseRecord.candidate,
@@ -1875,6 +2257,7 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
     await publishSupportChange(strapi, body.supportCaseDocumentId);
 
     return {
+      notificationQueued: notificationResult.emailQueued || notificationResult.smsQueued,
       stateUpdated: true,
       supportCase,
       user: session.user,

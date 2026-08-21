@@ -17,11 +17,26 @@ This repo has been reset to a clean Strapi 5 baseline. The previous broken API a
 
 ## Local Setup
 
+The API must be installed, built, and run with Node.js 22 and npm 10. The
+repository pins those tool versions and refuses npm commands under another
+Node major or npm major so native dependencies cannot be silently rebuilt
+against the wrong ABI.
+
 ```bash
+nvm use
 npm install
 cp .env.example .env.local
 npm run develop
 ```
+
+Verify both Node and the native SQLite binding at any time with:
+
+```bash
+npm run check:runtime
+```
+
+If the SQLite binding ever needs rebuilding, use `npm run sqlite:rebuild` after
+`nvm use`. The runtime guard prevents that script from running outside Node 22.
 
 Generate local secrets with:
 

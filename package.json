@@ -2,15 +2,27 @@
   "name": "hireflip-api",
   "version": "0.1.66",
   "private": true,
+  "packageManager": "npm@10.9.2",
   "description": "HireFlip core Strapi API",
   "scripts": {
+    "check:node": "node scripts/verify-node-version.js",
+    "check:runtime": "node scripts/verify-runtime.js",
+    "preinstall": "node scripts/verify-node-version.js",
+    "postinstall": "node scripts/verify-runtime.js",
+    "prebuild": "npm run check:runtime",
     "build": "ENV_PATH=${ENV_PATH:-.env.local} strapi build",
+    "preconsole": "npm run check:runtime",
     "console": "ENV_PATH=${ENV_PATH:-.env.local} strapi console",
+    "predeploy": "npm run check:runtime",
     "deploy": "ENV_PATH=${ENV_PATH:-.env.local} strapi deploy",
+    "predev": "npm run check:runtime",
     "dev": "ENV_PATH=${ENV_PATH:-.env.local} strapi develop",
     "develop": "npm run dev",
+    "prestart": "npm run check:runtime",
     "start": "ENV_PATH=${ENV_PATH:-.env.local} strapi start",
+    "prestrapi": "npm run check:runtime",
     "strapi": "ENV_PATH=${ENV_PATH:-.env.local} strapi",
+    "sqlite:rebuild": "npm rebuild better-sqlite3 && npm run check:runtime",
     "reset:class-data": "ENV_PATH=${ENV_PATH:-.env.local} node scripts/reset-class-data.js",
     "reconcile:payment-webhooks": "ENV_PATH=${ENV_PATH:-.env.local} node scripts/retry-payment-webhook-events.js",
     "seed:admin-roles": "ENV_PATH=${ENV_PATH:-.env.local} node scripts/seed-admin-roles.js",
@@ -34,6 +46,7 @@
     "smoke:admin-data-contracts": "npm run build && ENV_PATH=${ENV_PATH:-.env.local} node scripts/smoke-admin-data-contracts.js",
     "smoke:refund-provider-updates": "npm run build && ENV_PATH=${ENV_PATH:-.env.local} node scripts/smoke-refund-provider-updates.js",
     "smoke:support-cases": "npm run build && ENV_PATH=${ENV_PATH:-.env.local} node scripts/smoke-support-cases.js",
+    "smoke:account-restriction-appeals": "npm run build && ENV_PATH=${ENV_PATH:-.env.local} node scripts/smoke-account-restriction-appeals.js",
     "smoke:waiting-list-offers": "ENV_PATH=${ENV_PATH:-.env.local} node scripts/smoke-waiting-list-offers.js",
     "smoke:mvp-dry-run": "ENV_PATH=${ENV_PATH:-.env.local} node scripts/smoke-mvp-dry-run.js",
     "smoke:public-interest-lead-sync": "npm run build && ENV_PATH=${ENV_PATH:-.env.local} node scripts/smoke-public-interest-lead-sync.js",
@@ -72,6 +85,18 @@
   "engines": {
     "node": "22.x",
     "npm": "10.x"
+  },
+  "devEngines": {
+    "packageManager": {
+      "name": "npm",
+      "onFail": "error",
+      "version": "10.x"
+    },
+    "runtime": {
+      "name": "node",
+      "onFail": "error",
+      "version": "22.x"
+    }
   },
   "strapi": {
     "uuid": "9358c2ca-bd68-4d7f-985f-d3b93d55e98e",

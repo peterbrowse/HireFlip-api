@@ -8,6 +8,7 @@ type RequestContext = {
 type AdminSupportService = {
   addInternalNote(input: unknown, context: RequestContext): Promise<unknown>;
   assignCase(input: unknown, context: RequestContext): Promise<unknown>;
+  decideAccountRestrictionAppeal(input: unknown, context: RequestContext): Promise<unknown>;
   getCase(input: unknown, context: RequestContext): Promise<unknown>;
   getFeedbackReportFailure(input: unknown, context: RequestContext): Promise<unknown>;
   listAssignableStaff(input: unknown, context: RequestContext): Promise<unknown>;
@@ -114,6 +115,15 @@ export default ({ strapi }) => ({
   async state(ctx) {
     await writeResult(ctx, () =>
       adminSupportService(strapi).updateCaseState(ctx.request.body, getRequestContext(ctx))
+    );
+  },
+
+  async accountRestrictionAppealDecision(ctx) {
+    await writeResult(ctx, () =>
+      adminSupportService(strapi).decideAccountRestrictionAppeal(
+        ctx.request.body,
+        getRequestContext(ctx)
+      )
     );
   },
 
