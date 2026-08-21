@@ -2315,6 +2315,11 @@ const updatePaymentAfterProviderRefund = async ({
     typeof paymentAmount === 'number' && typeof refundAmount === 'number' && refundAmount >= paymentAmount
       ? 'refunded'
       : 'partially_refunded';
+  const completedEnrollmentState =
+    paymentState === 'refunded' &&
+    payment.enrollment?.enrollmentState === 'removed_full_refund'
+      ? 'refunded'
+      : undefined;
 
   const updatedPayment = await documents(strapi, 'api::payment.payment').update({
     documentId: payment.documentId,
@@ -2338,6 +2343,7 @@ const updatePaymentAfterProviderRefund = async ({
           lastRefundDocumentId: refund.documentId,
           lastRefundProcessedAt: refund.processedAt,
         },
+        ...(completedEnrollmentState ? { enrollmentState: completedEnrollmentState } : {}),
         paymentStatus: paymentState,
         ...(refund.eligibilitySource === 'interview_guarantee'
           ? { refundEligibilityState: 'refund_processed' }

@@ -392,6 +392,49 @@ const main = async () => {
       'Expected global active count to remain independent of list filters.'
     );
 
+    await service.recordProviderRefundUpdate(
+      {
+        eventType: 'refund.updated',
+        providerEventId: `evt_payment_exception_refund_completed_${runId}`,
+        providerRefund: {
+          amountPence: payment.amountPence,
+          createdAt: new Date().toISOString(),
+          currency: payment.currency,
+          failureReason: null,
+          metadata: {
+            refundDocumentId: refund.documentId,
+          },
+          paymentProvider: 'stripe',
+          providerPaymentIntentId: payment.providerPaymentIntentId,
+          providerRefundId: `re_payment_exception_refund_${runId}`,
+          providerRefundStatus: 'succeeded',
+          reason: 'requested_by_customer',
+        },
+      },
+      {
+        requestId,
+        serviceName: 'payment-exception-refund-smoke',
+      }
+    );
+
+    const [completedPayment, completedRefund, completedEnrollment] = await Promise.all([
+      findOneByDocumentId(strapi, 'api::payment.payment', payment.documentId),
+      findOneByDocumentId(strapi, 'api::refund.refund', refund.documentId),
+      findOneByDocumentId(strapi, 'api::enrollment.enrollment', enrollment.documentId),
+    ]);
+
+    assert(completedRefund.refundState === 'completed', 'Expected provider completion to complete the refund.');
+    assert(completedPayment.paymentState === 'refunded', 'Expected provider completion to refund the payment.');
+    assert(
+      completedEnrollment.paymentStatus === 'refunded',
+      'Expected provider completion to update the enrollment payment status.'
+    );
+    assert(
+      completedEnrollment.enrollmentState === 'refunded',
+      'Expected a completed full refund to move the enrollment from removed_full_refund to refunded.'
+    );
+    created.auditEvents = await findAuditEventsForRequest(strapi, requestId);
+
     console.log('Payment exception refund smoke passed.');
   } finally {
     if (created.refund?.documentId) {

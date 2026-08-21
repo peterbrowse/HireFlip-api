@@ -277,27 +277,7 @@ const cleanReadinessItems = (items: unknown) =>
     });
   });
 
-const normalizedReadinessSkills = (skills: unknown) => {
-  const record = objectValue(skills);
-  const normalizeList = (value: unknown) =>
-    arrayValue(value).filter(
-      (item): item is string => typeof item === 'string' && item.trim().length > 0
-    );
-
-  return {
-    strengths: normalizeList(record.strengths),
-  };
-};
-
-const profileAvailabilityIsFresh = (profile?: DocumentRecord | null, now = new Date()) =>
-  Boolean(
-    profile?.availabilityConfirmedAt &&
-      profile.availabilityExpiresAt &&
-      Date.parse(profile.availabilityExpiresAt) > now.getTime()
-  );
-
 const profileStructuredReadinessComplete = (profile?: DocumentRecord | null) => {
-  const skills = normalizedReadinessSkills(profile?.skills);
   const hasStructuredHistory =
     cleanReadinessItems(profile?.education).length > 0 ||
     cleanReadinessItems(profile?.experience).length > 0 ||
@@ -306,17 +286,11 @@ const profileStructuredReadinessComplete = (profile?: DocumentRecord | null) => 
   return Boolean(
     profile &&
       profile.profileState === 'completed' &&
-      String(profile.targetSector || '').trim() &&
-      String(profile.targetRoleTitle || '').trim() &&
       profile.targetRoleType &&
       profile.preferredWorkStyle &&
       String(profile.summary || '').trim().length >= 80 &&
       hasStructuredHistory &&
-      skills.strengths.length > 0 &&
-      profile.interviewFormatPreference &&
-      profile.readinessOverviewAcknowledgedAt &&
-      profile.recruitmentPlatformVisibility &&
-      profile.recruitmentPlatformVisibility !== 'not_set'
+      profile.readinessOverviewAcknowledgedAt
   );
 };
 
@@ -692,7 +666,6 @@ const candidatePrerequisites = async (
 ) => {
   if (!candidateDocumentId) {
     return {
-      availabilitySubmitted: false,
       profileComplete: false,
     };
   }
@@ -710,7 +683,6 @@ const candidatePrerequisites = async (
   const profile = profiles[0];
 
   return {
-    availabilitySubmitted: profileAvailabilityIsFresh(profile),
     profileComplete: profileStructuredReadinessComplete(profile),
   };
 };
@@ -3035,13 +3007,6 @@ export default factories.createCoreService('api::interview-request.interview-req
       return updateRequestCounts(strapi, request, {
         candidateVisibleState: 'waiting_for_candidate',
         requestState: 'pending_profile',
-      });
-    }
-
-    if (!prerequisites.availabilitySubmitted) {
-      return updateRequestCounts(strapi, request, {
-        candidateVisibleState: 'waiting_for_candidate',
-        requestState: 'pending_availability',
       });
     }
 

@@ -1400,48 +1400,6 @@ const objectValue = (value: unknown) => {
 
 const arrayValue = (value: unknown) => (Array.isArray(value) ? value : []);
 
-const dateOnlyToUtcStartMs = (value: string) => {
-  const parsedDate = parseDateOnly(value);
-
-  if (!parsedDate) {
-    return undefined;
-  }
-
-  return Date.UTC(parsedDate.year, parsedDate.month - 1, parsedDate.day);
-};
-
-const dateOnlyFromDate = (date: Date) => date.toISOString().slice(0, 10);
-
-const addCalendarDays = (date: Date, days: number) => {
-  const next = new Date(date);
-  next.setUTCDate(next.getUTCDate() + days);
-  return next;
-};
-
-const candidateUnavailableDatesInsideWindow = (dates: string[], now = new Date()) => {
-  const todayMs = dateOnlyToUtcStartMs(dateOnlyFromDate(now));
-  const maxMs = dateOnlyToUtcStartMs(
-    dateOnlyFromDate(addCalendarDays(now, candidateReadinessAvailabilityWindowDays))
-  );
-
-  if (typeof todayMs !== 'number' || typeof maxMs !== 'number') {
-    return false;
-  }
-
-  return dates.every((date) => {
-    const dateMs = dateOnlyToUtcStartMs(date);
-    return typeof dateMs === 'number' && dateMs >= todayMs && dateMs <= maxMs;
-  });
-};
-
-const candidateAvailabilityIsFresh = (profile?: DocumentRecord | null, now = new Date()) => {
-  if (!profile?.availabilityConfirmedAt || !profile.availabilityExpiresAt) {
-    return false;
-  }
-
-  return Date.parse(profile.availabilityExpiresAt) > now.getTime();
-};
-
 const candidateCvAutofillEnabled = () =>
   Boolean(process.env.AI_SERVICE_URL && process.env.AI_SERVICE_TOKEN);
 
@@ -3956,12 +3914,8 @@ const normalizedCandidateProfileSkills = (skills: unknown) => {
   };
 };
 
-const candidateProfileReadinessMissingRequirements = (
-  profile?: DocumentRecord | null,
-  now = new Date()
-) => {
+const candidateProfileReadinessMissingRequirements = (profile?: DocumentRecord | null) => {
   const missing: string[] = [];
-  const skills = normalizedCandidateProfileSkills(profile?.skills);
   const hasStructuredHistory =
     cleanReadinessItems(profile?.education).length > 0 ||
     cleanReadinessItems(profile?.experience).length > 0 ||
@@ -3970,14 +3924,6 @@ const candidateProfileReadinessMissingRequirements = (
 
   if (!profile || profile.profileState !== 'completed') {
     missing.push('Mark the interview CV/profile as complete.');
-  }
-
-  if (!String(profile?.targetSector || '').trim()) {
-    missing.push('Choose a target sector.');
-  }
-
-  if (!String(profile?.targetRoleTitle || '').trim()) {
-    missing.push('Add a target role/title.');
   }
 
   if (!profile?.targetRoleType) {
@@ -3996,34 +3942,15 @@ const candidateProfileReadinessMissingRequirements = (
     missing.push('Add at least one education, experience, or project item.');
   }
 
-  if (skills.strengths.length === 0) {
-    missing.push('Add at least one key strength.');
-  }
-
-  if (!profile?.interviewFormatPreference) {
-    missing.push('Choose an interview format preference.');
-  }
-
-  if (!candidateAvailabilityIsFresh(profile, now)) {
-    missing.push('Confirm unavailable dates for the next 30 days.');
-  }
-
   if (!profile?.readinessOverviewAcknowledgedAt) {
     missing.push('Confirm the interview journey overview.');
-  }
-
-  if (
-    !profile?.recruitmentPlatformVisibility ||
-    profile.recruitmentPlatformVisibility === 'not_set'
-  ) {
-    missing.push('Choose Recruitment Partners visibility.');
   }
 
   return missing;
 };
 
-const candidateProfileIsInterviewReady = (profile?: DocumentRecord | null, now = new Date()) =>
-  candidateProfileReadinessMissingRequirements(profile, now).length === 0;
+const candidateProfileIsInterviewReady = (profile?: DocumentRecord | null) =>
+  candidateProfileReadinessMissingRequirements(profile).length === 0;
 
 const sanitizeCandidateInterviewReadiness = ({
   candidate,
@@ -4033,12 +3960,8 @@ const sanitizeCandidateInterviewReadiness = ({
   profile?: DocumentRecord | null;
 }) => {
   const now = new Date();
-  const missingRequirements = candidateProfileReadinessMissingRequirements(profile, now);
-  const availabilitySubmitted = candidateAvailabilityIsFresh(profile, now);
-  const profileMissingRequirements = missingRequirements.filter(
-    (requirement) => requirement !== 'Confirm unavailable dates for the next 30 days.'
-  );
-  const profileComplete = Boolean(profile) && profileMissingRequirements.length === 0;
+  const missingRequirements = candidateProfileReadinessMissingRequirements(profile);
+  const profileComplete = Boolean(profile) && missingRequirements.length === 0;
   const metadata = objectValue(profile?.metadata);
 
   return {
@@ -4052,10 +3975,9 @@ const sanitizeCandidateInterviewReadiness = ({
       sector: candidate.sector || '',
     },
     completion: {
-      availabilitySubmitted,
       missingRequirements,
       profileComplete,
-      readyForInterviewRouting: profileComplete && availabilitySubmitted,
+      readyForInterviewRouting: profileComplete,
     },
     generatedAt: now.toISOString(),
     profile: {
@@ -4077,9 +3999,11 @@ const sanitizeCandidateInterviewReadiness = ({
       profileState: profile?.profileState || 'draft',
       projects: cleanReadinessItems(profile?.projects),
       recruitmentPlatformVisibility:
-        profile?.recruitmentPlatformVisibility ||
-        candidate.recruitmentPlatformVisibility ||
-        'not_set',
+        isSetRecruitmentPlatformVisibility(profile?.recruitmentPlatformVisibility)
+          ? profile?.recruitmentPlatformVisibility
+          : isSetRecruitmentPlatformVisibility(candidate.recruitmentPlatformVisibility)
+            ? candidate.recruitmentPlatformVisibility
+            : 'visible',
       recruitmentVisibilityWordingVersion:
         profile?.recruitmentVisibilityWordingVersion ||
         (typeof metadata.recruitmentVisibilityWordingVersion === 'string'
@@ -4114,33 +4038,18 @@ const candidateReadinessProfileData = ({
 }) => {
   const profile = payload.profile;
   const nowIso = now.toISOString();
-  const previousUnavailableDates = arrayValue(existingProfile?.unavailableDates).filter(
-    (date): date is string => typeof date === 'string'
-  );
-  const unavailableDatesChanged =
-    JSON.stringify(previousUnavailableDates.sort()) !== JSON.stringify([...profile.unavailableDates].sort()) ||
-    String(existingProfile?.availabilityNote || '') !== profile.availabilityNote;
-  const availabilityConfirmedAt = profile.availabilityConfirmed
-    ? unavailableDatesChanged
-      ? nowIso
-      : existingProfile?.availabilityConfirmedAt || nowIso
-    : existingProfile?.availabilityConfirmedAt;
-  const availabilityExpiresAt = availabilityConfirmedAt
-    ? addCalendarDays(new Date(availabilityConfirmedAt), candidateReadinessAvailabilityWindowDays).toISOString()
-    : existingProfile?.availabilityExpiresAt;
   const readinessOverviewAcknowledgedAt = profile.overviewAcknowledged
     ? existingProfile?.readinessOverviewAcknowledgedAt || nowIso
     : undefined;
-  const recruitmentVisibility =
-    profile.recruitmentPlatformVisibility ||
-    existingProfile?.recruitmentPlatformVisibility ||
-    'not_set';
+  const recruitmentVisibility = isSetRecruitmentPlatformVisibility(
+    profile.recruitmentPlatformVisibility
+  )
+    ? profile.recruitmentPlatformVisibility
+    : isSetRecruitmentPlatformVisibility(existingProfile?.recruitmentPlatformVisibility)
+      ? existingProfile?.recruitmentPlatformVisibility
+      : 'visible';
 
   return {
-    availability: profile.unavailableDates.join(', '),
-    availabilityConfirmedAt,
-    availabilityExpiresAt,
-    availabilityNote: profile.availabilityNote,
     completedAt:
       payload.action === 'complete'
         ? existingProfile?.completedAt || nowIso
@@ -4172,11 +4081,7 @@ const candidateReadinessProfileData = ({
     recruitmentVisibilityWordingVersion: candidateReadinessWordingVersion,
     skills: profile.skills,
     summary: profile.characterStatement,
-    targetRoleTitle: profile.targetRoleTitle,
     targetRoleType: profile.targetRoleType,
-    targetSector: profile.targetSector,
-    targetSectorLabel: profile.targetSectorLabel,
-    unavailableDates: profile.unavailableDates,
     visibilityUpdatedAt:
       recruitmentVisibility !== existingProfile?.recruitmentPlatformVisibility
         ? nowIso
@@ -4185,10 +4090,7 @@ const candidateReadinessProfileData = ({
       earliestStartDate: profile.earliestStartDate,
       interviewFormatPreference: profile.interviewFormatPreference,
       preferredWorkStyle: profile.preferredWorkStyle,
-      targetRoleTitle: profile.targetRoleTitle,
       targetRoleType: profile.targetRoleType,
-      targetSector: profile.targetSector,
-      targetSectorLabel: profile.targetSectorLabel,
     },
   };
 };
@@ -4357,20 +4259,14 @@ const buildCandidateInterviewJourneySummary = async ({
     positiveNumber(classRecord?.interviewsGuaranteed, 0)
   );
   const missingReadinessRequirements = candidateProfileReadinessMissingRequirements(profile);
-  const availabilitySubmitted = candidateAvailabilityIsFresh(profile);
-  const profileMissingRequirements = missingReadinessRequirements.filter(
-    (requirement) => requirement !== 'Confirm unavailable dates for the next 30 days.'
-  );
-  const profileComplete = Boolean(profile) && profileMissingRequirements.length === 0;
+  const profileComplete = Boolean(profile) && missingReadinessRequirements.length === 0;
   const requestVisibleStates = requests.map((request) => String(request.candidateVisibleState || ''));
   const requestStates = requests.map((request) => String(request.requestState || ''));
   const hasRequest = requests.length > 0;
   const readyForInterviewRouting =
     hasRequest &&
     profileComplete &&
-    availabilitySubmitted &&
-    !requestStates.includes('pending_profile') &&
-    !requestStates.includes('pending_availability');
+    !requestStates.includes('pending_profile');
   const selectedOffers = offers.filter((offer) => offer.offerState === 'candidate_selected');
   const interviews = offers
     .map((offer) => documentRecordValue(offer.selectedInterview))
@@ -4455,7 +4351,6 @@ const buildCandidateInterviewJourneySummary = async ({
       remainingCount: Math.max(0, guaranteedCount - guaranteeCompletedCount),
     },
     onboarding: {
-      availabilitySubmitted,
       profileComplete,
       readyForInterviewRouting,
       requirements: [
@@ -4465,13 +4360,6 @@ const buildCandidateInterviewJourneySummary = async ({
           key: 'profile',
           label: 'CV profile',
           state: profileComplete ? 'complete' : 'required',
-        },
-        {
-          detail: 'Confirm any days you cannot interview in the next 30 days.',
-          href: '/interviews/readiness',
-          key: 'availability',
-          label: 'First availability',
-          state: availabilitySubmitted ? 'complete' : 'required',
         },
       ],
     },
@@ -10653,10 +10541,6 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       throw new ValidationError('Candidate account must be synced before interview readiness can be updated.');
     }
 
-    if (!candidateUnavailableDatesInsideWindow(payload.profile.unavailableDates)) {
-      throw new ValidationError('Unavailable dates must be inside the next 30 days.');
-    }
-
     const existingProfile = await findCandidateLatestProfile(strapi, existingCandidate);
     const now = new Date();
     const data = candidateReadinessProfileData({
@@ -10673,10 +10557,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       ...existingProfile,
       ...data,
     } as DocumentRecord;
-    const missingRequirements = candidateProfileReadinessMissingRequirements(
-      profileForValidation,
-      now
-    );
+    const missingRequirements = candidateProfileReadinessMissingRequirements(profileForValidation);
 
     if (payload.action === 'complete' && missingRequirements.length > 0) {
       throw new ValidationError(
@@ -10714,7 +10595,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       });
     }
 
-    const readinessComplete = candidateProfileIsInterviewReady(savedProfile, now);
+    const readinessComplete = candidateProfileIsInterviewReady(savedProfile);
 
     await auditEvents(strapi).record({
       actorEmail: existingCandidate.email,
@@ -10727,8 +10608,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       ipAddress: requestContext.ipAddress,
       metadata: {
         action: payload.action,
-        availabilityExpiresAt: savedProfile.availabilityExpiresAt,
-        missingRequirements: candidateProfileReadinessMissingRequirements(savedProfile, now),
+        missingRequirements: candidateProfileReadinessMissingRequirements(savedProfile),
       },
       newState: sanitizeCandidateInterviewReadiness({
         candidate: existingCandidate,
