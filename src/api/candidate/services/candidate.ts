@@ -3922,10 +3922,6 @@ const candidateProfileReadinessMissingRequirements = (profile?: DocumentRecord |
     cleanReadinessItems(profile?.projects).length > 0;
   const characterStatement = String(profile?.summary || '').trim();
 
-  if (!profile || profile.profileState !== 'completed') {
-    missing.push('Mark the interview CV/profile as complete.');
-  }
-
   if (!profile?.targetRoleType) {
     missing.push('Choose a preferred role type.');
   }
@@ -3950,6 +3946,8 @@ const candidateProfileReadinessMissingRequirements = (profile?: DocumentRecord |
 };
 
 const candidateProfileIsInterviewReady = (profile?: DocumentRecord | null) =>
+  Boolean(profile) &&
+  profile?.profileState === 'completed' &&
   candidateProfileReadinessMissingRequirements(profile).length === 0;
 
 const sanitizeCandidateInterviewReadiness = ({
@@ -3961,7 +3959,7 @@ const sanitizeCandidateInterviewReadiness = ({
 }) => {
   const now = new Date();
   const missingRequirements = candidateProfileReadinessMissingRequirements(profile);
-  const profileComplete = Boolean(profile) && missingRequirements.length === 0;
+  const profileComplete = candidateProfileIsInterviewReady(profile);
   const metadata = objectValue(profile?.metadata);
 
   return {
@@ -4259,7 +4257,7 @@ const buildCandidateInterviewJourneySummary = async ({
     positiveNumber(classRecord?.interviewsGuaranteed, 0)
   );
   const missingReadinessRequirements = candidateProfileReadinessMissingRequirements(profile);
-  const profileComplete = Boolean(profile) && missingReadinessRequirements.length === 0;
+  const profileComplete = candidateProfileIsInterviewReady(profile);
   const requestVisibleStates = requests.map((request) => String(request.candidateVisibleState || ''));
   const requestStates = requests.map((request) => String(request.requestState || ''));
   const hasRequest = requests.length > 0;
