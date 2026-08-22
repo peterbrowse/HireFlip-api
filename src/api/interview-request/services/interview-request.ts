@@ -1546,6 +1546,83 @@ const queueEmployerInterviewReleasedNotification = async ({
   };
 };
 
+const queueCandidateInterviewReleasedNotification = async ({
+  interview,
+  requestContext,
+  strapi,
+}: {
+  interview: DocumentRecord;
+  requestContext: RequestContext;
+  strapi: StrapiDocumentService;
+}) => {
+  const candidate = documentRecordValue(interview.candidate);
+
+  if (!candidate?.documentId) {
+    return { emailQueued: false };
+  }
+
+  const interviewDocumentId = getDocumentId(interview);
+  const dashboardUrl = candidateDashboardInterviewUrl();
+  const subject = 'Your interview is being rearranged';
+  const emailQueueResult = candidate.email
+    ? await requestNotificationServiceEmail({
+        correlationId: interviewDocumentId,
+        subject,
+        template: {
+          key: 'generic_branded_message',
+          variables: {
+            bodyLines: [
+              `Hi ${candidate.firstName || 'there'},`,
+              'The employer did not confirm the final details for your selected interview in time, so HireFlip has released it.',
+              'This does not count against you. We are arranging replacement interview options and will notify you when they are ready.',
+            ],
+            ctaLabel: 'Review interview status',
+            ctaUrl: dashboardUrl,
+            heading: subject,
+            subject,
+          },
+        },
+        to: String(candidate.email),
+        type: 'candidate_interview_released_missing_details',
+      })
+    : undefined;
+
+  await Promise.all(
+    [
+      { channel: 'in_app', result: undefined },
+      ...(candidate.email ? [{ channel: 'email', result: emailQueueResult }] : []),
+    ].map(({ channel, result }) =>
+      documents(strapi, 'api::notification-event.notification-event').create({
+        data: {
+          candidate: relationConnect(candidate),
+          channel,
+          deliveryState:
+            channel === 'in_app' || result?.data?.queued === true ? 'queued' : 'failed',
+          employer: relationConnect(interview.employer),
+          eventType: 'candidate.interview_released_missing_details',
+          interview: relationConnect(interview),
+          metadata: {
+            dashboardUrl,
+            interviewDocumentId,
+            notificationServiceJobId:
+              typeof result?.data?.jobId === 'string' ? result.data.jobId : undefined,
+            requestId: requestContext.requestId,
+          },
+          priority: 'urgent',
+          recipientEmail: candidate.email,
+          recipientId: candidate.documentId,
+          recipientType: 'candidate',
+          relatedId: interviewDocumentId,
+          relatedType: 'interview',
+          templateKey: channel === 'email' ? 'generic_branded_message' : undefined,
+        },
+      })
+    )
+  );
+
+  return { emailQueued: emailQueueResult?.data?.queued === true };
+};
+
 const queueEmployerFeedbackReminderNotification = async ({
   interview,
   requestContext,
@@ -2282,6 +2359,9 @@ const releaseInterviewForMissingDetails = async ({
       employerDetailsReleaseReason: 'employer_did_not_confirm',
       employerDetailsReleasedAt: now,
       interviewState: 'employer_cancelled',
+      outcomeReason: 'The employer did not confirm the final interview details in time.',
+      outcomeRecordedAt: now,
+      outcomeSource: 'system',
       metadata: {
         ...objectValue(interview.metadata),
         candidateSafeCancellationReason: 'The employer did not confirm the final interview details in time.',
@@ -2328,6 +2408,13 @@ const releaseInterviewForMissingDetails = async ({
     interview,
     requestContext,
     strapi,
+  });
+  await queueCandidateInterviewReleasedNotification({
+    interview,
+    requestContext,
+    strapi,
+  }).catch((error) => {
+    strapi.log?.error?.('Candidate interview release notification failed.', error);
   });
   await documents(strapi, 'api::interview.interview').update({
     documentId: interviewDocumentId,

@@ -1089,6 +1089,141 @@ const main = async () => {
       'Expected candidate dashboard to include confirmed location details.'
     );
 
+    const confirmedDecline = await candidateService.declineCurrentCandidateConfirmedInterview(
+      auth,
+      interviewDocumentId,
+      {
+        reason: 'A family emergency means I can no longer attend this confirmed interview.',
+      },
+      {
+        requestId: `candidate-interview-smoke-confirmed-decline-${runId}`,
+      }
+    );
+
+    assert(confirmedDecline.declined === true, 'Expected confirmed interview decline to be recorded.');
+    assert(confirmedDecline.interview?.state === 'candidate_declined', 'Expected candidate-declined interview state.');
+    assert(confirmedDecline.strike?.documentId, 'Expected confirmed decline to create a strike.');
+    assert(
+      smokeFetch.notifications.some(
+        (notification) => notification.type === 'candidate_confirmed_interview_declined'
+      ),
+      'Expected candidate notification for confirmed interview decline.'
+    );
+    assert(
+      smokeFetch.notifications.some(
+        (notification) => notification.type === 'employer_confirmed_interview_declined'
+      ),
+      'Expected employer notification for confirmed interview decline.'
+    );
+
+    const createConfirmedOutcomeFixture = async (suffix) => {
+      const fixture = await createOfferFixture({
+        candidate: created.candidate,
+        classArea: created.classArea,
+        classRecord: created.classRecord,
+        contact: created.contact,
+        employer: created.employer,
+        enrollment: created.enrollment,
+        runId,
+        strapi,
+        suffix,
+      });
+      created.fixtures.push(fixture);
+      const accepted = await candidateService.acceptCurrentCandidateInterviewSlotOffer(
+        auth,
+        fixture.offer.documentId,
+        {
+          formatPreference: 'in_person',
+          slotDocumentId: fixture.slots[0].documentId,
+        },
+        { requestId: `candidate-interview-smoke-${suffix}-accept-${runId}` }
+      );
+      const confirmed = await employerDashboardService.updateInterviewSetup(
+        {
+          ...employerIdentity,
+          arrivalInstructions: 'Ask for the interview team at reception.',
+          candidateInstructions: 'Bring photo ID.',
+          employerContactDocumentId: created.contact.documentId,
+          interviewDocumentId: accepted.interview.documentId,
+          interviewerName: 'Employer Smoke',
+          locationDetails: 'HireFlip Smoke Office, 1 Test Street, London',
+          locationType: 'in_person',
+        },
+        { requestId: `candidate-interview-smoke-${suffix}-confirm-${runId}` }
+      );
+
+      return {
+        fixture,
+        interviewDocumentId: confirmed.interview.documentId,
+      };
+    };
+
+    for (const outcome of [
+      'employer_cancelled',
+      'rescheduled',
+      'employer_no_show',
+      'candidate_no_show',
+    ]) {
+      const outcomeFixture = await createConfirmedOutcomeFixture(outcome);
+
+      if (outcome.includes('no_show')) {
+        await documents(strapi, 'api::interview.interview').update({
+          documentId: outcomeFixture.interviewDocumentId,
+          data: {
+            scheduledStartTime: hoursAgo(1),
+          },
+        });
+      }
+
+      const outcomeResult = await employerDashboardService.recordInterviewOutcome(
+        {
+          ...employerIdentity,
+          interviewDocumentId: outcomeFixture.interviewDocumentId,
+          outcome,
+          reason: `Smoke-test candidate-safe explanation for ${outcome}.`,
+        },
+        { requestId: `candidate-interview-smoke-${outcome}-${runId}` }
+      );
+
+      assert(outcomeResult.outcomeRecorded === true, `Expected ${outcome} outcome to be recorded.`);
+      assert(
+        outcomeResult.interview?.interview?.state === outcome,
+        `Expected interview state ${outcome}.`
+      );
+      assert(
+        smokeFetch.notifications.some(
+          (notification) => notification.type === `candidate_interview_${outcome}`
+        ),
+        `Expected candidate notification for ${outcome}.`
+      );
+
+      if (outcome === 'candidate_no_show') {
+        assert(outcomeResult.strike?.documentId, 'Expected candidate no-show to create a strike.');
+      } else {
+        assert(!outcomeResult.strike, `Expected ${outcome} not to penalise the candidate.`);
+      }
+    }
+
+    const outcomeCandidateState = await candidateService.getCurrentCandidateInterviewSlotOffers(auth, {
+      requestId: `candidate-interview-smoke-outcome-history-${runId}`,
+    });
+    const visibleOutcomeStates = new Set(
+      outcomeCandidateState.offers.map((offer) => offer.selectedInterview?.state).filter(Boolean)
+    );
+
+    for (const expectedState of [
+      'candidate_declined',
+      'candidate_no_show',
+      'employer_cancelled',
+      'employer_no_show',
+      'rescheduled',
+    ]) {
+      assert(
+        visibleOutcomeStates.has(expectedState),
+        `Expected candidate payload to retain ${expectedState} history.`
+      );
+    }
+
     console.log('Candidate interview slot smoke passed.');
   } finally {
     global.fetch = globalThis.__hireflipOriginalFetch;

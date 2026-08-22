@@ -53,6 +53,12 @@ type CandidateService = {
     input: unknown,
     context: RequestContext
   ): Promise<unknown>;
+  declineCurrentCandidateConfirmedInterview(
+    auth: unknown,
+    interviewDocumentId: string,
+    input: unknown,
+    context: RequestContext
+  ): Promise<unknown>;
   acceptCurrentCandidateInterviewProgressionRequest(
     auth: unknown,
     progressionRequestDocumentId: string,
@@ -93,7 +99,7 @@ type CandidateService = {
     context: RequestContext
   ): Promise<unknown>;
   getCandidatePreferenceOptions(auth: unknown): Promise<unknown>;
-  getCurrentCandidateBillingHistory(auth: unknown): Promise<unknown>;
+  getCurrentCandidateBillingHistory(auth: unknown, input?: unknown): Promise<unknown>;
   getCurrentCandidateClassInterest(auth: unknown): Promise<unknown>;
   getCurrentCandidateCourse(auth: unknown): Promise<unknown>;
   getCurrentCandidateInterviewReadiness(auth: unknown): Promise<unknown>;
@@ -104,7 +110,7 @@ type CandidateService = {
     context: RequestContext
   ): Promise<unknown>;
   getCurrentCandidateSupportCase(auth: unknown, supportCaseDocumentId: string): Promise<unknown>;
-  getCurrentCandidateSupportCases(auth: unknown): Promise<unknown>;
+  getCurrentCandidateSupportCases(auth: unknown, input?: unknown): Promise<unknown>;
   createCurrentCandidateSupportCase(
     auth: unknown,
     input: unknown,
@@ -196,7 +202,8 @@ export default factories.createCoreController('api::candidate.candidate', ({ str
 
   async billingHistory(ctx) {
     const result = await candidateService(strapi).getCurrentCandidateBillingHistory(
-      ctx.state?.hireflipAuth
+      ctx.state?.hireflipAuth,
+      ctx.query
     );
 
     ctx.body = {
@@ -490,6 +497,23 @@ export default factories.createCoreController('api::candidate.candidate', ({ str
     };
   },
 
+  async declineConfirmedInterview(ctx) {
+    const result = await candidateService(strapi).declineCurrentCandidateConfirmedInterview(
+      ctx.state?.hireflipAuth,
+      ctx.params?.interviewDocumentId,
+      ctx.request.body,
+      {
+        ipAddress: getForwardedClientIp(ctx),
+        requestId: ctx.state?.requestId,
+        userAgent: ctx.request.get('x-hireflip-client-user-agent') || ctx.request.get('user-agent'),
+      }
+    );
+
+    ctx.body = {
+      data: result,
+    };
+  },
+
   async acceptInterviewProgressionRequest(ctx) {
     const result = await candidateService(strapi).acceptCurrentCandidateInterviewProgressionRequest(
       ctx.state?.hireflipAuth,
@@ -576,7 +600,8 @@ export default factories.createCoreController('api::candidate.candidate', ({ str
 
   async supportCases(ctx) {
     const result = await candidateService(strapi).getCurrentCandidateSupportCases(
-      ctx.state?.hireflipAuth
+      ctx.state?.hireflipAuth,
+      ctx.query
     );
 
     ctx.body = {

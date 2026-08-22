@@ -236,6 +236,19 @@ export default {
     },
     {
       method: 'POST',
+      path: '/candidates/me/interviews/:interviewDocumentId/decline',
+      handler: 'candidate.declineConfirmedInterview',
+      config: {
+        auth: false,
+        middlewares: [
+          {
+            name: 'global::auth0-jwt',
+          },
+        ],
+      },
+    },
+    {
+      method: 'POST',
       path: '/candidates/me/interview-progressions/:progressionRequestDocumentId/accept',
       handler: 'candidate.acceptInterviewProgressionRequest',
       config: {

@@ -958,6 +958,30 @@ const supportCaseCreateSchema = z
 
 const validateSupportCaseCreate = validateZodSchema(supportCaseCreateSchema);
 
+const supportCaseListSchema = z
+  .object({
+    page: z.coerce.number().int().min(1).default(1),
+    pageSize: z.coerce.number().int().min(10).max(100).default(25),
+    search: z.string().trim().max(120).optional().transform((value) => value || undefined),
+    state: z.enum(['all', 'open', 'in_progress', 'awaiting_staff', 'awaiting_candidate', 'resolved', 'closed']).default('all'),
+    type: z.string().trim().max(80).optional().transform((value) => value && value !== 'all' ? value : undefined),
+  })
+  .strict();
+
+const validateSupportCaseList = validateZodSchema(supportCaseListSchema);
+
+const billingHistoryListSchema = z
+  .object({
+    page: z.coerce.number().int().min(1).default(1),
+    pageSize: z.coerce.number().int().min(10).max(100).default(25),
+    search: z.string().trim().max(120).optional().transform((value) => value || undefined),
+    status: z.string().trim().max(80).optional().transform((value) => value && value !== 'all' ? value : undefined),
+    type: z.string().trim().max(80).optional().transform((value) => value && value !== 'all' ? value : undefined),
+  })
+  .strict();
+
+const validateBillingHistoryList = validateZodSchema(billingHistoryListSchema);
+
 const feedbackReportConcernSchema = z
   .object({
     reason: z.string().trim().min(10).max(4000),
@@ -1632,6 +1656,12 @@ const candidateInterviewSlotDeclineSchema = z
   })
   .strict();
 
+const candidateConfirmedInterviewDeclineSchema = z
+  .object({
+    reason: z.string().trim().min(10, 'Add a short explanation before declining.').max(2000),
+  })
+  .strict();
+
 const candidateInterviewProgressionDeclineSchema = z
   .object({
     declineReason: z.string().trim().max(2000).optional().transform((value) => value || undefined),
@@ -1658,6 +1688,9 @@ const candidateProgressionFollowUpSchema = z
 
 const validateCandidateInterviewSlotAccept = validateZodSchema(candidateInterviewSlotAcceptSchema);
 const validateCandidateInterviewSlotDecline = validateZodSchema(candidateInterviewSlotDeclineSchema);
+const validateCandidateConfirmedInterviewDecline = validateZodSchema(
+  candidateConfirmedInterviewDeclineSchema
+);
 const validateCandidateInterviewProgressionDecline = validateZodSchema(
   candidateInterviewProgressionDeclineSchema
 );
@@ -3538,7 +3571,16 @@ const sanitizeCandidateInterviewRecord = (
     return null;
   }
 
-  const detailsVisible = ['confirmed', 'completed'].includes(String(interview.interviewState || ''));
+  const detailsVisible = [
+    'confirmed',
+    'completed',
+    'candidate_declined',
+    'candidate_no_show',
+    'employer_cancelled',
+    'employer_no_show',
+    'rescheduled',
+    'cancelled',
+  ].includes(String(interview.interviewState || ''));
   const employerContact = documentRecordValue(interview.employerContact);
   const metadata = objectValue(interview.metadata);
   const candidateSafeCancellationReason =
@@ -3561,6 +3603,8 @@ const sanitizeCandidateInterviewRecord = (
     locationLabel: detailsVisible ? publicLocationTypeLabel(interview.locationType) : null,
     locationType: detailsVisible ? interview.locationType || 'to_be_confirmed' : null,
     meetingUrl: detailsVisible ? interview.meetingUrl || null : null,
+    outcomeRecordedAt: interview.outcomeRecordedAt || null,
+    outcomeReason: interview.outcomeReason || candidateSafeCancellationReason,
     scheduledEndTime: interview.scheduledEndTime,
     scheduledStartTime: interview.scheduledStartTime,
     state: interview.interviewState || 'awaiting_employer_details',
@@ -4678,6 +4722,135 @@ const queueEmployerInterviewSetupNotification = async ({
         notificationServiceJobId:
           typeof emailQueueResult?.data?.jobId === 'string'
             ? emailQueueResult.data.jobId
+            : undefined,
+        requestId: requestContext.requestId,
+      },
+      priority: 'urgent',
+      recipientEmail: String(employerContact.email),
+      recipientId: employerContact.documentId,
+      recipientType: 'employer_contact',
+      relatedId: interview.documentId,
+      relatedType: 'interview',
+      templateKey: 'generic_branded_message',
+    },
+  });
+};
+
+const queueConfirmedInterviewDeclinedNotifications = async ({
+  candidate,
+  employer,
+  employerContact,
+  interview,
+  reason,
+  requestContext,
+  strapi,
+}: {
+  candidate: DocumentRecord;
+  employer?: DocumentRecord | null;
+  employerContact?: DocumentRecord | null;
+  interview: DocumentRecord;
+  reason: string;
+  requestContext: RequestContext;
+  strapi: StrapiDocumentService;
+}) => {
+  const candidateSubject = 'Confirmed interview declined';
+  const candidateDashboardUrl = buildDashboardInterviewsUrl();
+  const candidateEmailResult = candidate.email
+    ? await requestNotificationServiceEmail({
+        correlationId: interview.documentId,
+        subject: candidateSubject,
+        template: {
+          key: 'generic_branded_message',
+          variables: {
+            bodyLines: [
+              `Hi ${candidate.firstName || 'there'},`,
+              'Your confirmed interview has been declined and an interview strike has been recorded under the terms you accepted.',
+              'HireFlip will review replacement options. You can review or dispute the strike from your interview dashboard.',
+            ],
+            ctaLabel: 'Review interview status',
+            ctaUrl: candidateDashboardUrl,
+            heading: candidateSubject,
+            subject: candidateSubject,
+          },
+        },
+        to: String(candidate.email),
+        type: 'candidate_confirmed_interview_declined',
+      })
+    : undefined;
+
+  await Promise.all(
+    [
+      { channel: 'in_app', result: undefined },
+      ...(candidate.email ? [{ channel: 'email', result: candidateEmailResult }] : []),
+    ].map(({ channel, result }) =>
+      documents(strapi, 'api::notification-event.notification-event').create({
+        data: {
+          candidate: relationConnect(candidate),
+          channel,
+          deliveryState:
+            channel === 'in_app' || result?.data?.queued === true ? 'queued' : 'failed',
+          employer: relationConnect(employer),
+          eventType: 'candidate.confirmed_interview_declined',
+          interview: relationConnect(interview),
+          metadata: {
+            dashboardUrl: candidateDashboardUrl,
+            notificationServiceJobId:
+              typeof result?.data?.jobId === 'string' ? result.data.jobId : undefined,
+            reason,
+            requestId: requestContext.requestId,
+          },
+          priority: 'urgent',
+          recipientEmail: candidate.email,
+          recipientId: candidate.documentId,
+          recipientType: 'candidate',
+          relatedId: interview.documentId,
+          relatedType: 'interview',
+          templateKey: channel === 'email' ? 'generic_branded_message' : undefined,
+        },
+      })
+    )
+  );
+
+  if (!employerContact?.email) {
+    return;
+  }
+
+  const employerSubject = `${candidateMessageDisplayName(candidate)} declined the confirmed interview`;
+  const employerDashboardUrl = buildEmployerDashboardInterviewsUrl();
+  const employerEmailResult = await requestNotificationServiceEmail({
+    correlationId: interview.documentId,
+    subject: employerSubject,
+    template: {
+      key: 'generic_branded_message',
+      variables: {
+        bodyLines: [
+          `${candidateMessageDisplayName(candidate)} can no longer attend the confirmed interview.`,
+          `Candidate explanation: ${reason}`,
+          'HireFlip has released the interview and will manage replacement routing.',
+        ],
+        ctaLabel: 'Open interviews',
+        ctaUrl: employerDashboardUrl,
+        heading: employerSubject,
+        subject: employerSubject,
+      },
+    },
+    to: String(employerContact.email),
+    type: 'employer_confirmed_interview_declined',
+  });
+
+  await documents(strapi, 'api::notification-event.notification-event').create({
+    data: {
+      candidate: relationConnect(candidate),
+      channel: 'email',
+      deliveryState: employerEmailResult?.data?.queued === true ? 'queued' : 'failed',
+      employer: relationConnect(employer),
+      eventType: 'employer.confirmed_interview_declined',
+      interview: relationConnect(interview),
+      metadata: {
+        dashboardUrl: employerDashboardUrl,
+        notificationServiceJobId:
+          typeof employerEmailResult?.data?.jobId === 'string'
+            ? employerEmailResult.data.jobId
             : undefined,
         requestId: requestContext.requestId,
       },
@@ -8377,7 +8550,15 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
         (offer) =>
           offer.offerState === 'candidate_selected' &&
           Boolean(offer.selectedInterview) &&
-          !['completed', 'candidate_no_show', 'candidate_declined', 'employer_cancelled', 'cancelled'].includes(
+          ![
+            'completed',
+            'candidate_no_show',
+            'candidate_declined',
+            'employer_cancelled',
+            'employer_no_show',
+            'rescheduled',
+            'cancelled',
+          ].includes(
             String(offer.selectedInterview?.state || '')
           )
       ) ||
@@ -8645,6 +8826,177 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       offer: sanitizeCandidateInterviewSlotOffer(result.offer),
       strike: result.strike,
       warningState: result.warningState,
+    };
+  },
+
+  async declineCurrentCandidateConfirmedInterview(
+    auth: Auth0State | undefined,
+    interviewDocumentId: string,
+    input: unknown = {},
+    requestContext: RequestContext = {}
+  ) {
+    if (!auth || auth.type !== 'auth0' || !auth.subject) {
+      throw new UnauthorizedError('Auth0 authentication is required.');
+    }
+
+    const existingCandidate = await findCandidateByAuthIdentity(strapi, auth.subject);
+
+    if (!existingCandidate) {
+      throw new ValidationError('Candidate account must be synced before an interview can be declined.');
+    }
+
+    const payload = validateCandidateConfirmedInterviewDecline(input ?? {});
+    const interviews = await documents(strapi, 'api::interview.interview').findMany({
+      filters: {
+        candidate: { documentId: existingCandidate.documentId },
+        documentId: interviewDocumentId,
+      },
+      limit: 1,
+      populate: ['candidate', 'employer', 'employerContact', 'enrollment', 'interviewSlot'],
+    });
+    const interview = interviews[0];
+
+    if (!interview) {
+      throw new ValidationError('Confirmed interview could not be found.');
+    }
+
+    if (interview.interviewState !== 'confirmed') {
+      throw new ValidationError('Only a confirmed interview can be declined through this action.');
+    }
+
+    const candidateOffers = await findCandidateInterviewSlotOffers(strapi, existingCandidate);
+    const offer = candidateOffers.find(
+      (candidateOffer) =>
+        getDocumentId(documentRecordValue(candidateOffer.selectedInterview)) === interviewDocumentId
+    );
+
+    if (!offer?.documentId) {
+      throw new ValidationError('The interview slot offer linked to this interview could not be found.');
+    }
+
+    const now = new Date().toISOString();
+    const strikeNumber = await nextCandidateInterviewStrikeNumber(strapi, existingCandidate);
+    const updatedInterview = await documents(strapi, 'api::interview.interview').update({
+      documentId: interviewDocumentId,
+      data: {
+        candidateStrikeApplied: true,
+        countsTowardGuarantee: false,
+        interviewState: 'candidate_declined',
+        metadata: {
+          ...objectValue(interview.metadata),
+          candidateConfirmedDeclineReason: payload.reason,
+          requestId: requestContext.requestId,
+        },
+        outcomeReason: payload.reason,
+        outcomeRecordedAt: now,
+        outcomeSource: 'candidate_dashboard',
+      },
+      populate: ['candidate', 'employer', 'employerContact', 'enrollment', 'interviewSlot'],
+    });
+    const updatedOffer = await documents(strapi, 'api::interview-slot-offer.interview-slot-offer').update({
+      documentId: offer.documentId,
+      data: {
+        candidateRespondedAt: now,
+        declineNote: payload.reason,
+        declineReason: 'other',
+        metadata: {
+          ...objectValue(offer.metadata),
+          candidateConfirmedInterviewDeclinedAt: now,
+          candidateConfirmedInterviewDocumentId: interviewDocumentId,
+          requestId: requestContext.requestId,
+        },
+        offerState: 'candidate_declined',
+      },
+      populate: candidateInterviewSlotOfferPopulate,
+    });
+    const strike = await documents(
+      strapi,
+      'api::candidate-interview-strike.candidate-interview-strike'
+    ).create({
+      data: {
+        appliedAt: now,
+        candidate: relationConnect(existingCandidate),
+        enrollment: relationConnect(interview.enrollment),
+        interview: relationConnect(interview),
+        metadata: {
+          interviewDocumentId,
+          interviewSlotOfferDocumentId: offer.documentId,
+          reason: payload.reason,
+          requestId: requestContext.requestId,
+        },
+        reason: 'candidate_declined_confirmed_interview',
+        strikeNumber,
+        strikeState: 'active',
+      },
+    });
+
+    await releaseCandidateDeclinedSlotOfferSlots({
+      offer: updatedOffer,
+      outcome: 'candidate_declined',
+      requestContext,
+      strapi,
+    });
+    await releaseCandidateOfferCapacityClaim({
+      offer: updatedOffer,
+      outcome: 'candidate_declined',
+      requestContext,
+      strapi,
+    });
+    await updateRequestAfterCandidateSlotOutcome({
+      offer: updatedOffer,
+      requestContext,
+      strapi,
+    });
+    await queueConfirmedInterviewDeclinedNotifications({
+      candidate: existingCandidate,
+      employer: documentRecordValue(interview.employer),
+      employerContact: documentRecordValue(interview.employerContact),
+      interview: updatedInterview,
+      reason: payload.reason,
+      requestContext,
+      strapi,
+    }).catch((error) => {
+      strapi.log?.error?.('Confirmed interview decline notification failed.', error);
+    });
+    await auditEvents(strapi).record({
+      actorId: existingCandidate.documentId,
+      actorType: 'candidate',
+      eventCategory: 'interview',
+      eventType: 'candidate.confirmed_interview_declined',
+      ipAddress: requestContext.ipAddress,
+      metadata: {
+        interviewDocumentId,
+        interviewSlotOfferDocumentId: offer.documentId,
+        reason: payload.reason,
+        requestId: requestContext.requestId,
+        strikeDocumentId: strike.documentId,
+        strikeNumber,
+      },
+      requestId: requestContext.requestId,
+      serviceName: requestContext.serviceName,
+      severity: 'warning',
+      source: 'candidate_dashboard',
+      subjectDisplayName: candidateMessageDisplayName(existingCandidate),
+      subjectId: interviewDocumentId,
+      subjectType: 'interview',
+      userAgent: requestContext.userAgent,
+    });
+    void interviewRequestService(strapi)
+      .reconcileReusableInterviewSlots(25, {
+        ...requestContext,
+        serviceName: requestContext.serviceName || 'candidate-confirmed-interview-decline',
+      })
+      .catch((error) => {
+        strapi.log?.error?.('Reusable interview slot assignment failed after confirmed decline.', error);
+      });
+
+    return {
+      declined: true,
+      interview: sanitizeCandidateInterviewRecord(updatedInterview),
+      strike: {
+        documentId: strike.documentId || null,
+        strikeNumber: strike.strikeNumber || strikeNumber,
+      },
     };
   },
 
@@ -9699,7 +10051,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
     return sanitizeCandidate(strapi, updatedCandidate);
   },
 
-  async getCurrentCandidateBillingHistory(auth: Auth0State | undefined) {
+  async getCurrentCandidateBillingHistory(auth: Auth0State | undefined, input: unknown = {}) {
     if (!auth || auth.type !== 'auth0' || !auth.subject) {
       throw new UnauthorizedError('Auth0 authentication is required.');
     }
@@ -9710,6 +10062,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       throw new ValidationError('Candidate account must be synced before billing history can be checked.');
     }
 
+    const query = validateBillingHistoryList(input || {});
     const [payments, refunds] = await Promise.all([
       findAllDocuments(documents(strapi, 'api::payment.payment'), {
         filters: {
@@ -9764,10 +10117,57 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       ...payments.map(sanitizeBillingPaymentEvent),
       ...refunds.map(sanitizeBillingRefundEvent),
     ].sort((left, right) => billingEventTimestamp(right.occurredAt) - billingEventTimestamp(left.occurredAt));
+    const search = String(query.search || '').toLocaleLowerCase('en-GB');
+    const filteredEvents = events.filter((event) => {
+      if (query.status && event.status !== query.status) {
+        return false;
+      }
+
+      if (query.type && event.type !== query.type) {
+        return false;
+      }
+
+      if (!search) {
+        return true;
+      }
+
+      return [
+        event.typeLabel,
+        event.statusLabel,
+        event.documentId,
+        event.reference,
+        event.class?.displayTitle,
+        event.class?.name,
+        event.class?.officialClassCode,
+        event.class?.region,
+        event.class?.sector,
+      ].some((value) => String(value || '').toLocaleLowerCase('en-GB').includes(search));
+    });
+    const pageCount = Math.max(1, Math.ceil(filteredEvents.length / query.pageSize));
+    const page = Math.min(query.page, pageCount);
+    const start = (page - 1) * query.pageSize;
 
     return {
-      events,
+      counts: {
+        review: events.filter((event) => event.requiresReview).length,
+        total: events.length,
+      },
+      events: filteredEvents.slice(start, start + query.pageSize),
+      filterOptions: {
+        statuses: Array.from(new Map(events.map((event) => [event.status, event.statusLabel])).entries())
+          .map(([value, label]) => ({ label, value }))
+          .sort((left, right) => left.label.localeCompare(right.label)),
+        types: Array.from(new Map(events.map((event) => [event.type, event.typeLabel])).entries())
+          .map(([value, label]) => ({ label, value }))
+          .sort((left, right) => left.label.localeCompare(right.label)),
+      },
       generatedAt: new Date().toISOString(),
+      pagination: {
+        page,
+        pageCount,
+        pageSize: query.pageSize,
+        total: filteredEvents.length,
+      },
     };
   },
 
@@ -10076,7 +10476,7 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
     };
   },
 
-  async getCurrentCandidateSupportCases(auth: Auth0State | undefined) {
+  async getCurrentCandidateSupportCases(auth: Auth0State | undefined, input: unknown = {}) {
     if (!auth || auth.type !== 'auth0' || !auth.subject) {
       throw new UnauthorizedError('Auth0 authentication is required.');
     }
@@ -10087,14 +10487,47 @@ export default factories.createCoreService('api::candidate.candidate', ({ strapi
       throw new ValidationError('Candidate account must be synced before support cases can be viewed.');
     }
 
-    const cases = await supportCaseService(strapi).casesForCandidate(existingCandidate.documentId);
+    const query = validateSupportCaseList(input || {});
+    const cases = await supportCaseService(strapi).casesForCandidate(existingCandidate.documentId) as Array<Record<string, unknown>>;
+    const search = String(query.search || '').toLocaleLowerCase('en-GB');
+    const filteredCases = cases.filter((supportCase) => {
+      if (query.state !== 'all' && supportCase.caseState !== query.state) {
+        return false;
+      }
+
+      if (query.type && supportCase.caseType !== query.type) {
+        return false;
+      }
+
+      if (!search) {
+        return true;
+      }
+
+      return [
+        supportCase.caseKey,
+        supportCase.caseState,
+        supportCase.caseType,
+        supportCase.documentId,
+        supportCase.summary,
+        supportCase.title,
+      ].some((value) => String(value || '').toLocaleLowerCase('en-GB').includes(search));
+    });
+    const pageCount = Math.max(1, Math.ceil(filteredCases.length / query.pageSize));
+    const page = Math.min(query.page, pageCount);
+    const start = (page - 1) * query.pageSize;
 
     return {
-      cases,
+      cases: filteredCases.slice(start, start + query.pageSize),
       counts: {
         total: cases.length,
       },
       generatedAt: new Date().toISOString(),
+      pagination: {
+        page,
+        pageCount,
+        pageSize: query.pageSize,
+        total: filteredCases.length,
+      },
     };
   },
 

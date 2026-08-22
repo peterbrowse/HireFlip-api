@@ -174,12 +174,14 @@ type AuditEventService = {
 };
 
 type InterviewRequestService = {
+  ensureForEnrollment(input: unknown, context: RequestContext): Promise<unknown>;
   markSlotOptionsSubmitted(input: unknown, context: RequestContext): Promise<unknown>;
   reconcileReusableInterviewSlots(limit?: number, context?: RequestContext): Promise<unknown>;
   releaseCapacityClaim(input: unknown, context: RequestContext): Promise<unknown>;
 };
 
 type EmployerReliabilityEventService = {
+  recordEvent(input: Record<string, unknown>, context?: RequestContext): Promise<unknown>;
   summaryForEmployer(employerDocumentId: string): Promise<unknown>;
 };
 
@@ -228,6 +230,16 @@ const identitySchema = z
   .refine((value) => Boolean(value.authIdentityId || value.email), {
     message: 'Employer identity is required.',
   });
+
+const overviewSchema = identitySchema
+  .extend({
+    collection: z.enum(['all', 'availability', 'feedback', 'interviews', 'progression']).default('all'),
+    page: z.coerce.number().int().min(1).default(1),
+    pageSize: z.coerce.number().int().min(10).max(100).default(25),
+    search: z.string().trim().max(120).optional().transform((value) => value || undefined),
+    status: z.string().trim().max(120).optional().transform((value) => value || undefined),
+  })
+  .strict();
 
 const locationTypeSchema = z.enum(['online', 'phone', 'in_person', 'to_be_confirmed']);
 const cadenceSchema = z.enum(['quarterly', 'biannually', 'annually']);
@@ -302,6 +314,19 @@ const interviewSetupSchema = identitySchema
     locationDetails: z.string().trim().max(2000).optional().transform((value) => value || undefined),
     locationType: locationTypeSchema,
     meetingUrl: z.string().trim().url().max(500).optional().or(z.literal('')).transform((value) => value || undefined),
+  })
+  .strict();
+
+const interviewOutcomeSchema = identitySchema
+  .extend({
+    interviewDocumentId: z.string().trim().min(1).max(120),
+    outcome: z.enum([
+      'candidate_no_show',
+      'employer_cancelled',
+      'employer_no_show',
+      'rescheduled',
+    ]),
+    reason: z.string().trim().min(10).max(2000),
   })
   .strict();
 
@@ -505,6 +530,15 @@ const supportCaseCreateSchema = identitySchema
   })
   .strict();
 
+const supportCaseListSchema = identitySchema
+  .extend({
+    page: z.coerce.number().int().min(1).default(1),
+    pageSize: z.coerce.number().int().min(10).max(100).default(25),
+    search: z.string().trim().max(120).optional().transform((value) => value || undefined),
+    status: z.enum(['open', 'in_progress', 'awaiting_staff', 'awaiting_candidate', 'resolved', 'closed']).optional(),
+  })
+  .strict();
+
 const supportCaseDetailSchema = identitySchema
   .extend({
     supportCaseDocumentId: z.string().trim().min(1).max(120),
@@ -532,6 +566,7 @@ const acceptInviteSchema = inviteTokenSchema
   .strict();
 
 const validateIdentity = validateZodSchema(identitySchema);
+const validateOverview = validateZodSchema(overviewSchema);
 const validateCompleteOnboarding = validateZodSchema(completeOnboardingSchema);
 const validateCapacityClaimDetail = validateZodSchema(capacityClaimDetailSchema);
 const validateCreateInterviewSlotOffer = validateZodSchema(createInterviewSlotOfferSchema);
@@ -539,6 +574,7 @@ const validateInterviewFeedbackDetail = validateZodSchema(interviewFeedbackDetai
 const validateInterviewDetail = validateZodSchema(interviewDetailSchema);
 const validateInterviewProgressionDetail = validateZodSchema(interviewProgressionDetailSchema);
 const validateInterviewSetup = validateZodSchema(interviewSetupSchema);
+const validateInterviewOutcome = validateZodSchema(interviewOutcomeSchema);
 const validateInviteInterviewFeedbackContributor = validateZodSchema(inviteInterviewFeedbackContributorSchema);
 const validateFeedbackInviteToken = validateZodSchema(feedbackInviteTokenSchema);
 const validateRevokeInterviewFeedbackInvite = validateZodSchema(revokeInterviewFeedbackInviteSchema);
@@ -551,6 +587,7 @@ const validateSubmitInvitedInterviewFeedback = validateZodSchema(submitInvitedIn
 const validateDeclineCapacityClaim = validateZodSchema(declineCapacityClaimSchema);
 const validateInviteTeamContact = validateZodSchema(inviteTeamContactSchema);
 const validateSupportCaseCreate = validateZodSchema(supportCaseCreateSchema);
+const validateSupportCaseList = validateZodSchema(supportCaseListSchema);
 const validateSupportCaseDetail = validateZodSchema(supportCaseDetailSchema);
 const validateSupportCaseReply = validateZodSchema(supportCaseReplySchema);
 const validateInviteToken = validateZodSchema(inviteTokenSchema);
@@ -4735,7 +4772,15 @@ const interviewDetailPayload = async (
     locationType,
     meetingUrl: interview.meetingUrl || slot?.meetingUrl,
   } as DocumentRecord;
-  const closedStates = ['completed', 'candidate_no_show', 'candidate_declined', 'employer_cancelled', 'cancelled'];
+  const closedStates = [
+    'completed',
+    'candidate_no_show',
+    'candidate_declined',
+    'employer_cancelled',
+    'employer_no_show',
+    'rescheduled',
+    'cancelled',
+  ];
 
   return {
     account: await accountPayload(strapi, contact),
@@ -5026,6 +5071,158 @@ const queueCandidateInterviewDetailsNotification = async ({
       })
     )
   );
+};
+
+const queueCandidateInterviewOutcomeNotification = async ({
+  contact,
+  interview,
+  outcome,
+  reason,
+  requestContext,
+  strapi,
+}: {
+  contact: DocumentRecord;
+  interview: DocumentRecord;
+  outcome: 'candidate_no_show' | 'employer_cancelled' | 'employer_no_show' | 'rescheduled';
+  reason: string;
+  requestContext: RequestContext;
+  strapi: StrapiDocumentService;
+}) => {
+  const candidate = documentRecordValue(interview.candidate);
+
+  if (!candidate?.documentId) {
+    return;
+  }
+
+  const dashboardUrl = candidateDashboardInterviewsUrl();
+  const employerName = contact.employer?.companyName || 'The employer';
+  const subject =
+    outcome === 'candidate_no_show'
+      ? 'Interview marked as missed'
+      : outcome === 'employer_no_show'
+        ? 'Employer did not attend your interview'
+        : outcome === 'rescheduled'
+          ? 'Your interview needs rescheduling'
+          : 'Your interview was cancelled by the employer';
+  const bodyLines =
+    outcome === 'candidate_no_show'
+      ? [
+          `Hi ${candidate.firstName || 'there'},`,
+          `${employerName} reported that you did not attend the confirmed interview.`,
+          'An interview strike has been recorded. You can review and dispute it from your interview dashboard.',
+          `Recorded context: ${reason}`,
+        ]
+      : [
+          `Hi ${candidate.firstName || 'there'},`,
+          outcome === 'employer_no_show'
+            ? `${employerName} did not attend your confirmed interview.`
+            : outcome === 'rescheduled'
+              ? `${employerName} needs to rearrange your confirmed interview.`
+              : `${employerName} cancelled your confirmed interview.`,
+          'This does not count against you. HireFlip is arranging replacement options.',
+          `Recorded context: ${reason}`,
+        ];
+  let emailResult: Awaited<ReturnType<typeof requestNotificationServiceEmail>> | undefined;
+
+  if (candidate.email) {
+    emailResult = await requestNotificationServiceEmail({
+      correlationId: getDocumentId(interview) || undefined,
+      template: {
+        key: 'generic_branded_message',
+        variables: {
+          bodyLines,
+          ctaLabel: 'Review interview status',
+          ctaUrl: dashboardUrl,
+          heading: subject,
+          subject,
+        },
+      },
+      to: String(candidate.email),
+      type: `candidate_interview_${outcome}`,
+    });
+  }
+
+  await Promise.all(
+    [
+      { channel: 'in_app', result: undefined },
+      ...(candidate.email ? [{ channel: 'email', result: emailResult }] : []),
+    ].map(({ channel, result }) =>
+      documents(strapi, 'api::notification-event.notification-event').create({
+        data: {
+          candidate: relationConnect(candidate),
+          channel,
+          deliveryState:
+            channel === 'in_app' || result?.data?.queued === true ? 'queued' : 'failed',
+          employer: relationConnect(interview.employer),
+          eventType: `candidate.interview_${outcome}`,
+          interview: relationConnect(interview),
+          metadata: {
+            dashboardUrl,
+            notificationServiceJobId:
+              typeof result?.data?.jobId === 'string' ? result.data.jobId : undefined,
+            outcome,
+            reason,
+            requestId: requestContext.requestId,
+          },
+          priority: 'urgent',
+          recipientEmail: candidate.email,
+          recipientId: candidate.documentId,
+          recipientType: 'candidate',
+          relatedId: getDocumentId(interview) || undefined,
+          relatedType: 'interview',
+          templateKey: channel === 'email' ? 'generic_branded_message' : undefined,
+        },
+      })
+    )
+  );
+};
+
+type OverviewInput = z.infer<typeof overviewSchema>;
+type OverviewCollection = Exclude<OverviewInput['collection'], 'all'>;
+
+const normalizedOverviewValue = (value: unknown) =>
+  String(value || '').trim().toLocaleLowerCase('en-GB');
+
+const paginateOverviewRows = <T extends Record<string, unknown>>(
+  rows: T[],
+  body: OverviewInput,
+  collection: OverviewCollection
+) => {
+  const applyFilters = body.collection === collection;
+  const search = applyFilters ? normalizedOverviewValue(body.search) : '';
+  const status = applyFilters ? normalizedOverviewValue(body.status) : '';
+  const filteredRows = rows.filter((row) => {
+    if (status && normalizedOverviewValue(row.statusLabel) !== status) {
+      return false;
+    }
+
+    if (!search) {
+      return true;
+    }
+
+    return Object.values(row).some((value) => {
+      if (Array.isArray(value) || (value && typeof value === 'object')) {
+        return false;
+      }
+
+      return normalizedOverviewValue(value).includes(search);
+    });
+  });
+  const requestedPage = applyFilters ? body.page : 1;
+  const pageSize = applyFilters ? body.pageSize : 25;
+  const pageCount = Math.max(1, Math.ceil(filteredRows.length / pageSize));
+  const page = Math.min(requestedPage, pageCount);
+  const start = (page - 1) * pageSize;
+
+  return {
+    pagination: {
+      page,
+      pageCount,
+      pageSize,
+      total: filteredRows.length,
+    },
+    rows: filteredRows.slice(start, start + pageSize),
+  };
 };
 
 export default ({ strapi }) => ({
@@ -6267,8 +6464,8 @@ export default ({ strapi }) => ({
   },
 	
   async getOverview(input: unknown) {
-	    const identity = validateIdentity(input);
-    const contact = await findEmployerContact(strapi, identity);
+	    const body = validateOverview(input);
+    const contact = await findEmployerContact(strapi, body);
     const employerDocumentId = getDocumentId(contact.employer);
     const contactDocumentId = getDocumentId(contact);
 
@@ -6402,14 +6599,36 @@ export default ({ strapi }) => ({
       (interview) => !feedbackInterviewIds.has(getDocumentId(interview) || '')
     );
     const account = await accountPayload(strapi, contact);
+    const availability = paginateOverviewRows(
+      capacityClaims.map(availabilityRequestPayload),
+      body,
+      'availability'
+    );
+    const feedback = paginateOverviewRows(feedbackDue.map(feedbackPayload), body, 'feedback');
+    const interviews = paginateOverviewRows(
+      scheduledInterviews.map(interviewPayload),
+      body,
+      'interviews'
+    );
+    const progression = paginateOverviewRows(
+      progressionRequests.map(progressionPayload),
+      body,
+      'progression'
+    );
 
     return {
       account,
-      availabilityRequests: capacityClaims.map(availabilityRequestPayload),
-      feedbackRequests: feedbackDue.map(feedbackPayload),
+      availabilityRequests: availability.rows,
+      feedbackRequests: feedback.rows,
       generatedAt: new Date().toISOString(),
-      interviews: scheduledInterviews.map(interviewPayload),
-      progressionRequests: progressionRequests.map(progressionPayload),
+      interviews: interviews.rows,
+      listPagination: {
+        availability: availability.pagination,
+        feedback: feedback.pagination,
+        interviews: interviews.pagination,
+        progression: progression.pagination,
+      },
+      progressionRequests: progression.rows,
       summary: {
         availableSlots: availableSlotCount,
         commitmentWindow: buildCommitmentWindowSummary({
@@ -6426,8 +6645,8 @@ export default ({ strapi }) => ({
   },
 
   async listSupportCases(input: unknown) {
-    const identity = validateIdentity(input);
-    const contact = await findEmployerContact(strapi, identity);
+    const body = validateSupportCaseList(input);
+    const contact = await findEmployerContact(strapi, body);
     const contactDocumentId = getDocumentId(contact);
     const employerDocumentId = getDocumentId(contact.employer);
 
@@ -6438,14 +6657,42 @@ export default ({ strapi }) => ({
     const cases = await supportCaseService(strapi).casesForEmployerContact({
       employerContactDocumentId: contactDocumentId,
       employerDocumentId,
+    }) as Array<Record<string, unknown>>;
+    const search = normalizedOverviewValue(body.search);
+    const filteredCases = cases.filter((supportCase) => {
+      if (body.status && supportCase.caseState !== body.status) {
+        return false;
+      }
+
+      if (!search) {
+        return true;
+      }
+
+      return [
+        supportCase.caseKey,
+        supportCase.caseState,
+        supportCase.caseType,
+        supportCase.documentId,
+        supportCase.summary,
+        supportCase.title,
+      ].some((value) => normalizedOverviewValue(value).includes(search));
     });
+    const pageCount = Math.max(1, Math.ceil(filteredCases.length / body.pageSize));
+    const page = Math.min(body.page, pageCount);
+    const start = (page - 1) * body.pageSize;
 
     return {
-      cases,
+      cases: filteredCases.slice(start, start + body.pageSize),
       counts: {
         total: cases.length,
       },
       generatedAt: new Date().toISOString(),
+      pagination: {
+        page,
+        pageCount,
+        pageSize: body.pageSize,
+        total: filteredCases.length,
+      },
     };
   },
 
@@ -7333,6 +7580,243 @@ export default ({ strapi }) => ({
     return interviewDetailPayload(strapi, interview, contact);
   },
 
+  async recordInterviewOutcome(input: unknown, requestContext: RequestContext = {}) {
+    const body = validateInterviewOutcome(input);
+    const contact = await findEmployerContact(strapi, body);
+    const interview = await findScopedInterview(strapi, contact, body.interviewDocumentId);
+    const interviewDocumentId = getDocumentId(interview);
+    const currentState = String(interview.interviewState || '');
+    const employerCaused = ['employer_cancelled', 'employer_no_show', 'rescheduled'].includes(
+      body.outcome
+    );
+
+    if (!interviewDocumentId) {
+      throw new ValidationError('Interview could not be updated.');
+    }
+
+    if (!['awaiting_employer_details', 'confirmed'].includes(currentState)) {
+      throw new ValidationError('Only an open interview can have an outcome recorded.');
+    }
+
+    if (
+      ['candidate_no_show', 'employer_no_show'].includes(body.outcome) &&
+      (!interview.scheduledStartTime || Date.parse(interview.scheduledStartTime) > Date.now())
+    ) {
+      throw new ValidationError('A no-show can only be recorded after the interview start time.');
+    }
+
+    const now = new Date().toISOString();
+    let strike: DocumentRecord | null = null;
+    let strikeNumber: number | null = null;
+
+    if (body.outcome === 'candidate_no_show') {
+      const candidate = documentRecordValue(interview.candidate);
+
+      if (!candidate?.documentId) {
+        throw new ValidationError('The candidate linked to this interview could not be found.');
+      }
+
+      const activeStrikeCount = await documents(
+        strapi,
+        'api::candidate-interview-strike.candidate-interview-strike'
+      ).count({
+        filters: {
+          candidate: { documentId: candidate.documentId },
+          strikeState: { $in: ['active', 'appealed', 'upheld'] },
+        },
+      });
+      strikeNumber = activeStrikeCount + 1;
+      strike = await documents(
+        strapi,
+        'api::candidate-interview-strike.candidate-interview-strike'
+      ).create({
+        data: {
+          appliedAt: now,
+          candidate: relationConnect(candidate),
+          enrollment: relationConnect(interview.enrollment),
+          interview: relationConnect(interview),
+          metadata: {
+            employerContactDocumentId: getDocumentId(contact),
+            interviewDocumentId,
+            reason: body.reason,
+            requestId: requestContext.requestId,
+          },
+          reason: 'candidate_no_show',
+          strikeNumber,
+          strikeState: 'active',
+        },
+      });
+    }
+
+    const updatedInterview = await documents(strapi, 'api::interview.interview').update({
+      documentId: interviewDocumentId,
+      data: {
+        candidateStrikeApplied: body.outcome === 'candidate_no_show',
+        countsTowardGuarantee: false,
+        employerCancellation: employerCaused,
+        interviewState: body.outcome,
+        metadata: {
+          ...objectValue(interview.metadata),
+          candidateSafeCancellationReason: employerCaused ? body.reason : null,
+          outcomeRecordedByEmployerContactDocumentId: getDocumentId(contact),
+          requestId: requestContext.requestId,
+        },
+        outcomeReason: body.reason,
+        outcomeRecordedAt: now,
+        outcomeSource: 'employer_dashboard',
+      },
+      populate: {
+        candidate: true,
+        employer: true,
+        employerContact: true,
+        enrollment: { populate: ['class'] },
+        interviewSlot: true,
+      },
+    });
+    const offers = await documents(
+      strapi,
+      'api::interview-slot-offer.interview-slot-offer'
+    ).findMany({
+      filters: { selectedInterview: { documentId: interviewDocumentId } },
+      limit: 1,
+      populate: ['candidate', 'employer', 'enrollment', 'interviewRequest', 'selectedSlot'],
+    });
+    const offer = offers[0];
+    const request = documentRecordValue(offer?.interviewRequest);
+
+    if (offer?.documentId) {
+      await documents(strapi, 'api::interview-slot-offer.interview-slot-offer').update({
+        documentId: offer.documentId,
+        data: {
+          metadata: {
+            ...objectValue(offer.metadata),
+            interviewOutcome: body.outcome,
+            interviewOutcomeAt: now,
+            interviewOutcomeDocumentId: interviewDocumentId,
+            requestId: requestContext.requestId,
+          },
+          offerState: employerCaused ? 'replacement_required' : offer.offerState,
+        },
+      });
+    }
+
+    const selectedSlot = documentRecordValue(interview.interviewSlot);
+
+    if (selectedSlot?.documentId) {
+      await documents(strapi, 'api::interview-slot.interview-slot').update({
+        documentId: selectedSlot.documentId,
+        data: {
+          metadata: {
+            ...objectValue(selectedSlot.metadata),
+            interviewOutcome: body.outcome,
+            interviewOutcomeAt: now,
+            requestId: requestContext.requestId,
+          },
+          slotState: 'cancelled',
+        },
+      });
+    }
+
+    if (request?.documentId) {
+      await documents(strapi, 'api::interview-request.interview-request').update({
+        documentId: request.documentId,
+        data: {
+          candidateVisibleState: strikeNumber && strikeNumber >= 3 ? 'blocked' : 'arranging_interviews',
+          claimedInterviewCount: 0,
+          lastCapacityCheckAt: now,
+          requestState: strikeNumber && strikeNumber >= 3 ? 'manual_review' : 'pending_capacity',
+        },
+      });
+    }
+
+    await queueCandidateInterviewOutcomeNotification({
+      contact,
+      interview: updatedInterview,
+      outcome: body.outcome,
+      reason: body.reason,
+      requestContext,
+      strapi,
+    }).catch((error) => {
+      strapi.log?.warn?.(
+        `Candidate interview outcome notification failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    });
+
+    if (employerCaused) {
+      await employerReliabilityEventService(strapi).recordEvent(
+        {
+          candidate: documentRecordValue(interview.candidate),
+          employer: documentRecordValue(interview.employer),
+          employerContact: contact,
+          eventAt: now,
+          eventType:
+            body.outcome === 'employer_no_show'
+              ? 'employer_no_show'
+              : body.outcome === 'rescheduled'
+                ? 'reschedule_requested'
+                : 'employer_cancelled',
+          interview: updatedInterview,
+          metadata: { reason: body.reason },
+          sourceDocumentId: interviewDocumentId,
+          sourceType: 'interview',
+          summary: body.reason,
+          title:
+            body.outcome === 'employer_no_show'
+              ? 'Employer interview no-show'
+              : body.outcome === 'rescheduled'
+                ? 'Interview reschedule requested'
+                : 'Employer interview cancellation',
+        },
+        requestContext
+      );
+    }
+
+    await auditEvents(strapi).record({
+      actorDisplayName: contactDisplayName(contact),
+      actorId: getDocumentId(contact) || undefined,
+      actorType: 'employer_contact',
+      eventCategory: 'interview',
+      eventType: `employer.interview_outcome_${body.outcome}`,
+      ipAddress: requestContext.ipAddress,
+      metadata: {
+        interviewDocumentId,
+        reason: body.reason,
+        requestId: requestContext.requestId,
+        strikeDocumentId: getDocumentId(strike) || null,
+        strikeNumber,
+      },
+      requestId: requestContext.requestId,
+      serviceName: requestContext.serviceName,
+      severity: body.outcome.includes('no_show') ? 'warning' : 'info',
+      source: 'employer_dashboard',
+      subjectDisplayName: candidateDisplayName(interview.candidate),
+      subjectId: interviewDocumentId,
+      subjectType: 'interview',
+      userAgent: requestContext.userAgent,
+    });
+
+    if (request?.documentId && (!strikeNumber || strikeNumber < 3)) {
+      await interviewRequestService(strapi).ensureForEnrollment(
+        {
+          enrollmentDocumentId: getDocumentId(interview.enrollment),
+          source: `employer_interview_outcome_${body.outcome}`,
+        },
+        requestContext
+      );
+      void interviewRequestService(strapi).reconcileReusableInterviewSlots(25, requestContext);
+    }
+
+    return {
+      interview: await interviewDetailPayload(strapi, updatedInterview, contact),
+      outcomeRecorded: true,
+      strike: strike
+        ? { documentId: getDocumentId(strike), strikeNumber }
+        : null,
+    };
+  },
+
   async updateInterviewSetup(input: unknown, requestContext: RequestContext = {}) {
     const body = validateInterviewSetup(input);
     const contact = await findEmployerContact(strapi, body);
@@ -7344,7 +7828,15 @@ export default ({ strapi }) => ({
     }
 
     if (
-      ['completed', 'candidate_no_show', 'candidate_declined', 'employer_cancelled', 'cancelled'].includes(
+      [
+        'completed',
+        'candidate_no_show',
+        'candidate_declined',
+        'employer_cancelled',
+        'employer_no_show',
+        'rescheduled',
+        'cancelled',
+      ].includes(
         String(interview.interviewState || '')
       )
     ) {

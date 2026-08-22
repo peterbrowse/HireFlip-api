@@ -24,6 +24,7 @@ type EmployerDashboardService = {
   inviteTeamContact(input: unknown, context: RequestContext): Promise<unknown>;
   createSupportCase(input: unknown, context: RequestContext): Promise<unknown>;
   replyToSupportCase(input: unknown, context: RequestContext): Promise<unknown>;
+  recordInterviewOutcome(input: unknown, context: RequestContext): Promise<unknown>;
   revokeInterviewFeedbackInvite(input: unknown, context: RequestContext): Promise<unknown>;
   updateInterviewSetup(input: unknown, context: RequestContext): Promise<unknown>;
   updateProfile(input: unknown, context: RequestContext): Promise<unknown>;
@@ -127,6 +128,15 @@ export default ({ strapi }) => ({
 	  async updateInterviewSetup(ctx) {
     ctx.body = {
       data: await employerDashboardService(strapi).updateInterviewSetup(
+        ctx.request.body,
+        getRequestContext(ctx)
+      ),
+    };
+	  },
+
+	  async recordInterviewOutcome(ctx) {
+    ctx.body = {
+      data: await employerDashboardService(strapi).recordInterviewOutcome(
         ctx.request.body,
         getRequestContext(ctx)
       ),

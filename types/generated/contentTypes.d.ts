@@ -3891,6 +3891,7 @@ export interface ApiInterviewInterview extends Struct.CollectionTypeSchema {
         'candidate_no_show',
         'candidate_declined',
         'employer_cancelled',
+        'employer_no_show',
         'rescheduled',
         'cancelled',
       ]
@@ -3912,6 +3913,11 @@ export interface ApiInterviewInterview extends Struct.CollectionTypeSchema {
       Schema.Attribute.DefaultTo<'to_be_confirmed'>;
     meetingUrl: Schema.Attribute.String;
     metadata: Schema.Attribute.JSON;
+    outcomeReason: Schema.Attribute.Text;
+    outcomeRecordedAt: Schema.Attribute.DateTime;
+    outcomeSource: Schema.Attribute.Enumeration<
+      ['candidate_dashboard', 'employer_dashboard', 'admin_dashboard', 'system']
+    >;
     publishedAt: Schema.Attribute.DateTime;
     scheduledEndTime: Schema.Attribute.DateTime;
     scheduledStartTime: Schema.Attribute.DateTime;

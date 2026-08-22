@@ -189,6 +189,15 @@ export default {
     },
     {
       method: 'POST',
+      path: '/internal/employer-dashboard/interviews/outcome',
+      handler: 'employer-dashboard.recordInterviewOutcome',
+      config: {
+        auth: false,
+        policies: [employerDashboardServicePolicy],
+      },
+    },
+    {
+      method: 'POST',
       path: '/internal/employer-dashboard/feedback/detail',
       handler: 'employer-dashboard.interviewFeedbackDetail',
       config: {

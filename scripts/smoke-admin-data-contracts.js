@@ -179,26 +179,28 @@ const main = async () => {
     ]);
     const now = Date.now();
 
-    await documents(strapi, 'api::enrollment.enrollment').create({
-      data: {
-        candidate: connect(alphaCandidate),
-        class: connect(alphaClass),
-        completionStatus: 'not_started',
-        enrollmentState: 'enrolled',
-        passStatus: 'not_assessed',
-        paymentStatus: 'paid',
-      },
-    });
-    await documents(strapi, 'api::enrollment.enrollment').create({
-      data: {
-        candidate: connect(zebraCandidate),
-        class: connect(zebraClass),
-        completionStatus: 'not_started',
-        enrollmentState: 'enrolled',
-        passStatus: 'not_assessed',
-        paymentStatus: 'paid',
-      },
-    });
+    const [alphaEnrollment, zebraEnrollment] = await Promise.all([
+      documents(strapi, 'api::enrollment.enrollment').create({
+        data: {
+          candidate: connect(alphaCandidate),
+          class: connect(alphaClass),
+          completionStatus: 'not_started',
+          enrollmentState: 'enrolled',
+          passStatus: 'not_assessed',
+          paymentStatus: 'paid',
+        },
+      }),
+      documents(strapi, 'api::enrollment.enrollment').create({
+        data: {
+          candidate: connect(zebraCandidate),
+          class: connect(zebraClass),
+          completionStatus: 'not_started',
+          enrollmentState: 'enrolled',
+          passStatus: 'not_assessed',
+          paymentStatus: 'paid',
+        },
+      }),
+    ]);
     await documents(strapi, 'api::candidate-profile.candidate-profile').create({
       data: {
         availabilityConfirmedAt: new Date(now - 60_000).toISOString(),
@@ -219,6 +221,37 @@ const main = async () => {
     });
 
     const candidateService = strapi.service('api::admin-candidate.admin-candidate');
+    const classService = strapi.service('api::admin-class.admin-class');
+    const alphaClassPupils = await classService.getClassDetail({
+      classDocumentId: alphaClass.documentId,
+      enrollmentPage: 1,
+      enrollmentPageSize: 25,
+      enrollmentPaymentStatus: 'paid',
+      enrollmentSearch: alphaCandidate.email,
+      enrollmentState: 'enrolled',
+      sessionToken,
+    });
+    assert(
+      alphaClassPupils.enrollmentPagination.pageSize === 25 &&
+        alphaClassPupils.enrollmentPagination.total === 1,
+      'Expected class-pupil filtering and the 25-row default contract.'
+    );
+    assert(
+      alphaClassPupils.enrollments[0]?.documentId === alphaEnrollment.documentId,
+      'Expected class-pupil search to return the matching enrollment.'
+    );
+    const exactZebraPupil = await classService.getClassDetail({
+      classDocumentId: zebraClass.documentId,
+      enrollmentDocumentId: zebraEnrollment.documentId,
+      enrollmentPage: 1,
+      enrollmentPageSize: 25,
+      sessionToken,
+    });
+    assert(
+      exactZebraPupil.enrollments.length === 1 &&
+        exactZebraPupil.enrollments[0]?.documentId === zebraEnrollment.documentId,
+      'Expected exact class-pupil lookup to resolve before pagination.'
+    );
     const classAscending = await candidateService.listCandidates({
       page: 1,
       pageSize: 10,
@@ -524,6 +557,7 @@ const main = async () => {
           activityDistinctFilters: true,
           adminDataContractIndexes: true,
           candidateClassSort: true,
+          classPupilFiltersAndPagination: true,
           candidateReadinessSort: true,
           employerInviteCountSort: true,
           employerLeadContactSort: true,

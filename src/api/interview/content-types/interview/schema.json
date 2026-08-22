@@ -49,6 +49,7 @@
         "candidate_no_show",
         "candidate_declined",
         "employer_cancelled",
+        "employer_no_show",
         "rescheduled",
         "cancelled"
       ],
@@ -144,6 +145,21 @@
     },
     "completedAt": {
       "type": "datetime"
+    },
+    "outcomeRecordedAt": {
+      "type": "datetime"
+    },
+    "outcomeReason": {
+      "type": "text"
+    },
+    "outcomeSource": {
+      "type": "enumeration",
+      "enum": [
+        "candidate_dashboard",
+        "employer_dashboard",
+        "admin_dashboard",
+        "system"
+      ]
     },
     "countsTowardGuarantee": {
       "type": "boolean",

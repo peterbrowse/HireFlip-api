@@ -2045,6 +2045,10 @@ const applyCandidateRestrictionWorkflowEffects = async ({
           employerDetailsReleasedAt: timestamp,
           employerDetailsReleaseReason: 'other',
           interviewState: 'cancelled',
+          outcomeReason:
+            'HireFlip cancelled this interview because the candidate account was restricted.',
+          outcomeRecordedAt: timestamp,
+          outcomeSource: 'admin_dashboard',
           metadata: {
             ...restrictionWorkflowMetadata({
               action,

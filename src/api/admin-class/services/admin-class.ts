@@ -202,6 +202,40 @@ const readinessFilters = [
 const announcementPriorities = ['normal', 'important', 'urgent'] as const;
 const announcementStates = ['draft', 'published', 'archived'] as const;
 const editableAnnouncementStates = ['draft', 'published'] as const;
+const enrollmentStates = [
+  'interest_registered',
+  'interest_withdrawn',
+  'enrollment_open',
+  'place_reserved',
+  'waiting_list',
+  'missed_out',
+  'enrolled',
+  'payment_exception',
+  'in_class',
+  'interview_phase',
+  'completed',
+  'failed',
+  'withdrawn',
+  'refunded',
+  'removed_no_refund',
+  'removed_partial_refund',
+  'removed_full_refund',
+] as const;
+const enrollmentPaymentStatuses = [
+  'not_required',
+  'pending',
+  'paid',
+  'requires_review',
+  'failed',
+  'partially_refunded',
+  'refunded',
+] as const;
+const enrollmentCompletionStatuses = [
+  'not_started',
+  'in_progress',
+  'completed',
+  'missed_deadline',
+] as const;
 
 const listSchema = z
   .object({
@@ -219,6 +253,15 @@ const listSchema = z
 const detailSchema = z
   .object({
     classDocumentId: z.string().trim().min(1).max(160),
+    enrollmentCompletionStatus: z.enum([...enrollmentCompletionStatuses, 'all']).default('all'),
+    enrollmentDocumentId: z.string().trim().min(1).max(160).optional(),
+    enrollmentPage: z.coerce.number().int().min(1).default(1),
+    enrollmentPageSize: z.coerce.number().int().min(10).max(100).default(25),
+    enrollmentPaymentStatus: z.enum([...enrollmentPaymentStatuses, 'all']).default('all'),
+    enrollmentSearch: z.string().trim().max(120).optional().transform((value) => value || undefined),
+    enrollmentSortBy: z.enum(['candidate', 'payment', 'progress', 'reservation', 'state']).default('candidate'),
+    enrollmentSortDirection: z.enum(['asc', 'desc']).default('asc'),
+    enrollmentState: z.enum([...enrollmentStates, 'all']).default('all'),
     sessionToken: z.string().trim().min(32).max(512),
   })
   .strict();
@@ -1244,6 +1287,111 @@ const publicEnrollment = ({
   };
 };
 
+type PublicEnrollment = ReturnType<typeof publicEnrollment>;
+type ClassDetailInput = z.infer<typeof detailSchema>;
+
+const normalizeSearchText = (value: unknown) => String(value || '').trim().toLocaleLowerCase('en-GB');
+
+const filterPublicEnrollments = (
+  enrollments: PublicEnrollment[],
+  body: ClassDetailInput
+) => {
+  const search = normalizeSearchText(body.enrollmentSearch);
+
+  return enrollments.filter((enrollment) => {
+    if (body.enrollmentDocumentId && enrollment.documentId !== body.enrollmentDocumentId) {
+      return false;
+    }
+
+    if (body.enrollmentState !== 'all' && enrollment.enrollmentState !== body.enrollmentState) {
+      return false;
+    }
+
+    if (
+      body.enrollmentPaymentStatus !== 'all' &&
+      enrollment.paymentStatus !== body.enrollmentPaymentStatus
+    ) {
+      return false;
+    }
+
+    if (
+      body.enrollmentCompletionStatus !== 'all' &&
+      enrollment.completionStatus !== body.enrollmentCompletionStatus
+    ) {
+      return false;
+    }
+
+    if (!search) {
+      return true;
+    }
+
+    return [
+      enrollment.documentId,
+      enrollment.candidate.documentId,
+      enrollment.candidate.displayName,
+      enrollment.candidate.email,
+      enrollment.candidate.phone,
+    ].some((value) => normalizeSearchText(value).includes(search));
+  });
+};
+
+const publicEnrollmentSortValue = (
+  enrollment: PublicEnrollment,
+  sortBy: ClassDetailInput['enrollmentSortBy']
+) => {
+  if (sortBy === 'candidate') {
+    return enrollment.candidate.displayName;
+  }
+
+  if (sortBy === 'state') {
+    return enrollment.enrollmentState || '';
+  }
+
+  if (sortBy === 'payment') {
+    return `${enrollment.paymentStatus || ''} ${enrollment.payment?.amountPence ?? ''}`;
+  }
+
+  if (sortBy === 'reservation') {
+    return `${enrollment.reservation?.reservationState || ''} ${enrollment.reservationExpiresAt || enrollment.reservation?.expiresAt || ''}`;
+  }
+
+  return enrollment.progress.percentageComplete;
+};
+
+const sortPublicEnrollments = (
+  enrollments: PublicEnrollment[],
+  sortBy: ClassDetailInput['enrollmentSortBy'],
+  sortDirection: ClassDetailInput['enrollmentSortDirection']
+) => {
+  const collator = new Intl.Collator('en-GB', { numeric: true, sensitivity: 'base' });
+
+  return enrollments
+    .map((enrollment, index) => ({ enrollment, index }))
+    .sort((left, right) => {
+      const leftValue = publicEnrollmentSortValue(left.enrollment, sortBy);
+      const rightValue = publicEnrollmentSortValue(right.enrollment, sortBy);
+
+      if (leftValue === null || typeof leftValue === 'undefined') {
+        return rightValue === null || typeof rightValue === 'undefined' ? left.index - right.index : 1;
+      }
+
+      if (rightValue === null || typeof rightValue === 'undefined') {
+        return -1;
+      }
+
+      const comparison = typeof leftValue === 'number' && typeof rightValue === 'number'
+        ? leftValue - rightValue
+        : collator.compare(String(leftValue), String(rightValue));
+
+      if (comparison === 0) {
+        return left.index - right.index;
+      }
+
+      return sortDirection === 'asc' ? comparison : -comparison;
+    })
+    .map(({ enrollment }) => enrollment);
+};
+
 const publicClassAnnouncement = (announcement: DocumentRecord) => ({
   announcementState: announcement.announcementState || null,
   body: announcement.body || null,
@@ -2218,21 +2366,42 @@ export default ({ strapi }: { strapi: StrapiService }) => ({
       findClassAnnouncements(strapi, body.classDocumentId),
     ]);
     const courseItemKeys = setupItemKeys(courseSetup);
+    const publicEnrollments = enrollments.map((enrollment) =>
+      publicEnrollment({
+        classRecord: refreshedClass,
+        courseItemKeys,
+        enrollment,
+        payment: paymentsByEnrollment.get(getDocumentId(enrollment) || ''),
+        permissions,
+        progressRecords: progressByEnrollment.get(getDocumentId(enrollment) || '') || [],
+        reservation: reservationsByEnrollment.get(getDocumentId(enrollment) || ''),
+      })
+    );
+    const filteredEnrollments = sortPublicEnrollments(
+      filterPublicEnrollments(publicEnrollments, body),
+      body.enrollmentSortBy,
+      body.enrollmentSortDirection
+    );
+    const enrollmentPageCount = Math.max(
+      1,
+      Math.ceil(filteredEnrollments.length / body.enrollmentPageSize)
+    );
+    const enrollmentPage = Math.min(body.enrollmentPage, enrollmentPageCount);
+    const enrollmentStart = (enrollmentPage - 1) * body.enrollmentPageSize;
 
     return {
       announcements: announcements.map(publicClassAnnouncement),
       class: publicClassSummary(refreshedClass, enrollments, permissions),
       courseSetup,
-      enrollments: enrollments.map((enrollment) =>
-        publicEnrollment({
-          classRecord: refreshedClass,
-          courseItemKeys,
-          enrollment,
-          payment: paymentsByEnrollment.get(getDocumentId(enrollment) || ''),
-          permissions,
-          progressRecords: progressByEnrollment.get(getDocumentId(enrollment) || '') || [],
-          reservation: reservationsByEnrollment.get(getDocumentId(enrollment) || ''),
-        })
+      enrollmentPagination: {
+        page: enrollmentPage,
+        pageCount: enrollmentPageCount,
+        pageSize: body.enrollmentPageSize,
+        total: filteredEnrollments.length,
+      },
+      enrollments: filteredEnrollments.slice(
+        enrollmentStart,
+        enrollmentStart + body.enrollmentPageSize
       ),
       generatedAt: new Date().toISOString(),
       user: session.user,
